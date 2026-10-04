@@ -1,0 +1,6 @@
+xcuserdata/
+*.xcuserstate
+build/
+DerivedData/
+# OSASI-derived logo work stays out of this public fork
+branding/

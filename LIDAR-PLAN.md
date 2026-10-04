@@ -20,6 +20,8 @@ A LiDAR scan is taken **inside** the house, so it measures **interior** walls. G
 
 The order to work in: take one real export from Paul's phone, see which of these it is, and build that profile first.
 
+**Own capture app (in progress, Mac only).** `ios/CValRScan/` is a small RoomPlan app that exports a plain JSON plan (`cvalrscan`, described in `ios/CValRScan/README.md`). It gives the importer a format we control, with no USDZ or point-cloud library needed. Third-party exports stay a second option.
+
 ## How it fits the app
 
 - A lazy-loaded module (`lidar-import.mjs`), like `pdf-import.mjs`, with format profiles as data so a new app's export is added as a profile, not new code.

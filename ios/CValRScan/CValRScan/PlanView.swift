@@ -1,0 +1,396 @@
+import SwiftUI
+import UIKit
+
+// What the reading sheet is proposing, drawn live on the plan above it.
+struct ReadingPreview: Equatable {
+    var run: [UUID] = []
+    var moving: [UUID] = []
+}
+
+struct PlanView: View {
+    @ObservedObject var scan: ScanController
+    @State private var story: Int?
+    @State private var selected: PlanWall?
+    @State private var preview = ReadingPreview()
+    @State private var zoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @GestureState private var pinch: CGFloat = 1
+    @GestureState private var drag: CGSize = .zero
+
+    var body: some View {
+        let geo = scan.planGeometry
+        let shown = story ?? geo.stories.first ?? 0
+        VStack(spacing: 6) {
+            if geo.stories.count > 1 {
+                Picker("Floor", selection: Binding(get: { shown }, set: { story = $0 })) {
+                    ForEach(geo.stories, id: \.self) { Text("Floor \($0 + 1)").tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+            }
+            Text("Pinch to zoom, drag to move. Tap a wall to enter a reading.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            GeometryReader { box in
+                let view = Viewport(geo: geo, story: shown, size: box.size, zoom: zoom * pinch,
+                                    pan: CGSize(width: pan.width + drag.width, height: pan.height + drag.height))
+                canvas(geo: geo, story: shown, view: view)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        SimultaneousGesture(
+                            MagnifyGesture()
+                                .updating($pinch) { v, s, _ in s = v.magnification }
+                                .onEnded { v in zoom = min(max(zoom * v.magnification, 1), 15) },
+                            DragGesture(minimumDistance: 8)
+                                .updating($drag) { v, s, _ in s = v.translation }
+                                .onEnded { v in
+                                    pan.width += v.translation.width
+                                    pan.height += v.translation.height
+                                }))
+                    .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+                        guard let wall = view.nearest(to: tap.location,
+                                                      in: geo.walls.filter { $0.story == shown }) else { return }
+                        focus(on: wall, geo: geo, story: shown, size: box.size)
+                        selected = wall
+                    })
+            }
+            .clipped()
+            legend
+        }
+        .navigationTitle("Measure walls")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            Button("Fit") { withAnimation { zoom = 1; pan = .zero } }
+        }
+        .sheet(item: $selected, onDismiss: { preview = ReadingPreview() }) { wall in
+            MeasureSheet(wall: wall, geo: geo, measured: measuredIDs(excluding: wall.id),
+                         existing: scan.measurements[wall.id], preview: $preview) { m in
+                scan.setMeasurement(m, for: wall.id)
+            }
+            .presentationDetents([.fraction(0.55), .large])
+            .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.55)))
+        }
+    }
+
+    private var legend: some View {
+        HStack(spacing: 12) {
+            Label("outside wall", systemImage: "line.diagonal").foregroundStyle(.primary)
+            Label("≈ interior", systemImage: "line.diagonal").foregroundStyle(.gray)
+            Label("reading", systemImage: "checkmark").foregroundStyle(.green)
+            if !scan.exteriorWalls.isEmpty {
+                Label("outside walk", systemImage: "line.diagonal").foregroundStyle(.orange)
+            }
+        }
+        .font(.caption2)
+        .padding(.bottom, 4)
+    }
+
+    private func measuredIDs(excluding id: UUID? = nil) -> Set<UUID> {
+        var ids = Set<UUID>()
+        for (key, m) in scan.measurements where key != id {
+            ids.formUnion(m.walls.isEmpty ? [key] : m.walls)
+        }
+        return ids
+    }
+
+    // Zooms in on the tapped wall and moves it into the top of the screen,
+    // above the reading sheet.
+    private func focus(on wall: PlanWall, geo: PlanGeometry, story: Int, size: CGSize) {
+        let newZoom = max(zoom, 2.5)
+        let probe = Viewport(geo: geo, story: story, size: size, zoom: newZoom, pan: pan)
+        let mid = probe.map(CGPoint(x: (wall.a.x + wall.b.x) / 2, y: (wall.a.y + wall.b.y) / 2))
+        withAnimation {
+            zoom = newZoom
+            pan.width += size.width / 2 - mid.x
+            pan.height += size.height * 0.22 - mid.y
+        }
+    }
+
+    private func canvas(geo: PlanGeometry, story: Int, view: Viewport) -> some View {
+        let walls = geo.walls.filter { $0.story == story }
+        let measurements = scan.measurements
+        let measured = measuredIDs()
+        let selectedID = selected?.id
+        let preview = self.preview
+        return Canvas { ctx, _ in
+            for f in geo.floors where f.story == story {
+                var p = Path()
+                p.addLines(f.points.map(view.map))
+                p.closeSubpath()
+                ctx.fill(p, with: .color(.gray.opacity(0.22)))
+            }
+            for s in geo.sections where s.story == story && !s.label.isEmpty {
+                ctx.draw(Text(s.label).font(.caption.bold()).foregroundStyle(.secondary), at: view.map(s.center))
+            }
+            for w in walls {
+                var p = Path()
+                p.move(to: view.map(w.a))
+                p.addLine(to: view.map(w.b))
+                let colour: Color = preview.moving.contains(w.id) ? .orange
+                    : (preview.run.contains(w.id) || w.id == selectedID) ? .blue
+                    : measured.contains(w.id) ? .green
+                    : (w.exterior ? .primary : .gray)
+                let width: CGFloat = preview.run.contains(w.id) || preview.moving.contains(w.id) || w.id == selectedID
+                    ? 6 : (w.exterior ? 4.5 : 2.5)
+                ctx.stroke(p, with: .color(colour), style: StrokeStyle(lineWidth: width, lineCap: .round))
+            }
+            for f in geo.features where f.story == story {
+                var p = Path()
+                p.move(to: view.map(f.a))
+                p.addLine(to: view.map(f.b))
+                let colour: Color = f.kind == .door ? .orange : (f.kind == .window ? .cyan : .gray)
+                ctx.stroke(p, with: .color(colour.opacity(0.85)), lineWidth: 5)
+            }
+            for l in geo.exteriorLines {
+                var p = Path()
+                p.move(to: view.map(l.a))
+                p.addLine(to: view.map(l.b))
+                ctx.stroke(p, with: .color(.orange), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+            }
+            // Where each wall stops, so two walls in line read as two.
+            for w in walls {
+                for e in [view.map(w.a), view.map(w.b)] {
+                    ctx.fill(Path(ellipseIn: CGRect(x: e.x - 2.5, y: e.y - 2.5, width: 5, height: 5)), with: .color(.gray))
+                }
+            }
+
+            // Labels: readings first, drawn on the side they were taken and
+            // across the whole stretch they cover, then the scan's estimates.
+            var placed: [CGRect] = []
+            var labelled = Set<UUID>()
+            for (key, m) in measurements {
+                guard let w = geo.wall(key), w.story == story else { continue }
+                let run = geo.run(from: w, sign: m.sideSign, outside: m.face == .outside)
+                labelled.formUnion(run.walls.map(\.id))
+                drawDimension(ctx, view: view, a: run.start, b: run.end, side: w.sideVector(m.sideSign),
+                              text: "\(Feet.text(m.inches)) ✓", colour: .green, force: true, placed: &placed)
+            }
+            let order = walls.filter { !labelled.contains($0.id) }.sorted {
+                ($0.id == selectedID ? 1_000_000 : 0) + $0.scanInches > ($1.id == selectedID ? 1_000_000 : 0) + $1.scanInches
+            }
+            for w in order {
+                let inches = geo.labelInches(w)
+                let colour: Color = w.id == selectedID ? .blue : (w.exterior ? .red : .gray)
+                drawDimension(ctx, view: view, a: w.a, b: w.b, side: w.sideVector(w.labelSign),
+                              text: (w.exterior ? "" : "≈") + Feet.text(inches), colour: colour,
+                              force: w.id == selectedID, placed: &placed)
+            }
+        }
+    }
+
+    // A dimension line with end ticks beside the wall, on the given side,
+    // with its label. Skipped when it would overlap one already drawn.
+    private func drawDimension(_ ctx: GraphicsContext, view: Viewport, a pa: CGPoint, b pb: CGPoint,
+                               side: CGVector, text: String, colour: Color, force: Bool, placed: inout [CGRect]) {
+        let a = view.map(pa), b = view.map(pb)
+        let resolved = ctx.resolve(Text(text).font(.caption.weight(.semibold)).foregroundStyle(colour))
+        let size = resolved.measure(in: CGSize(width: 400, height: 100))
+        guard force || hypot(b.x - a.x, b.y - a.y) > size.width * 0.8 else { return }
+        var angle = atan2(b.y - a.y, b.x - a.x)
+        if angle > .pi / 2 { angle -= .pi } else if angle <= -.pi / 2 { angle += .pi }
+        let off = size.height / 2 + 10
+        let centre = CGPoint(x: (a.x + b.x) / 2 + side.dx * off, y: (a.y + b.y) / 2 + side.dy * off)
+        let box = CGRect(x: -size.width / 2, y: -size.height / 2, width: size.width, height: size.height)
+            .applying(CGAffineTransform(rotationAngle: angle))
+            .offsetBy(dx: centre.x, dy: centre.y)
+            .insetBy(dx: -2, dy: -2)
+        if !force, placed.contains(where: { $0.intersects(box) }) { return }
+        placed.append(box)
+        let gap: CGFloat = 4, tick: CGFloat = 4
+        var dim = Path()
+        dim.move(to: CGPoint(x: a.x + side.dx * gap, y: a.y + side.dy * gap))
+        dim.addLine(to: CGPoint(x: b.x + side.dx * gap, y: b.y + side.dy * gap))
+        for e in [a, b] {
+            dim.move(to: CGPoint(x: e.x + side.dx * (gap - tick), y: e.y + side.dy * (gap - tick)))
+            dim.addLine(to: CGPoint(x: e.x + side.dx * (gap + tick), y: e.y + side.dy * (gap + tick)))
+        }
+        ctx.stroke(dim, with: .color(colour.opacity(0.8)), lineWidth: 1)
+        ctx.drawLayer { layer in
+            layer.translateBy(x: centre.x, y: centre.y)
+            layer.rotate(by: .radians(angle))
+            layer.draw(resolved, at: .zero)
+        }
+    }
+}
+
+// Maps plan feet onto the screen: fit to the view, then the reader's zoom and pan.
+private struct Viewport {
+    let scale: CGFloat, ox: CGFloat, oy: CGFloat, minX: CGFloat, minY: CGFloat
+    let centre: CGPoint, zoom: CGFloat, pan: CGSize
+
+    init(geo: PlanGeometry, story: Int, size: CGSize, zoom: CGFloat, pan: CGSize) {
+        let pts = geo.walls.filter { $0.story == story }.flatMap { [$0.a, $0.b] }
+            + geo.exteriorLines.flatMap { [$0.a, $0.b] }
+        minX = pts.map(\.x).min() ?? 0
+        minY = pts.map(\.y).min() ?? 0
+        let w = max((pts.map(\.x).max() ?? 1) - minX, 1)
+        let h = max((pts.map(\.y).max() ?? 1) - minY, 1)
+        let pad: CGFloat = 36
+        scale = min((size.width - 2 * pad) / w, (size.height - 2 * pad) / h)
+        ox = (size.width - w * scale) / 2
+        oy = (size.height - h * scale) / 2
+        centre = CGPoint(x: size.width / 2, y: size.height / 2)
+        self.zoom = zoom
+        self.pan = pan
+    }
+
+    func map(_ p: CGPoint) -> CGPoint {
+        let q = CGPoint(x: (p.x - minX) * scale + ox, y: (p.y - minY) * scale + oy)
+        return CGPoint(x: centre.x + (q.x - centre.x) * zoom + pan.width,
+                       y: centre.y + (q.y - centre.y) * zoom + pan.height)
+    }
+
+    func nearest(to tap: CGPoint, in walls: [PlanWall]) -> PlanWall? {
+        func dist(_ w: PlanWall) -> CGFloat {
+            let a = map(w.a), b = map(w.b)
+            let dx = b.x - a.x, dy = b.y - a.y
+            let len2 = max(dx * dx + dy * dy, 0.0001)
+            let t = min(max(((tap.x - a.x) * dx + (tap.y - a.y) * dy) / len2, 0), 1)
+            return hypot(tap.x - (a.x + t * dx), tap.y - (a.y + t * dy))
+        }
+        guard let best = walls.min(by: { dist($0) < dist($1) }), dist(best) < 24 else { return nil }
+        return best
+    }
+}
+
+struct MeasureSheet: View {
+    let wall: PlanWall
+    let geo: PlanGeometry
+    let measured: Set<UUID>
+    let existing: WallMeasurement?
+    @Binding var preview: ReadingPreview
+    let onSave: (WallMeasurement?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var choice = 0
+    @State private var move = WallMeasurement.Move.auto
+
+    // Where the reading was taken: a room on one side, or outside.
+    private struct Place { let sign: Int; let outside: Bool; let title: String; let room: String }
+    private var places: [Place] {
+        let here = wall.roomName(wall.labelSign), there = wall.roomName(-wall.labelSign)
+        if wall.exterior {
+            return [Place(sign: wall.labelSign, outside: false, title: "Inside, \(here)", room: here),
+                    Place(sign: -wall.labelSign, outside: true, title: "Outside", room: "outside")]
+        }
+        return [Place(sign: wall.labelSign, outside: false, title: "In \(here)", room: here),
+                Place(sign: -wall.labelSign, outside: false, title: "In \(there)", room: there)]
+    }
+
+    var body: some View {
+        let place = places[min(choice, places.count - 1)]
+        let run = geo.run(from: wall, sign: place.sign, outside: place.outside)
+        let estimate = geo.estimateInches(run)
+        let parsed = LengthParser.inches(from: text)
+        let moving = resolveMoving(run)
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Measured from", selection: $choice) {
+                        ForEach(places.indices, id: \.self) { Text(places[$0].title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    LabeledContent("Scan estimate, face to face", value: Feet.text(estimate))
+                } header: {
+                    Text("Where were you standing?")
+                } footer: {
+                    Text(run.walls.count > 1
+                         ? "This face spans \(run.walls.count) scanned pieces, shown in blue. Laser from one end of the blue stretch to the other."
+                         : "Laser along the blue wall, face to face, from one end to the other.")
+                }
+                Section("Your reading") {
+                    HStack {
+                        TextField("e.g. 10 9  or  10' 9\"", text: $text)
+                            .keyboardType(.numbersAndPunctuation)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        Button("Paste") { text = UIPasteboard.general.string ?? text }
+                            .buttonStyle(.bordered)
+                    }
+                    if let parsed {
+                        let diff = parsed - estimate
+                        HStack {
+                            Text("= \(Feet.text(parsed))").font(.title2.bold())
+                            Spacer()
+                            Text(diff == 0 ? "matches scan" : "\(diff > 0 ? "+" : "−")\(abs(diff))″ vs scan")
+                                .foregroundStyle(abs(diff) > 2 ? .orange : .secondary)
+                        }
+                        if abs(diff) > 2 {
+                            Text("More than 2″ off. Check it's the blue stretch and the right room.")
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                        }
+                    } else if !text.isEmpty {
+                        Text("Not understood. Try feet then inches, like 10 9.").foregroundStyle(.red)
+                    }
+                }
+                Section {
+                    Picker("To fit the reading, move", selection: $move) {
+                        Text("Auto").tag(WallMeasurement.Move.auto)
+                        if run.startWall != nil { Text(geo.endName(run, start: true)).tag(WallMeasurement.Move.start) }
+                        if run.endWall != nil { Text(geo.endName(run, start: false)).tag(WallMeasurement.Move.end) }
+                        if run.startWall != nil && run.endWall != nil { Text("Both").tag(WallMeasurement.Move.both) }
+                    }
+                } footer: {
+                    Text(moveDescription(run, moving: moving) + " Shown in orange.")
+                }
+                if existing != nil {
+                    Button("Remove reading", role: .destructive) {
+                        onSave(nil)
+                        dismiss()
+                    }
+                }
+            }
+            .navigationTitle("Wall reading")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if let parsed {
+                            onSave(WallMeasurement(inches: parsed, face: place.outside ? .outside : .inside,
+                                                   sideSign: place.sign, room: place.room,
+                                                   walls: run.walls.map(\.id), move: move, moving: moving))
+                        }
+                        dismiss()
+                    }
+                    .disabled(parsed == nil)
+                }
+            }
+            .onAppear {
+                if let existing {
+                    text = "\(existing.inches / 12) \(existing.inches % 12)"
+                    choice = places.firstIndex { $0.sign == existing.sideSign && $0.outside == (existing.face == .outside) } ?? 0
+                    move = existing.move
+                }
+            }
+            .onChange(of: ReadingPreview(run: run.walls.map(\.id), moving: moving), initial: true) { _, new in
+                preview = new
+            }
+        }
+    }
+
+    private func resolveMoving(_ run: WallRun) -> [UUID] {
+        switch move {
+        case .auto: return geo.autoMoving(run, measured: measured)
+        case .start: return [run.startWall?.id].compactMap { $0 }
+        case .end: return [run.endWall?.id].compactMap { $0 }
+        case .both: return Array(Set([run.startWall?.id, run.endWall?.id].compactMap { $0 }))
+        }
+    }
+
+    private func moveDescription(_ run: WallRun, moving: [UUID]) -> String {
+        func kind(_ w: PlanWall?) -> String {
+            guard let w else { return "wall" }
+            return measured.contains(w.id) ? "measured wall" : (w.exterior ? "outside wall" : "partition")
+        }
+        if moving.count == 2 { return "Both end walls share the change." }
+        if moving.first == run.startWall?.id {
+            return "The \(kind(run.startWall)) at the \(geo.endName(run, start: true)) moves; the other end stays."
+        }
+        if moving.first == run.endWall?.id {
+            return "The \(kind(run.endWall)) at the \(geo.endName(run, start: false)) moves; the other end stays."
+        }
+        return "Nothing closes this stretch, so nothing moves."
+    }
+}
