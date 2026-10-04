@@ -10,6 +10,30 @@ A LiDAR scan is taken **inside** the house, so it measures **interior** walls. G
 - push that ring outward by the exterior wall thickness (a setting, e.g. 6" for 2×6 framing plus finishes), with a per-wall override for thicker foundation walls; the result should be checked against at least one exterior tape measurement;
 - keep garages, decks and other non-living spaces as separate areas, as the iGUIDE import does.
 
+## Field workflow: outside first (decided 2026-10-04)
+
+This follows the appraiser's normal order: greet the occupants, measure the outside first to see what the job involves, go inside **once**, then go back outside only if something is still missing. Going outside twice is fine; going back inside is intrusive and should never be needed.
+
+1. **Outside:** sketch the exterior in CValRSketch as now (walk, laser, speech-to-text or typed), as completely as the site allows. Sides that can't be reached (shrubs, fences) are left as not measured.
+2. **Inside, one visit:** scan with CValRScan, share the scan into CValRSketch on the same phone, and let CValRSketch lay it over the exterior sketch. Before leaving, it gives a **"before you leave" list**:
+   - exterior sides with no laser reading that the scan doesn't reach either ("scan the living-room back wall from inside");
+   - missing walls in the scan (gaps, typically closets), to fill with **Mark wall** or a laser depth;
+   - anything a second floor still needs.
+3. **Outside again, if needed:** only for what the comparison flags.
+
+What each source is for:
+
+- **The laser sketch is the source for GLA**, as it is today.
+- **The scan fills and checks it:** it supplies sides that couldn't be reached outside (interior faces plus wall thickness), checks the sides that were lasered, and gives the room layout and upper floors.
+- **Wall thickness is measured, not assumed:** where a side was measured outside and scanned inside, the difference is that wall's real thickness, used for sides seen only from inside. The 6″ setting is the fallback.
+- **Fitting needs no AR tie-in:** the scan's outline is slid and turned to best fit the lasered sides (most houses are all square corners). The AR outside walk in CValRScan stays optional, for sides that can be walked but not lasered.
+
+Decisions:
+
+- The exterior sketch stays in CValRSketch; CValRScan does not get its own sketching.
+- The on-site comparison and the "before you leave" list live in CValRSketch, where the importer and the sketch already are. CValRScan stays a scanner.
+- CValRSketch needs a way to mark an exterior side as **not measured** (couldn't reach), so the comparison knows which sides the scan must supply. To be designed with the project owner, as it touches the main app.
+
 ## Candidate sources (to be confirmed with real exports)
 
 | Source | What it likely gives | Effort |
@@ -29,12 +53,14 @@ The order to work in: take one real export from Paul's phone, see which of these
 - Runs in the browser on the user's own device; scans never leave it.
 - Any new runtime dependency (e.g. a USDZ/zip or point-cloud reader) needs the project owner's approval first (CLAUDE.md §8).
 
-## First steps
+## Steps
 
-1. Scan a room or two of a house you own (not a client's) with whatever LiDAR app you would use in the field, and export every format it offers.
-2. Inspect the files: which source above is it, what units, does it separate floors?
-3. Write the first profile, import the test scan, and compare it with tape measurements.
-4. Add the interior → exterior wall-thickness step and test it on a whole floor.
+1. ~~Scan a room or two of a house you own and inspect the export.~~ Done: CValRScan's own `cvalrscan` format (now version 4).
+2. Write `lidar-import.mjs` to read a `cvalrscan` file into CValRSketch shapes, one area per floor.
+3. **Overlay on an existing sketch:** fit the scan's outline to the lasered exterior sides, measure wall thickness from sides measured both ways, and fill sides measured only from inside.
+4. Produce the **"before you leave" list** on the phone (unreached sides, scan gaps, upper floors).
+5. With no exterior sketch, fall back to the scan alone: outer ring pushed out by measured or assumed thickness, checked against at least one tape measurement.
+6. In the importer, split any outside-walk wall whose points turn a corner (a missed **Next wall**), as the app now offers to on site: split where two fitted lines give the least total squared error, repeat while any part is more than 6″ off its line.
 
 ## Public-repo rule
 
