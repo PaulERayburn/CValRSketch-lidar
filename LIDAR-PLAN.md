@@ -10,9 +10,11 @@ A LiDAR scan is taken **inside** the house, so it measures **interior** walls. G
 - push that ring outward by the exterior wall thickness (a setting, e.g. 6" for 2×6 framing plus finishes), with a per-wall override for thicker foundation walls; the result should be checked against at least one exterior tape measurement;
 - keep garages, decks and other non-living spaces as separate areas, as the iGUIDE import does.
 
-## Field workflow: outside first (decided 2026-10-04)
+## Field workflow: either order (decided 2026-10-04)
 
-This follows the appraiser's normal order: greet the occupants, measure the outside first to see what the job involves, go inside **once**, then go back outside only if something is still missing. Going outside twice is fine; going back inside is intrusive and should never be needed.
+**Both orders must work: measure outside first, or scan inside first.** The scan imports on its own (inside first), and the overlay compares whichever came second with whichever came first. The order below is the one Paul usually uses.
+
+Outside first follows the appraiser's normal order: greet the occupants, measure the outside first to see what the job involves, go inside **once**, then go back outside only if something is still missing. Going outside twice is fine; going back inside is intrusive and should never be needed.
 
 1. **Outside:** sketch the exterior in CValRSketch as now (walk, laser, speech-to-text or typed), as completely as the site allows. Sides that can't be reached (shrubs, fences) are left as not measured.
 2. **Inside, one visit:** scan with CValRScan, share the scan into CValRSketch on the same phone, and let CValRSketch lay it over the exterior sketch. Before leaving, it gives a **"before you leave" list**:
@@ -56,11 +58,11 @@ The order to work in: take one real export from Paul's phone, see which of these
 ## Steps
 
 1. ~~Scan a room or two of a house you own and inspect the export.~~ Done: CValRScan's own `cvalrscan` format (now version 4).
-2. Write `lidar-import.mjs` to read a `cvalrscan` file into CValRSketch shapes, one area per floor.
+2. ~~Write `lidar-import.mjs` to read a `cvalrscan` file into CValRSketch shapes, one area per floor.~~ Done: **Import PDF or scan…** reads it through the PDF import window. On the 2026-10-04 scan of Paul's house: 894 sf inside the walls, 989 sf outside, with thickness measured on 14 of 16 sides from the outside walk. Still to check against a tape measurement.
 3. **Overlay on an existing sketch:** fit the scan's outline to the lasered exterior sides, measure wall thickness from sides measured both ways, and fill sides measured only from inside.
 4. Produce the **"before you leave" list** on the phone (unreached sides, scan gaps, upper floors).
-5. With no exterior sketch, fall back to the scan alone: outer ring pushed out by measured or assumed thickness, checked against at least one tape measurement.
-6. In the importer, split any outside-walk wall whose points turn a corner (a missed **Next wall**), as the app now offers to on site: split where two fitted lines give the least total squared error, repeat while any part is more than 6″ off its line.
+5. ~~With no exterior sketch, fall back to the scan alone.~~ Done in step 2: this is the inside-first path.
+6. ~~In the importer, split any outside-walk wall~~ Done in step 2: split any outside-walk wall whose points turn a corner (a missed **Next wall**), as the app now offers to on site: split where two fitted lines give the least total squared error, repeat while any part is more than 6″ off its line.
 
 ## Public-repo rule
 

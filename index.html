@@ -266,8 +266,8 @@
   </label>
   <button onclick="document.getElementById('add-json').click()" title="Append one or more sketch files' buildings to this one (pick several at once; you name each building as it comes in; each drawing is placed beside what is here)">➕ Add files…</button>
   <input type="file" id="add-json" accept=".json" multiple style="display:none">
-  <button onclick="document.getElementById('import-pdf').click()" title="Import a floor-plan PDF (iGUIDE): each floor's outline is traced from the PDF's own drawing, on this computer — the file is not uploaded">📐 Import PDF…</button>
-  <input type="file" id="import-pdf" accept=".pdf,application/pdf" style="display:none">
+  <button onclick="document.getElementById('import-pdf').click()" title="Import a floor-plan PDF (iGUIDE), or a LiDAR scan from CValRScan (.cvalrscan.json): each floor's outline is traced on this computer — the file is not uploaded">📐 Import PDF or scan…</button>
+  <input type="file" id="import-pdf" accept=".pdf,application/pdf,.json,application/json" style="display:none">
   <button onclick="confirmSaveAppCopy()" title="Save a frozen, self-contained copy of this exact version of the app (one HTML file) — keep it in the job folder beside the sketch so the sketch reopens the same way years later">💾 Save app copy</button>
   <span id="brand-header" style="margin-left:auto; display:flex; align-items:center; gap:8px; font-size:12px; color:#dfe7ef;"></span>
   <span id="autosave-chip" class="autosave-chip"></span>
@@ -5894,6 +5894,7 @@ document.getElementById('add-json').addEventListener('change', async (e) => {
     let d;
     try { d = JSON.parse(await f.text()); }
     catch (err) { alert(f.name + ': could not read (' + err.message + ')'); continue; }
+    if (d && d.format === 'cvalrscan') { await importScanData(d, f.name); continue; }
     await openAddFileModal(d, f.name, files.length > 1 ? (i + 1) + ' of ' + files.length : '');
   }
 });
@@ -5906,8 +5907,36 @@ const PDF_IMPORT_VERSION = '0.35.0';
 document.getElementById('import-pdf').addEventListener('change', async (e) => {
   const f = e.target.files && e.target.files[0];
   e.target.value = '';
-  if (f) await importFloorPlanPdf(f);
+  if (f && /\.json$/i.test(f.name)) await importScan(f);
+  else if (f) await importFloorPlanPdf(f);
 });
+
+// ===== LIDAR SCAN IMPORT =====
+// A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
+// lidar-import.mjs loads only when a scan is picked.
+const LIDAR_IMPORT_VERSION = '0.1.0';
+async function importScan(file) {
+  let d;
+  try { d = JSON.parse(await file.text()); }
+  catch (err) { alert(file.name + ': could not read (' + err.message + ')'); return; }
+  await importScanData(d, file.name);
+}
+async function importScanData(d, fname) {
+  if (location.protocol === 'file:') {
+    alert('Scan import needs the hosted app (https://caa-ebv-co-op.github.io/CValRSketch/) or a local web server. A page opened straight from disk, or a saved app copy, cannot load the scan reader.');
+    return;
+  }
+  let res;
+  try {
+    const imp = await import('./lidar-import.mjs?v=' + LIDAR_IMPORT_VERSION);
+    res = imp.readCvalrScan(d);
+  } catch (err) {
+    alert('Could not read ' + fname + ': ' + (err && err.message || err));
+    return;
+  }
+  if (!res.ok) { alert(fname + ': ' + res.message + (res.warnings && res.warnings.length ? '\n\n' + res.warnings.join('\n') : '')); return; }
+  openPdfImportModal(res, fname);
+}
 async function importFloorPlanPdf(file) {
   if (location.protocol === 'file:') {
     alert('PDF import needs the hosted app (https://caa-ebv-co-op.github.io/CValRSketch/) or a local web server. A page opened straight from disk, or a saved app copy, cannot load the PDF reader.');
@@ -5942,6 +5971,7 @@ function openPdfImportModal(res, fname) {
   const typeOpts = cur => Object.entries(TYPES)
     .map(([k, t]) => `<option value="${k}"${k === cur ? ' selected' : ''}>${escapeHtml(t.name)}</option>`).join('');
   const multi = (res.buildings || []).length > 1;
+  const scan = res.profileId === 'cvalrscan';
   const rows = res.floors.map((f, i) => {
     const exc = f.areas.excluded || 0;
     const stated = f.stated;
@@ -5959,7 +5989,7 @@ function openPdfImportModal(res, fname) {
     return `<tr>
       <td><input type="checkbox" id="pdfimp-on-${i}" checked></td>
       ${multi ? `<td>${escapeHtml(f.building || '—')}</td>` : ''}
-      <td>${escapeHtml(f.title)}<div class="help" style="margin:0;">page ${f.page}${kind ? ' · ' + kind : ''}${place ? ' · ' + place : ''}</div></td>
+      <td>${escapeHtml(f.title)}<div class="help" style="margin:0;">${scan ? `inside the walls ${Math.round(f.interior)} sf` : `page ${f.page}`}${kind ? ' · ' + kind : ''}${place ? ' · ' + place : ''}</div></td>
       <td><select id="pdfimp-floor-${i}">${floorOpts(f.floor)}</select></td>
       <td><select id="pdfimp-type-${i}">${typeOpts(f.type)}</select></td>
       <td style="text-align:right;">${Math.round(f.traced)} sf</td>
@@ -5975,7 +6005,7 @@ function openPdfImportModal(res, fname) {
     <h3>Import ${escapeHtml(res.format)} plan: ${escapeHtml(fname)}</h3>
     ${res.address ? `<div class="help" style="margin-bottom:6px;">${escapeHtml(res.address)}</div>` : ''}
     <div style="overflow-x:auto;"><table class="pdfimp-table" style="width:100%; border-collapse:collapse; font-size:13px;">
-      <thead><tr style="text-align:left; color:#555;"><th></th>${multi ? '<th>Building</th>' : ''}<th>Floor in PDF</th><th>Floor</th><th>Area type</th><th style="text-align:right;">Traced</th><th style="text-align:right;">${escapeHtml(res.format)} says</th><th>Check</th></tr></thead>
+      <thead><tr style="text-align:left; color:#555;"><th></th>${multi ? '<th>Building</th>' : ''}<th>Floor in ${scan ? 'scan' : 'PDF'}</th><th>Floor</th><th>Area type</th><th style="text-align:right;">Traced</th><th style="text-align:right;">${escapeHtml(res.format)} says</th><th>Check</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     ${res.floors.some(f => f.kind === 'floor' && f.floor === 'basement') && res.floors.some(f => f.kind === 'floor' && f.floor === 'main') ? `
@@ -5985,7 +6015,8 @@ function openPdfImportModal(res, fname) {
     <ul class="help" style="margin:10px 0 0; padding-left:18px;">
       ${excludedNote}
       ${placeNote}
-      <li>Decks, porches and patios are traced from the outline around their label; one without a closed outline is listed below to draw by hand.</li>
+      ${scan ? `<li>A scan measures the inside faces of the walls. Each side is pushed out by its wall's thickness: measured where the outside walk marked the siding beside it, otherwise ${escapeHtml(String(6))}″. Check at least one side against a tape measurement.</li>`
+        : `<li>Decks, porches and patios are traced from the outline around their label; one without a closed outline is listed below to draw by hand.</li>`}
       ${(res.warnings || []).map(w => `<li style="color:#c05621;">${escapeHtml(w)}</li>`).join('')}
     </ul>
     <div class="modal-buttons">
