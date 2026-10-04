@@ -11,6 +11,7 @@ struct PlanView: View {
     @ObservedObject var scan: ScanController
     @State private var story: Int?
     @State private var selected: PlanWall?
+    @State private var selectedGap: PlanGap?
     @State private var preview = ReadingPreview()
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
@@ -28,9 +29,15 @@ struct PlanView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
             }
-            Text("Pinch to zoom, drag to move. Tap a wall to enter a reading.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            if scan.measurements.isEmpty {
+                Text("Start with the longest outside wall, in purple: tap it and enter its laser reading.")
+                    .font(.footnote)
+                    .foregroundStyle(.purple)
+            } else {
+                Text("Pinch to zoom, drag to move. Tap a wall to enter a reading.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             GeometryReader { box in
                 let view = Viewport(geo: geo, story: shown, size: box.size, zoom: zoom * pinch,
                                     pan: CGSize(width: pan.width + drag.width, height: pan.height + drag.height))
@@ -48,11 +55,25 @@ struct PlanView: View {
                                     pan.height += v.translation.height
                                 }))
                     .simultaneousGesture(SpatialTapGesture().onEnded { tap in
-                        guard let wall = view.nearest(to: tap.location,
-                                                      in: geo.walls.filter { $0.story == shown }) else { return }
+                        let wall = view.nearest(to: tap.location, in: geo.walls.filter { $0.story == shown })
+                        // A gap wins when it's nearer than any wall.
+                        let gaps = geo.gaps.filter { $0.story == shown }
+                        if let gap = gaps.min(by: { view.distance(tap.location, $0.a, $0.b) < view.distance(tap.location, $1.a, $1.b) }),
+                           view.distance(tap.location, gap.a, gap.b) < 24,
+                           wall.map({ view.distance(tap.location, $0.a, $0.b) > view.distance(tap.location, gap.a, gap.b) }) ?? true {
+                            focus(on: gap.middle, geo: geo, story: shown, size: box.size)
+                            selectedGap = gap
+                            return
+                        }
+                        guard let wall else { return }
                         focus(on: wall, geo: geo, story: shown, size: box.size)
                         selected = wall
                     })
+                    .sheet(item: $selectedGap) { gap in
+                        GapSheet(gap: gap, geo: geo) { scan.setGapDepth($0, for: gap) }
+                            .presentationDetents([.fraction(0.55), .large])
+                            .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.55)))
+                    }
             }
             .clipped()
             legend
@@ -72,16 +93,26 @@ struct PlanView: View {
         }
     }
 
+    // Wraps onto a second line rather than squeezing words.
     private var legend: some View {
-        HStack(spacing: 12) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 6, alignment: .leading)],
+                  alignment: .leading, spacing: 4) {
             Label("outside wall", systemImage: "line.diagonal").foregroundStyle(.primary)
             Label("≈ interior", systemImage: "line.diagonal").foregroundStyle(.gray)
             Label("reading", systemImage: "checkmark").foregroundStyle(.green)
             if !scan.exteriorWalls.isEmpty {
                 Label("outside walk", systemImage: "line.diagonal").foregroundStyle(.orange)
             }
+            if !scan.planGeometry.openGaps.isEmpty {
+                Label("missing", systemImage: "line.diagonal").foregroundStyle(.red)
+            }
+            if !scan.planGeometry.hiddenLines.isEmpty {
+                Label("hidden", systemImage: "line.diagonal").foregroundStyle(.brown)
+            }
         }
         .font(.caption2)
+        .lineLimit(1)
+        .padding(.horizontal)
         .padding(.bottom, 4)
     }
 
@@ -96,9 +127,13 @@ struct PlanView: View {
     // Zooms in on the tapped wall and moves it into the top of the screen,
     // above the reading sheet.
     private func focus(on wall: PlanWall, geo: PlanGeometry, story: Int, size: CGSize) {
+        focus(on: CGPoint(x: (wall.a.x + wall.b.x) / 2, y: (wall.a.y + wall.b.y) / 2), geo: geo, story: story, size: size)
+    }
+
+    private func focus(on point: CGPoint, geo: PlanGeometry, story: Int, size: CGSize) {
         let newZoom = max(zoom, 2.5)
         let probe = Viewport(geo: geo, story: story, size: size, zoom: newZoom, pan: pan)
-        let mid = probe.map(CGPoint(x: (wall.a.x + wall.b.x) / 2, y: (wall.a.y + wall.b.y) / 2))
+        let mid = probe.map(point)
         withAnimation {
             zoom = newZoom
             pan.width += size.width / 2 - mid.x
@@ -112,6 +147,12 @@ struct PlanView: View {
         let measured = measuredIDs()
         let selectedID = selected?.id
         let preview = self.preview
+        // Until there is a reading, suggest the longest outside wall: the
+        // reading that checks the most of the plan.
+        let suggested = measurements.isEmpty
+            ? walls.filter(\.exterior).max { $0.length < $1.length }?.id : nil
+        // While a gap's sheet is open, the wall its laser depth starts from.
+        let reference = selectedGap.flatMap { geo.referenceWall(for: $0)?.wall.id }
         return Canvas { ctx, _ in
             for f in geo.floors where f.story == story {
                 var p = Path()
@@ -127,10 +168,12 @@ struct PlanView: View {
                 p.move(to: view.map(w.a))
                 p.addLine(to: view.map(w.b))
                 let colour: Color = preview.moving.contains(w.id) ? .orange
-                    : (preview.run.contains(w.id) || w.id == selectedID) ? .blue
+                    : (preview.run.contains(w.id) || w.id == selectedID || w.id == reference) ? .blue
                     : measured.contains(w.id) ? .green
+                    : w.id == suggested ? .purple
                     : (w.exterior ? .primary : .gray)
-                let width: CGFloat = preview.run.contains(w.id) || preview.moving.contains(w.id) || w.id == selectedID
+                let width: CGFloat = preview.run.contains(w.id) || preview.moving.contains(w.id)
+                    || w.id == selectedID || w.id == suggested
                     ? 6 : (w.exterior ? 4.5 : 2.5)
                 ctx.stroke(p, with: .color(colour), style: StrokeStyle(lineWidth: width, lineCap: .round))
             }
@@ -140,6 +183,23 @@ struct PlanView: View {
                 p.addLine(to: view.map(f.b))
                 let colour: Color = f.kind == .door ? .orange : (f.kind == .window ? .cyan : .gray)
                 ctx.stroke(p, with: .color(colour.opacity(0.85)), lineWidth: 5)
+            }
+            for gap in geo.gaps where gap.story == story {
+                var p = Path()
+                p.move(to: view.map(gap.a))
+                p.addLine(to: view.map(gap.b))
+                ctx.stroke(p, with: .color(gap.filled ? .gray.opacity(0.5) : .red),
+                           style: StrokeStyle(lineWidth: gap.filled ? 2 : 5, lineCap: .round, dash: [5, 4]))
+            }
+            for l in geo.hiddenLines where l.story == story {
+                var p = Path()
+                p.move(to: view.map(l.a))
+                p.addLine(to: view.map(l.b))
+                ctx.stroke(p, with: .color(.brown), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+            }
+            for w in geo.wallPoints where w.story == story {
+                let c = view.map(w.point)
+                ctx.fill(Path(ellipseIn: CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8)), with: .color(.brown))
             }
             for l in geo.exteriorLines {
                 var p = Path()
@@ -238,6 +298,15 @@ private struct Viewport {
         let q = CGPoint(x: (p.x - minX) * scale + ox, y: (p.y - minY) * scale + oy)
         return CGPoint(x: centre.x + (q.x - centre.x) * zoom + pan.width,
                        y: centre.y + (q.y - centre.y) * zoom + pan.height)
+    }
+
+    // Screen distance from a tap to a plan segment.
+    func distance(_ tap: CGPoint, _ pa: CGPoint, _ pb: CGPoint) -> CGFloat {
+        let a = map(pa), b = map(pb)
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len2 = max(dx * dx + dy * dy, 0.0001)
+        let t = min(max(((tap.x - a.x) * dx + (tap.y - a.y) * dy) / len2, 0), 1)
+        return hypot(tap.x - (a.x + t * dx), tap.y - (a.y + t * dy))
     }
 
     func nearest(to tap: CGPoint, in walls: [PlanWall]) -> PlanWall? {

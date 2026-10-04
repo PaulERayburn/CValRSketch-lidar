@@ -10,7 +10,7 @@ import simd
 enum PlanExport {
     struct Plan: Encodable {
         var format = "cvalrscan"
-        var version = 3
+        var version = 4
         var units = "m"
         let createdAt: String
         let walls: [Segment]
@@ -20,6 +20,9 @@ enum PlanExport {
         let floors: [Floor]
         let sections: [Section]
         let corners: [Corner]
+        let wallPoints: [WallPointOut]
+        let gaps: [Gap]
+        let gapDepths: [GapDepthOut]
         let measurements: [Measurement]
         let exterior: Exterior
     }
@@ -62,6 +65,20 @@ enum PlanExport {
         let elevation: Double     // world height where the corner was aimed
     }
 
+    // A point on a wall the scan missed, with the wall's horizontal facing.
+    struct WallPointOut: Encodable {
+        let point: [Double]
+        let elevation: Double
+        let normal: [Double]
+    }
+
+    // A laser depth square across a gap, from the face of scanned wall `from`.
+    struct GapDepthOut: Encodable {
+        let gap: [[Double]]
+        let from: String
+        let inches: Int
+    }
+
     // A face-to-face reading. `side` is +1 for the side the normal (−dy, dx)
     // of the wall's a→b points to, −1 for the other; `walls` is every scanned
     // segment the reading spans; `moving` the end walls that may shift to fit it.
@@ -77,21 +94,34 @@ enum PlanExport {
     }
 
     static func data(for s: CapturedStructure, corners: [SIMD3<Float>],
+                     wallPoints: [WallPoint], gapDepths: [GapDepth],
                      measurements: [UUID: WallMeasurement], exterior: [[SIMD3<Float>]],
                      anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
+        let walls = s.walls.map(segment), doors = s.doors.map(segment)
+        let windows = s.windows.map(segment), openings = s.openings.map(segment)
+        let floors = s.floors.map(floor)
         let plan = Plan(
             createdAt: ISO8601DateFormatter().string(from: Date()),
-            walls: s.walls.map(segment),
-            doors: s.doors.map(segment),
-            windows: s.windows.map(segment),
-            openings: s.openings.map(segment),
-            floors: s.floors.map(floor),
+            walls: walls,
+            doors: doors,
+            windows: windows,
+            openings: openings,
+            floors: floors,
             sections: s.sections.map {
                 Section(label: String(describing: $0.label), story: $0.story,
                         center: [r($0.center.x), r($0.center.z)])
             },
             corners: corners.map(corner),
+            wallPoints: wallPoints.map {
+                WallPointOut(point: [r($0.point.x), r($0.point.z)], elevation: r($0.point.y),
+                             normal: [r($0.normal.x), r($0.normal.z)])
+            },
+            gaps: gaps(floors: floors, segments: walls + doors + windows + openings),
+            gapDepths: gapDepths.map {
+                GapDepthOut(gap: [[$0.gapA.x, $0.gapA.y], [$0.gapB.x, $0.gapB.y]],
+                            from: $0.from.uuidString, inches: $0.inches)
+            },
             measurements: measurements
                 .sorted { $0.key.uuidString < $1.key.uuidString }
                 .map { id, m in

@@ -14,7 +14,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     @Published var message: String?
     @Published var exportURLs: [URL] = []
     @Published var torchOn = false
-    @Published var corners: [SIMD3<Float>] = []
+    @Published var corners: [SIMD3<Float>] = []        // older scans only; Mark wall replaced them
+    @Published private(set) var wallPoints: [WallPoint] = []
+    @Published private(set) var gapDepths: [GapDepth] = []
     @Published private(set) var structure: CapturedStructure?
     @Published private(set) var measurements: [UUID: WallMeasurement] = [:]
     @Published private(set) var savedScans: [String] = []   // timestamps, newest first
@@ -117,14 +119,40 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         }
     }
 
-    // Records the LiDAR point under the screen centre. Corners that a scan
-    // misses (dark closets, outside corners) are pinned this way and the
-    // importer snaps the outer walls to them.
-    @discardableResult
-    func markCorner() -> Bool {
-        guard let p = aimedPoint() else { return false }
-        corners.append(p)
-        return true
+    enum MarkResult { case marked(feet: Double), notWall, noSurface }
+
+    // Records the wall under the crosshair: where it is and which way it
+    // faces. Only upright surfaces count, so a stray tap at the floor or a
+    // shelf is refused rather than saved.
+    func markWallPoint() -> MarkResult {
+        guard let frame = arSession.currentFrame else { return .noSurface }
+        let query = frame.raycastQuery(from: CGPoint(x: 0.5, y: 0.5),
+                                       allowing: .estimatedPlane, alignment: .vertical)
+        guard let hit = arSession.raycast(query).first else {
+            return aimedPoint() == nil ? .noSurface : .notWall
+        }
+        // The hit's y axis is the surface normal; keep its level part.
+        let t = hit.worldTransform
+        let n = SIMD3(t.columns.1.x, 0, t.columns.1.z)
+        guard simd_length(n) > 0.7 else { return .notWall }
+        let p = SIMD3(t.columns.3.x, t.columns.3.y, t.columns.3.z)
+        wallPoints.append(WallPoint(point: p, normal: simd_normalize(n)))
+        writeFiles()
+        let cam = frame.camera.transform.columns.3
+        return .marked(feet: Double(simd_distance(p, SIMD3(cam.x, cam.y, cam.z))) * 3.28084)
+    }
+
+    func undoWallPoint() {
+        if !wallPoints.isEmpty { wallPoints.removeLast() }
+        writeFiles()
+    }
+
+    // Sets or clears the laser depth across a gap.
+    func setGapDepth(_ depth: GapDepth?, for gap: PlanGap) {
+        let middle = (gap.worldA + gap.worldB) / 2
+        gapDepths.removeAll { simd_distance($0.middle, middle) < 0.5 }
+        if let depth { gapDepths.append(depth) }
+        writeFiles()
     }
 
     // The surface point under the screen centre, from the LiDAR mesh.
@@ -158,6 +186,47 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
 
     func nextExteriorWall() {
         if let last = exteriorWalls.last, !last.isEmpty { exteriorWalls.append([]) }
+    }
+
+    // Where the current wall's points turn a corner, i.e. Next wall was
+    // missed: the indexes at which each further wall starts. Empty when
+    // the points lie within 6″ of one line.
+    var cornerSplits: [Int] {
+        guard let wall = exteriorWalls.last else { return [] }
+        return Self.splits(wall.map { SIMD2(Double($0.x), Double($0.z)) }, offset: 0)
+    }
+
+    // Splits where the two lines fit best overall (least total squared
+    // error, so a two-point stub is not favoured), then checks each part.
+    private static func splits(_ pts: [SIMD2<Double>], offset: Int) -> [Int] {
+        let tolerance = 6 / 39.37
+        guard pts.count >= 4, lineFit(pts).worst > tolerance else { return [] }
+        let cost = (2...(pts.count - 2)).map {
+            (k: $0, squares: lineFit(Array(pts[..<$0])).squares + lineFit(Array(pts[$0...])).squares)
+        }
+        let k = cost.min { $0.squares < $1.squares }!.k
+        return splits(Array(pts[..<k]), offset: offset) + [offset + k]
+            + splits(Array(pts[k...]), offset: offset + k)
+    }
+
+    // Distances of the points from their best-fit line: the largest, and the sum of squares.
+    private static func lineFit(_ pts: [SIMD2<Double>]) -> (worst: Double, squares: Double) {
+        let m = pts.reduce(SIMD2<Double>.zero, +) / Double(pts.count)
+        var sxx = 0.0, sxy = 0.0, syy = 0.0
+        for p in pts {
+            let q = p - m
+            sxx += q.x * q.x; sxy += q.x * q.y; syy += q.y * q.y
+        }
+        let angle = 0.5 * atan2(2 * sxy, sxx - syy)
+        let distances = pts.map { abs(-($0.x - m.x) * sin(angle) + ($0.y - m.y) * cos(angle)) }
+        return (distances.max() ?? 0, distances.reduce(0) { $0 + $1 * $1 })
+    }
+
+    func splitLastExteriorWall(at indexes: [Int]) {
+        guard let wall = exteriorWalls.popLast() else { return }
+        let bounds = [0] + indexes + [wall.count]
+        for (s, e) in zip(bounds, bounds.dropFirst()) { exteriorWalls.append(Array(wall[s..<e])) }
+        writeFiles()
     }
 
     func undoExteriorPoint() {
@@ -204,10 +273,6 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                           XY(x: mx + d.x * ts.max()!, y: my + d.y * ts.max()!)))
         }
         return lines
-    }
-
-    func undoCorner() {
-        if !corners.isEmpty { corners.removeLast() }
     }
 
     func export() async {
@@ -308,6 +373,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                 }
             }
         }
+        // New outside points start a new wall, not the last one walked before.
+        if exteriorWalls.last?.isEmpty == false { exteriorWalls.append([]) }
         anchorStart = nil
         anchorEnd = nil
         message = "Located. Scan more rooms or go outside, then Build floor plan."
@@ -330,7 +397,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             let dir = Self.docs
             let planURL = dir.appendingPathComponent("scan-\(stamp).cvalrscan.json")
             let rawURL = dir.appendingPathComponent("scan-\(stamp).capturedstructure.json")
-            try PlanExport.data(for: structure, corners: corners, measurements: measurements,
+            try PlanExport.data(for: structure, corners: corners, wallPoints: wallPoints, gapDepths: gapDepths,
+                                measurements: measurements,
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
@@ -362,6 +430,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     func newScan() {
         rooms = []
         corners = []
+        wallPoints = []
+        gapDepths = []
         measurements = [:]
         exteriorWalls = []
         anchorStart = nil
@@ -398,6 +468,15 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                     moving: (r.moving ?? []).compactMap(UUID.init(uuidString:)))
             }
             measurements = m
+            wallPoints = (saved?.wallPoints ?? []).map {
+                WallPoint(point: SIMD3(Float($0.point[0]), Float($0.elevation), Float($0.point[1])),
+                          normal: SIMD3(Float($0.normal[0]), 0, Float($0.normal[1])))
+            }
+            gapDepths = (saved?.gapDepths ?? []).compactMap { d in
+                guard d.gap.count == 2, let from = UUID(uuidString: d.from) else { return nil }
+                return GapDepth(gapA: SIMD2(d.gap[0][0], d.gap[0][1]), gapB: SIMD2(d.gap[1][0], d.gap[1][1]),
+                                from: from, inches: d.inches)
+            }
             func world(_ p: SavedPlan.Point) -> SIMD3<Float> {
                 SIMD3(Float(p.point[0]), Float(p.elevation), Float(p.point[1]))
             }
@@ -458,7 +537,11 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             let side: Int?; let room: String?; let walls: [String]?; let move: String?; let moving: [String]?
         }
         struct Exterior: Decodable { let walls: [[Point]]; let anchorStart: Point?; let anchorEnd: Point? }
+        struct WallPointIn: Decodable { let point: [Double]; let elevation: Double; let normal: [Double] }
+        struct GapDepthIn: Decodable { let gap: [[Double]]; let from: String; let inches: Int }
         let corners: [Point]?
+        let wallPoints: [WallPointIn]?
+        let gapDepths: [GapDepthIn]?
         let measurements: [Reading]?
         let exterior: Exterior?
     }

@@ -9,6 +9,9 @@ struct ExteriorView: View {
     @ObservedObject var scan: ScanController
     @Environment(\.dismiss) private var dismiss
     @State private var flash: String?
+    // A wall whose points turn a corner, waiting for the user to say
+    // whether to split it; then Next wall goes ahead if that was tapped.
+    @State private var corner: (splits: [Int], next: Bool)?
 
     private var pointCount: Int { scan.exteriorWalls.reduce(0) { $0 + $1.count } }
     private var wallCount: Int { scan.exteriorWalls.filter { !$0.isEmpty }.count }
@@ -16,6 +19,8 @@ struct ExteriorView: View {
     var body: some View {
         ZStack {
             SessionView(session: scan.arSession).ignoresSafeArea()
+            MarkedPointsOverlay(session: scan.arSession, points: scan.exteriorWalls.flatMap { $0 }, colour: .orange)
+                .ignoresSafeArea()
             Image(systemName: "plus")
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(.white)
@@ -36,6 +41,34 @@ struct ExteriorView: View {
             }
             .padding(.top)
         }
+        .alert("Wall \(wallCount) turns a corner",
+               isPresented: Binding(get: { corner != nil }, set: { if !$0 { corner = nil } }),
+               presenting: corner) { c in
+            Button("Split into \(c.splits.count + 1) walls") {
+                scan.splitLastExteriorWall(at: c.splits)
+                if c.next { nextWall() }
+            }
+            Button("Keep as one wall", role: .cancel) {
+                if c.next { nextWall() }
+            }
+        } message: { c in
+            Text("Its points fit \(c.splits.count + 1) walls better than one. Did you miss Next wall at a corner?")
+        }
+    }
+
+    // Before leaving a wall, check its points lie on one line.
+    private func checkCorner(next: Bool) {
+        let splits = scan.cornerSplits
+        if splits.isEmpty {
+            if next { nextWall() }
+        } else {
+            corner = (splits, next)
+        }
+    }
+
+    private func nextWall() {
+        scan.nextExteriorWall()
+        show("Wall \(wallCount + 1)")
     }
 
     private var instructions: String {
@@ -46,7 +79,7 @@ struct ExteriorView: View {
             return "Walk finished. Drift over the walk: \(driftText). Tap Done."
         }
         let current = scan.exteriorWalls.last?.count ?? 0
-        return "Walk out slowly. For each outside wall, mark 2 or more points on the siding, then tap Next wall. "
+        return "Walk out slowly. For each outside wall, mark 2 or more points on the siding, then tap Next wall at the corner. "
             + "Wall \(max(wallCount, 1)): \(current) point\(current == 1 ? "" : "s"). "
             + "Back inside, aim at the start spot and tap Check start spot."
     }
@@ -80,10 +113,7 @@ struct ExteriorView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
                     Spacer()
-                    Button("Next wall") {
-                        scan.nextExteriorWall()
-                        show("Wall \(wallCount + 1)")
-                    }
+                    Button("Next wall") { checkCorner(next: true) }
                     .buttonStyle(.bordered)
                     .disabled(scan.exteriorWalls.last?.isEmpty ?? true)
                 }
@@ -91,7 +121,9 @@ struct ExteriorView: View {
                     Button("Pause") { dismiss() }.buttonStyle(.bordered)
                     Spacer()
                     Button {
-                        feedback(scan.markAnchor(), ok: "Start spot checked", fail: "No surface under the crosshair")
+                        let ok = scan.markAnchor()
+                        feedback(ok, ok: "Start spot checked", fail: "No surface under the crosshair")
+                        if ok { checkCorner(next: false) }
                     } label: { Label("Check start spot", systemImage: "checkmark.circle") }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)

@@ -47,13 +47,47 @@ struct WallRun {
     var outside: Bool
 }
 
+// A floor edge with no wall along it (feet, as drawn), and what fills it.
+struct PlanGap: Identifiable {
+    let id: Int
+    let story: Int
+    let a: CGPoint
+    let b: CGPoint
+    let worldA: SIMD2<Double>
+    let worldB: SIMD2<Double>
+    var depth: GapDepth?
+    var filled = false
+
+    var length: CGFloat { hypot(b.x - a.x, b.y - a.y) }
+    var direction: CGVector { CGVector(dx: (b.x - a.x) / max(length, 0.001), dy: (b.y - a.y) / max(length, 0.001)) }
+    var middle: CGPoint { CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2) }
+}
+
+// A wall the scan missed, placed from a marked point or a laser depth.
+struct HiddenLine {
+    let story: Int
+    let a: CGPoint
+    let b: CGPoint
+}
+
 struct PlanGeometry {
     var walls: [PlanWall] = []
     var features: [PlanFeature] = []
     var floors: [(story: Int, points: [CGPoint])] = []
     var sections: [(story: Int, label: String, center: CGPoint)] = []
     var exteriorLines: [(a: CGPoint, b: CGPoint)] = []
+    var gaps: [PlanGap] = []
+    var hiddenLines: [HiddenLine] = []
+    var wallPoints: [(story: Int, point: CGPoint)] = []
+    var angle = 0.0                            // radians the world turns to sit square
     var stories: [Int] { Array(Set(walls.map(\.story))).sorted() }
+    var openGaps: [PlanGap] { gaps.filter { !$0.filled } }
+
+    // World metres (x, z) to plan feet, and back.
+    func plan(_ w: SIMD2<Double>) -> CGPoint {
+        let c = cos(angle), s = sin(angle), ft = 3.28084
+        return CGPoint(x: (w.x * c - w.y * s) * ft, y: (w.x * s + w.y * c) * ft)
+    }
 
     static let touch: CGFloat = 0.35          // feet: ends this close count as meeting
 
@@ -166,6 +200,43 @@ struct PlanGeometry {
         return p.y < o.y ? "top end" : "bottom end"
     }
 
+    // The scanned wall a laser depth across a gap starts from: parallel to
+    // the gap, facing it across the floor, nearest first, within 12 ft.
+    // `toward` points from that wall to the gap.
+    func referenceWall(for gap: PlanGap) -> (wall: PlanWall, toward: CGVector)? {
+        let d = gap.direction, m = gap.middle
+        var n = CGVector(dx: -d.dy, dy: d.dx)
+        let probe = CGPoint(x: m.x + n.dx * 0.5, y: m.y + n.dy * 0.5)
+        if !floors.contains(where: { $0.story == gap.story && ScanController.inside(probe, $0.points) }) {
+            n = CGVector(dx: -n.dx, dy: -n.dy)
+        }
+        var best: (wall: PlanWall, t: CGFloat)?
+        for w in walls where w.story == gap.story && abs(w.direction.dx * d.dx + w.direction.dy * d.dy) > 0.95 {
+            let t = (w.a.x - m.x) * n.dx + (w.a.y - m.y) * n.dy
+            guard t > 0.3, t < 12 else { continue }
+            let hit = CGPoint(x: m.x + n.dx * t, y: m.y + n.dy * t)
+            let along = (hit.x - w.a.x) * w.direction.dx + (hit.y - w.a.y) * w.direction.dy
+            guard along > -0.5, along < w.length + 0.5 else { continue }
+            if best == nil || t < best!.t { best = (w, t) }
+        }
+        return best.map { ($0.wall, CGVector(dx: -n.dx, dy: -n.dy)) }
+    }
+
+    // The hidden wall a laser depth puts across a gap: the reference wall's
+    // line moved toward the gap by half a partition (the reading starts at
+    // its face) plus the reading, spanning the gap.
+    func depthLine(_ gap: PlanGap, _ depth: GapDepth) -> HiddenLine? {
+        guard let ref = referenceWall(for: gap), ref.wall.id == depth.from else { return nil }
+        let w = ref.wall, n = w.normal
+        let offset = (Double(depth.inches) + Assume.partitionInches / 2) / 12
+        func place(_ p: CGPoint) -> CGPoint {
+            let onLine = (p.x - w.a.x) * n.dx + (p.y - w.a.y) * n.dy
+            return CGPoint(x: p.x - n.dx * onLine + ref.toward.dx * offset,
+                           y: p.y - n.dy * onLine + ref.toward.dy * offset)
+        }
+        return HiddenLine(story: gap.story, a: place(gap.a), b: place(gap.b))
+    }
+
     // Measured exterior wall thickness, when the outside walk has a line
     // parallel to this wall's outer side.
     func measuredThickness(_ w: PlanWall) -> Double? {
@@ -206,6 +277,7 @@ extension ScanController {
         }
 
         var g = PlanGeometry()
+        g.angle = th
         g.floors = structure.floors.map { f in (f.story, PlanExport.floor(f).polygon.map(rot)) }
         g.sections = structure.sections.map { s in
             (s.story, Self.roomName(String(describing: s.label)),
@@ -230,7 +302,56 @@ extension ScanController {
         g.exteriorLines = exteriorPlanLines.map { line in
             (rot([line.a.x, line.a.y]), rot([line.b.x, line.b.y]))
         }
+        addHiddenWalls(to: &g, structure: structure)
         return g
+    }
+
+    // Gaps in the floor outline, filled by laser depths and by points marked
+    // on hidden walls. A point's wall runs square to the house, along
+    // whichever main direction is nearer its facing.
+    private func addHiddenWalls(to g: inout PlanGeometry, structure: CapturedStructure) {
+        let segments = (structure.walls + structure.doors + structure.windows + structure.openings)
+            .map(PlanExport.segment)
+        let found = PlanExport.gaps(floors: structure.floors.map(PlanExport.floor), segments: segments)
+        g.gaps = found.enumerated().map { i, gap in
+            let a = SIMD2(gap.a[0], gap.a[1]), b = SIMD2(gap.b[0], gap.b[1])
+            let depth = gapDepths.first { simd_distance($0.middle, (a + b) / 2) < 0.5 }
+            return PlanGap(id: i, story: gap.story, a: g.plan(a), b: g.plan(b), worldA: a, worldB: b, depth: depth)
+        }
+        for i in g.gaps.indices {
+            if let d = g.gaps[i].depth, let line = g.depthLine(g.gaps[i], d) {
+                g.hiddenLines.append(line)
+                g.gaps[i].filled = true
+            }
+        }
+        let floorLevels = structure.floors.map { ($0.story, $0.transform.columns.3.y) }
+        for wp in wallPoints {
+            let story = floorLevels.filter { $0.1 <= wp.point.y + 0.3 }.max { $0.1 < $1.1 }?.0
+                ?? floorLevels.first?.0 ?? 0
+            let p = g.plan(SIMD2(Double(wp.point.x), Double(wp.point.z)))
+            let o = g.plan(.zero), f = g.plan(SIMD2(Double(wp.normal.x), Double(wp.normal.z)))
+            let facing = CGVector(dx: f.x - o.x, dy: f.y - o.y)
+            let dir = abs(facing.dx) > abs(facing.dy) ? CGVector(dx: 0, dy: 1) : CGVector(dx: 1, dy: 0)
+            g.wallPoints.append((story, p))
+            func along(_ q: CGPoint) -> CGFloat { (q.x - p.x) * dir.dx + (q.y - p.y) * dir.dy }
+            func across(_ q: CGPoint) -> CGFloat { (q.x - p.x) * dir.dy - (q.y - p.y) * dir.dx }
+            // The nearest parallel gap within 3 ft is the one this point fills.
+            let match = g.gaps.indices.filter { i in
+                let gap = g.gaps[i]
+                let lo = min(along(gap.a), along(gap.b)), hi = max(along(gap.a), along(gap.b))
+                return gap.story == story && abs(gap.direction.dx * dir.dx + gap.direction.dy * dir.dy) > 0.9
+                    && abs(across(gap.middle)) < 3 && lo < 1 && hi > -1
+            }.min { abs(across(g.gaps[$0].middle)) < abs(across(g.gaps[$1].middle)) }
+            var lo: CGFloat = -1.5, hi: CGFloat = 1.5
+            if let i = match {
+                lo = min(along(g.gaps[i].a), along(g.gaps[i].b), 0) - 0.5
+                hi = max(along(g.gaps[i].a), along(g.gaps[i].b), 0) + 0.5
+                g.gaps[i].filled = true
+            }
+            g.hiddenLines.append(HiddenLine(story: story,
+                                            a: CGPoint(x: p.x + dir.dx * lo, y: p.y + dir.dy * lo),
+                                            b: CGPoint(x: p.x + dir.dx * hi, y: p.y + dir.dy * hi)))
+        }
     }
 
     // The side with floor is the side that was scanned. With floor on both
@@ -262,7 +383,7 @@ extension ScanController {
         return (nearest(p1) <= nearest(p2) ? 1 : -1, !in1 && !in2, rooms)
     }
 
-    private static func inside(_ p: CGPoint, _ poly: [CGPoint]) -> Bool {
+    nonisolated static func inside(_ p: CGPoint, _ poly: [CGPoint]) -> Bool {
         var result = false
         var j = poly.count - 1
         for i in poly.indices {

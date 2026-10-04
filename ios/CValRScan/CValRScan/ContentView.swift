@@ -7,6 +7,21 @@ struct ContentView: View {
     @StateObject private var scan = ScanController()
     @State private var picking = false
     @State private var resuming = false
+    @State private var measuring = false
+    @State private var askReading = false
+
+    // After Build floor plan: what still needs doing before leaving the site.
+    private var buildAdvice: String {
+        var lines: [String] = []
+        if scan.measurements.isEmpty {
+            lines.append("Laser the longest outside wall from inside, face to face, and enter it. Without one, nothing checks the scan's size.")
+        }
+        let gaps = scan.planGeometry.openGaps.count
+        if gaps > 0 {
+            lines.append("\(gaps == 1 ? "1 wall" : "\(gaps) walls") the scan couldn't see, often a closet back, \(gaps == 1 ? "is" : "are") shown in red. Fix them while you're here.")
+        }
+        return lines.joined(separator: "\n\n")
+    }
 
     var body: some View {
         NavigationStack {
@@ -37,6 +52,10 @@ struct ContentView: View {
                         Text("\(count(scan.corners.count, "corner")) marked")
                             .foregroundStyle(.secondary)
                     }
+                    if !scan.wallPoints.isEmpty {
+                        Text("\(count(scan.wallPoints.count, "hidden-wall point")) marked")
+                            .foregroundStyle(.secondary)
+                    }
                     let outsideWalls = scan.exteriorWalls.filter { $0.count >= 2 }.count
                     if outsideWalls > 0 {
                         Text("Outside: \(count(outsideWalls, "wall")) marked" + (scan.anchorEnd != nil ? ", loop closed" : ""))
@@ -53,17 +72,34 @@ struct ContentView: View {
                     Button("Go outside", systemImage: "house") { scan.isOutside = true }
                         .disabled(scan.rooms.isEmpty || scan.isBusy || scan.loadedFromFile || scan.anchorEnd != nil)
                     Button("Build floor plan", systemImage: "square.split.bottomrightquarter") {
-                        Task { await scan.export() }
+                        Task {
+                            await scan.export()
+                            // The importer needs a tape reading to check the scan against.
+                            if scan.structure != nil && (scan.measurements.isEmpty || !scan.planGeometry.openGaps.isEmpty) {
+                                askReading = true
+                            }
+                        }
                     }
                     .disabled(scan.rooms.isEmpty || scan.isBusy)
                     if scan.structure != nil {
-                        NavigationLink {
-                            PlanView(scan: scan)
+                        Button {
+                            measuring = true
                         } label: {
                             Label(scan.measurements.isEmpty
                                   ? "Measure walls"
                                   : "Measure walls (\(scan.measurements.count) entered)",
                                   systemImage: "ruler")
+                        }
+                        if scan.measurements.isEmpty {
+                            Text("No laser reading yet. Enter at least one so the plan can be checked.")
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                        }
+                        let gaps = scan.planGeometry.openGaps.count
+                        if gaps > 0 {
+                            Text("\(gaps == 1 ? "1 wall is" : "\(gaps) walls are") missing, shown in red on Measure walls. Tap one to see how to fill it.")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
                         }
                     }
                     if !scan.exportURLs.isEmpty {
@@ -104,6 +140,15 @@ struct ContentView: View {
             .fileImporter(isPresented: $picking, allowedContentTypes: [.json]) { result in
                 if case .success(let url) = result { scan.importScan(from: url) }
             }
+            .navigationDestination(isPresented: $measuring) {
+                PlanView(scan: scan)
+            }
+            .alert(scan.measurements.isEmpty ? "Enter a laser reading" : "Walls missing", isPresented: $askReading) {
+                Button("Measure now") { measuring = true }
+                Button("Later", role: .cancel) {}
+            } message: {
+                Text(buildAdvice)
+            }
             .fullScreenCover(isPresented: $scan.isOutside) {
                 ExteriorView(scan: scan)
             }
@@ -125,7 +170,9 @@ struct ScanningView: View {
     var body: some View {
         ZStack {
             CaptureViewContainer(view: scan.captureView).ignoresSafeArea()
-            // Crosshair for Mark corner: the LiDAR point under it is recorded.
+            MarkedPointsOverlay(session: scan.arSession, points: scan.wallPoints.map(\.point), colour: .brown)
+                .ignoresSafeArea()
+            // Crosshair for Mark wall: the wall under it is recorded.
             Image(systemName: "plus")
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(.white)
@@ -151,36 +198,58 @@ struct ScanningView: View {
                         .background(.thinMaterial, in: Capsule())
                 }
                 Spacer()
+                Text("Wall hidden by coats or shelves? Aim at any bare spot on it and tap Mark wall. One point per hidden wall.")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .padding(8)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal)
                 HStack {
                     Button("Cancel", role: .cancel) { scan.cancelRoom() }
                         .buttonStyle(.bordered)
                     Spacer()
                     Button {
-                        let ok = scan.markCorner()
-                        UINotificationFeedbackGenerator().notificationOccurred(ok ? .success : .error)
-                        show(ok ? "Corner \(scan.corners.count) marked" : "No surface under the crosshair")
+                        switch scan.markWallPoint() {
+                        case .marked(let feet):
+                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            show(String(format: "Wall point %d marked, %.1f ft away", scan.wallPoints.count, feet), seconds: 3)
+                        case .notWall:
+                            UINotificationFeedbackGenerator().notificationOccurred(.error)
+                            show("That's not a wall. Aim at the wall itself, not the floor, ceiling or a shelf.", seconds: 3)
+                        case .noSurface:
+                            UINotificationFeedbackGenerator().notificationOccurred(.error)
+                            show("Nothing under the crosshair. Move closer.", seconds: 3)
+                        }
                     } label: {
-                        Label("Mark corner", systemImage: "scope")
+                        Label(scan.wallPoints.isEmpty ? "Mark wall" : "Mark wall (\(scan.wallPoints.count))",
+                              systemImage: "scope")
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.orange)
-                    .contextMenu {
-                        Button("Undo last corner", role: .destructive) { scan.undoCorner() }
-                    }
+                    .tint(.brown)
                     Spacer()
                     Button(scan.isBusy ? "Processing…" : "Done with room") { scan.finishRoom() }
                         .buttonStyle(.borderedProminent)
                         .disabled(scan.isBusy)
                 }
-                .padding()
+                .padding(.horizontal)
+                .padding(.top, 4)
+                if !scan.wallPoints.isEmpty {
+                    Button("Undo last wall point", systemImage: "arrow.uturn.backward") {
+                        scan.undoWallPoint()
+                        show("Wall point removed")
+                    }
+                    .font(.footnote)
+                    .buttonStyle(.bordered)
+                }
+                Color.clear.frame(height: 8)
             }
         }
     }
 
-    private func show(_ text: String) {
+    private func show(_ text: String, seconds: Double = 1.5) {
         flash = text
         Task {
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(for: .seconds(seconds))
             if flash == text { flash = nil }
         }
     }
