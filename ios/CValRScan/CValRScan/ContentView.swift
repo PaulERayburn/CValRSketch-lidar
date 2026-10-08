@@ -112,7 +112,7 @@ struct ContentView: View {
                     Text(message).foregroundStyle(.secondary)
                 }
                 if !scan.savedScans.isEmpty {
-                    Section("Saved scans") {
+                    Section {
                         ForEach(scan.savedScans, id: \.self) { stamp in
                             Button {
                                 scan.load(stamp: stamp)
@@ -124,7 +124,14 @@ struct ContentView: View {
                         .onDelete { offsets in
                             for i in offsets { scan.deleteSaved(scan.savedScans[i]) }
                         }
+                    } header: {
+                        Text("Saved scans")
                     }
+                }
+                Section {
+                } footer: {
+                    Text("CValRScan \(ScanController.appVersion) · scan format \(PlanExport.Plan.formatVersion)")
+                        .frame(maxWidth: .infinity)
                 }
             }
             .navigationTitle("CValRScan")

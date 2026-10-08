@@ -38,6 +38,14 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
 
     static var isSupported: Bool { RoomCaptureSession.isSupported }
 
+    // "0.6.0 (1)": the app version shown on the home screen and written into each scan.
+    nonisolated static var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let v = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(v) (\(b))"
+    }
+
     // Our own AR session, so a saved world map can be loaded into it.
     let arSession = ARSession()
     let captureView: RoomCaptureView

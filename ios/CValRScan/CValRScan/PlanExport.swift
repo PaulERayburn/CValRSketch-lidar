@@ -9,8 +9,10 @@ import simd
 // meter readings, which are whole inches as entered (ANSI Z765 precision).
 enum PlanExport {
     struct Plan: Encodable {
+        static let formatVersion = 5
         var format = "cvalrscan"
-        var version = 5
+        var version = formatVersion
+        var app = "CValRScan " + ScanController.appVersion
         var units = "m"
         let createdAt: String
         let walls: [Segment]

@@ -31,6 +31,7 @@ export function readCvalrScan(d, opts = {}) {
   const turn = houseAngle(d.walls || []);
   const plan = ([x, y]) => rotate({ x: x * FT, y: y * FT }, turn);
   const warnings = [];
+  if (d.app) warnings.push(`Scanned with ${d.app}, scan format ${d.version}.`);
 
   const walk = outsideWalk(d.exterior, plan);
   if (walk.split) warnings.push(`${walk.split} outside-walk wall${walk.split > 1 ? 's' : ''} turned a corner without Next wall; split at the corner.`);
