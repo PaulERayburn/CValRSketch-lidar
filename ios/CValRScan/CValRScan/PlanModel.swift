@@ -96,12 +96,30 @@ struct PlanGeometry {
         return SIMD2(x * c + y * s, -x * s + y * c)
     }
 
-    // Where scanned walls end: the corners a reading can run between.
+    // The corners a reading can run between: where scanned walls end, and where
+    // two walls cross or meet partway along. RoomPlan often runs a wall past the
+    // corner it turns at, so the real corner is only where the two lines cross.
     func corners(story: Int) -> [CGPoint] {
         var out: [CGPoint] = []
-        for w in walls where w.story == story {
-            for p in [w.a, w.b] where !out.contains(where: { hypot($0.x - p.x, $0.y - p.y) < 0.3 }) {
-                out.append(p)
+        func add(_ p: CGPoint) {
+            if !out.contains(where: { hypot($0.x - p.x, $0.y - p.y) < 0.3 }) { out.append(p) }
+        }
+        let ws = walls.filter { $0.story == story }
+        for w in ws { add(w.a); add(w.b) }
+        for i in ws.indices {
+            for j in ws.indices where j > i {
+                let p = ws[i], q = ws[j]
+                let d1 = CGVector(dx: p.b.x - p.a.x, dy: p.b.y - p.a.y)
+                let d2 = CGVector(dx: q.b.x - q.a.x, dy: q.b.y - q.a.y)
+                let den = d1.dx * d2.dy - d1.dy * d2.dx
+                // Nearly parallel walls don't make a corner.
+                guard abs(den) > 0.2 * p.length * q.length else { continue }
+                let t = ((q.a.x - p.a.x) * d2.dy - (q.a.y - p.a.y) * d2.dx) / den
+                let u = ((q.a.x - p.a.x) * d1.dy - (q.a.y - p.a.y) * d1.dx) / den
+                // On both walls, allowing a few inches past either end.
+                let st = 0.3 / max(p.length, 0.01), su = 0.3 / max(q.length, 0.01)
+                guard t > -st, t < 1 + st, u > -su, u < 1 + su else { continue }
+                add(CGPoint(x: p.a.x + d1.dx * t, y: p.a.y + d1.dy * t))
             }
         }
         return out
@@ -111,11 +129,28 @@ struct PlanGeometry {
     // drawn square), the way a laser is run along a wall.
     static func along(_ a: CGPoint, _ b: CGPoint) -> CGFloat { max(abs(b.x - a.x), abs(b.y - a.y)) }
 
-    // What a reading between two scanned (inside) corners should be: inside,
-    // face to face; outside, siding corner to siding corner, one wall
-    // thickness further at each end.
-    static func spanEstimate(_ a: CGPoint, _ b: CGPoint, outside: Bool) -> Int {
-        Int((Double(along(a, b)) * 12 + (outside ? 2 * Assume.exteriorInches : 0)).rounded())
+    // What a reading between two scanned (inside) corners should be. Inside,
+    // face to face. Outside, siding corner to siding corner: one wall thickness
+    // further at an outside corner, where the house ends; nothing extra at an
+    // inside corner, where the house carries on past it (the step in an L), as
+    // the siding there is set in by the same thickness as the wall it meets.
+    func spanEstimate(_ a: CGPoint, _ b: CGPoint, story: Int, outside: Bool) -> Int {
+        var inches = Double(Self.along(a, b)) * 12
+        guard outside else { return Int(inches.rounded()) }
+        let polys = floors.filter { $0.story == story }.map(\.points)
+        func inside(_ p: CGPoint) -> Bool { polys.contains { ScanController.inside(p, $0) } }
+        let horizontal = abs(b.x - a.x) >= abs(b.y - a.y)
+        // Which side of the measured line the house is on.
+        let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+        let n: CGVector = horizontal ? CGVector(dx: 0, dy: 1) : CGVector(dx: 1, dy: 0)
+        let sign: CGFloat = inside(CGPoint(x: mid.x + n.dx * 0.75, y: mid.y + n.dy * 0.75)) ? 1 : -1
+        for (end, other) in [(a, b), (b, a)] {
+            let ux: CGFloat = horizontal ? (end.x > other.x ? 1 : -1) : 0
+            let uy: CGFloat = horizontal ? 0 : (end.y > other.y ? 1 : -1)
+            let past = CGPoint(x: end.x + ux * 0.75 + n.dx * sign * 0.75, y: end.y + uy * 0.75 + n.dy * sign * 0.75)
+            inches += inside(past) ? 0 : Assume.exteriorInches
+        }
+        return Int(inches.rounded())
     }
 
     static let touch: CGFloat = 0.35          // feet: ends this close count as meeting

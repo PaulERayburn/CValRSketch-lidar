@@ -99,7 +99,7 @@ struct PlanView: View {
                         selected = wall
                     })
                     .sheet(item: $spanDraft) { draft in
-                        SpanSheet(draft: draft) { reading in
+                        SpanSheet(draft: draft, geo: geo) { reading in
                             scan.setSpan(reading.map {
                                 var r = $0
                                 r.a = geo.world(draft.a); r.b = geo.world(draft.b)
@@ -556,13 +556,14 @@ struct SpanDraft: Identifiable {
 // long wall is lasered in pieces.
 struct SpanSheet: View {
     let draft: SpanDraft
+    let geo: PlanGeometry
     let onSave: (SpanReading?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
     @State private var face = WallMeasurement.Face.outside
 
     var body: some View {
-        let estimate = PlanGeometry.spanEstimate(draft.a, draft.b, outside: face == .outside)
+        let estimate = geo.spanEstimate(draft.a, draft.b, story: draft.story, outside: face == .outside)
         let reading = LengthParser.reading(from: text)
         NavigationStack {
             Form {
@@ -577,7 +578,7 @@ struct SpanSheet: View {
                     Text("Between the two blue corners")
                 } footer: {
                     Text(face == .outside
-                         ? "Outside: siding corner to siding corner, along the wall. The estimate adds a \(Int(Assume.exteriorInches))″ wall at each end."
+                         ? "Outside: siding corner to siding corner, along the wall. The estimate adds a \(Int(Assume.exteriorInches))″ wall at each outside corner; an inside corner (the step in an L) adds nothing."
                          : "Inside: face to face, along the wall.")
                 }
                 Section {
