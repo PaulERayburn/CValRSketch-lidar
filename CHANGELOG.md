@@ -14,6 +14,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [0.44.3] — 2026-10-08
+
+### Fixed
+- **Phone: your sketch is kept as you draw.** The phone page now autosaves the working sketch, an open walk included, after every change and when the app goes to the background, and restores it on start-up ("Restored your last sketch"). Before, only Save kept anything, so a reload or an update lost unsaved work. Desktop already did this.
+- **"Version X is ready" instead of a silently old copy.** On a slow connection the app falls back to its cached page after a few seconds; when the newer page then finishes downloading, both pages now offer **Reload**, and the sketch is kept.
+
+---
+
 ## [0.44.2] — 2026-10-04
 
 ### Added

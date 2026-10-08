@@ -1,11 +1,11 @@
 // CValRSketch service worker — offline-first cache of the single-file app.
 // Bumping CACHE_NAME forces a fresh fetch + cache rebuild on next install.
-const CACHE_NAME = 'cvalrsketch-v0.44.2';
+const CACHE_NAME = 'cvalrsketch-v0.44.3';
 const CORE_ASSETS = [
   './',
   './index.html',
-  './core.js?v=0.44.2',
-  './dictation.js?v=0.44.2',
+  './core.js?v=0.44.3',
+  './dictation.js?v=0.44.3',
   './manifest.webmanifest',
   './icon.svg',
   './icon-192.png',
@@ -49,8 +49,20 @@ function isPage(request) {
   return request.mode === 'navigate' || request.destination === 'document';
 }
 
-function networkFirstPage(request) {
+// When the cached page had to be shown and the fresh one arrives afterwards,
+// tell the open pages which version is now ready, so they can offer a reload.
+function announcePage(resp) {
+  return resp.text().then((html) => {
+    const m = html.match(/const APP_VERSION = '([\d.]+)'/) || html.match(/id="app-version">v([\d.]+)</);
+    if (!m) return;
+    return self.clients.matchAll({ type: 'window' })
+      .then((all) => all.forEach((c) => c.postMessage({ type: 'page-update', version: m[1] })));
+  }).catch(() => {});
+}
+
+function networkFirstPage(request, event) {
   const cache = caches.open(CACHE_NAME);
+  let servedCached = false;
   // A navigate-mode Request can't be re-issued with options, so fetch by URL;
   // no-cache makes the browser revalidate instead of reusing its own HTTP copy.
   const network = fetch(request.url, { cache: 'no-cache', credentials: 'same-origin' })
@@ -58,14 +70,21 @@ function networkFirstPage(request) {
       if (resp && resp.ok) {
         const clone = resp.clone();
         cache.then((c) => c.put(request, clone));
+        if (servedCached) return announcePage(resp.clone()).then(() => resp);
       }
       return resp;
     });
+  // Keep the worker alive until the fresh page is in, even after the cached one went out.
+  event.waitUntil(network.catch(() => null));
   const timeout = new Promise((resolve) => setTimeout(resolve, PAGE_TIMEOUT_MS));
   const shell = new URL(request.url).pathname.includes('/m/') ? './m/index.html' : './index.html';
   const fromCache = () => caches.match(request, { ignoreSearch: true }).then((hit) => hit || caches.match(shell));
   return Promise.race([network.catch(() => null), timeout])
-    .then((resp) => resp || fromCache().then((hit) => hit || network));
+    .then((resp) => {
+      if (resp) return resp;
+      servedCached = true;   // a fresh page that lands now is announced; pages ignore their own version
+      return fromCache().then((hit) => hit || network);
+    });
 }
 
 self.addEventListener('fetch', (event) => {
@@ -73,7 +92,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== location.origin) return;
   if (isPage(event.request)) {
-    event.respondWith(networkFirstPage(event.request));
+    event.respondWith(networkFirstPage(event.request, event));
     return;
   }
   event.respondWith(

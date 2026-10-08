@@ -25,8 +25,8 @@
 <link rel="icon" type="image/svg+xml" href="icon.svg">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>CValR-Sketch</title>
-<script src="core.js?v=0.44.2"></script>
-<script src="dictation.js?v=0.44.2"></script>
+<script src="core.js?v=0.44.3"></script>
+<script src="dictation.js?v=0.44.3"></script>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, Segoe UI, Arial, sans-serif; background: #f0f0f0; color: #222; }
@@ -237,7 +237,7 @@
 <body>
 <header>
   <h1>CValR-Sketch</h1>
-  <span class="version-chip" id="app-version">v0.44.2</span>
+  <span class="version-chip" id="app-version">v0.44.3</span>
   <button onclick="openAbout()" title="About CValR-Sketch — licence, source, OSASI">ⓘ About</button>
   <button onclick="openWhatsNew()" title="What changed in recent releases">✨ What's new</button>
   <button onclick="openHelp()" title="Help for the tool you are using (F1 or ?) — follows you as you switch modes">❓ Help</button>
@@ -4600,6 +4600,7 @@ function exportFilename(ext) {
 // included, and exports PNG/SVG from there. Page size is chosen here at export time.
 // Short, hand-kept list of recent releases (newest first). CHANGELOG.md has the detail.
 const WHATS_NEW = [
+  ['0.44.3', '2026-10-08', 'The phone now keeps your sketch as you draw, open walk included, and brings it back after a reload or an update. When a newer version arrives while an older copy is showing (a slow connection), both pages offer to reload, and your sketch is kept.'],
   ['0.44.2', '2026-10-04', 'On the phone, tap the green start of an open walk to carry on from there, the other way round, when you can\'t walk back to the start. Tap it again to switch back.'],
   ['0.44.1', '2026-10-02', 'Dragging a corner now uses a crosshair pointer instead of the four-way arrow, so you can see exactly where it lands, and over a traced image the magnifier follows the corner while you drag.'],
   ['0.44.0', '2026-10-02', 'Drag corners with the mouse in Edit: a corner follows the pointer, snapping to other corners and to the inch, and a corner shared with another area moves in both. Hold Ctrl while dragging to square it up with its neighbours, so walls that are nearly plumb or level become exactly plumb or level.'],
@@ -6239,7 +6240,29 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW registration failed:', err));
   });
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const d = e.data || {};
+    const mine = (document.getElementById('app-version').textContent || '').replace(/^v/, '');
+    if (d.type === 'page-update' && d.version && d.version !== mine) showUpdateBanner(d.version);
+  });
 }
+
+// A newer release reached this device while an older copy was showing (a slow
+// connection makes the service worker fall back to the cached page): the
+// service worker says so once the new page has downloaded, and we offer it.
+function showUpdateBanner(version) {
+  if (document.getElementById('update-banner')) return;
+  const b = document.createElement('div');
+  b.id = 'update-banner';
+  b.style.cssText = 'position:fixed;left:8px;right:8px;top:8px;z-index:10000;background:#2b6cb0;color:#fff;padding:10px 12px;border-radius:10px;display:flex;gap:10px;align-items:center;font:14px system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35)';
+  b.innerHTML = `<span style="flex:1">Version ${escapeHtml(version)} is ready. Your sketch is kept.</span>`
+    + '<button id="update-reload" style="background:#fff;color:#2b6cb0;border:0;border-radius:8px;padding:6px 12px;font-weight:600">Reload</button>'
+    + '<button id="update-dismiss" aria-label="Not now" style="background:none;border:0;color:#fff;font-size:18px">✕</button>';
+  document.body.appendChild(b);
+  document.getElementById('update-reload').onclick = () => { writeAutosave(); location.reload(); };
+  document.getElementById('update-dismiss').onclick = () => b.remove();
+}
+
 </script>
 </body>
 </html>

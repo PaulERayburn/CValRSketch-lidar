@@ -6,7 +6,7 @@
 
 ![CValRSketch desktop app with the sample house open: main floor, garage, deck and porch, with wall lengths, areas and the basement panel](docs/screenshot.webp)
 
-**Version:** 0.44.2 (2026-10-04) · **License:** [AGPL-3.0](./LICENSE) · **Part of:** [OSASI — the Open Source Appraisal Software Initiative](https://osasi.org)
+**Version:** 0.44.3 (2026-10-08) · **License:** [AGPL-3.0](./LICENSE) · **Part of:** [OSASI — the Open Source Appraisal Software Initiative](https://osasi.org)
 
 Want a new feature? [Request it](https://github.com/CAA-EBV-CO-OP/CValRSketch/issues), or build it yourself — see [CONTRIBUTING.md](./CONTRIBUTING.md).
 

@@ -1,7 +1,7 @@
 # Version
 
-**Current version:** `0.44.2`
-**Released:** 2026-10-04
+**Current version:** `0.44.3`
+**Released:** 2026-10-08
 
 CValRSketch follows [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`).
 While the project is below 1.0, the public "API" (segment syntax, JSON save format) may still change between minor versions; breaking changes will be called out in [CHANGELOG.md](./CHANGELOG.md).
@@ -12,6 +12,7 @@ While the project is below 1.0, the public "API" (segment syntax, JSON save form
 
 | Version | Date       | Type   | Headline change                                                            |
 |---------|------------|--------|----------------------------------------------------------------------------|
+| 0.44.3  | 2026-10-08 | patch  | Phone autosave (open walk included, restored on start-up); "new version ready" offer on both pages. |
 | 0.44.2  | 2026-10-04 | patch  | Phone: tap the walk's start to continue from it the other way round. |
 | 0.44.1  | 2026-10-02 | patch  | Crosshair pointer for corner dragging; the magnifier follows the corner over a traced image. |
 | 0.44.0  | 2026-10-02 | minor  | **Drag corners** in Edit (snap to corners and the inch; shared corners move in both areas); **Ctrl** squares the corner up with its neighbours. |

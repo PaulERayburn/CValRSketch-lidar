@@ -14,8 +14,8 @@
 <link rel="icon" type="image/svg+xml" href="../icon.svg">
 <link rel="apple-touch-icon" href="../icon-192.png">
 <title>CValRSketch — Mobile</title>
-<script src="../core.js?v=0.44.2"></script>
-<script src="../dictation.js?v=0.44.2"></script>
+<script src="../core.js?v=0.44.3"></script>
+<script src="../dictation.js?v=0.44.3"></script>
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; margin: 0; overflow: hidden; }
@@ -450,7 +450,7 @@
 // Uses ../core.js for parsing, geometry, and shape-edit ops.
 // =============================================================================
 
-const APP_VERSION = '0.44.2'; // bump on every mobile release; surfaced in header + drawer
+const APP_VERSION = '0.44.3'; // bump on every mobile release; surfaced in header + drawer
 const $ = (id) => document.getElementById(id);
 const svg = $('canvas');
 
@@ -535,6 +535,32 @@ function restoreState(snap) {
   state.annotations = d.annotations || [];
   state.selection = null;
 }
+// ----- Session autosave (localStorage) -----
+// Keeps the working sketch, an open walk included, so a reload, an update or
+// iOS dropping the tab never loses it. Restored silently at start-up, as on the
+// desktop page; under its own key so the two pages don't overwrite each other.
+const AUTOSAVE_KEY = 'cvalrsketch:mobileAutosave';
+let _autosaveTimer = null;
+function writeAutosave() {
+  try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ at: Date.now(), snap: snapshotState(), subject: state.subject || '' })); }
+  catch (e) { /* quota / private mode — non-fatal */ }
+}
+function scheduleAutosave() {
+  if (_autosaveTimer) return;            // coalesce bursts of renders into one write
+  _autosaveTimer = setTimeout(() => { _autosaveTimer = null; writeAutosave(); }, 800);
+}
+// True when something was brought back, so start-up can say so.
+function autoRestoreSession() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || 'null'); } catch (e) { return false; }
+  if (!saved || !saved.snap) return false;
+  try {
+    restoreState(saved.snap);
+    if (typeof saved.subject === 'string') state.subject = saved.subject;
+    return !!(state.shapes.length || state.segments.length);
+  } catch (e) { return false; }
+}
+
 // Counts edits, undo and redo included — see the desktop note; used to key the
 // "shape is closed" offer.
 let editTick = 0;
@@ -679,6 +705,7 @@ function render() {
   renderStatus();
   renderCloseOffer();
   renderStartPanel();
+  scheduleAutosave();
 }
 
 function renderShape(sh, W, isGhost) {
@@ -2704,6 +2731,7 @@ document.querySelectorAll('#controls .fence-panel [data-fsnap]').forEach(btn => 
 
 // Force-reload that bypasses all caches (HTTP cache + any active service worker)
 async function forceReload() {
+  writeAutosave();
   try {
     if ('serviceWorker' in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
@@ -2803,16 +2831,43 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('../sw.js', { scope: '../' }).catch(() => {});
   });
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.type === 'page-update' && d.version && d.version !== APP_VERSION) showUpdateBanner(d.version);
+  });
 }
+
+// A newer release reached this device while an older copy was showing (a slow
+// connection makes the service worker fall back to the cached page): the
+// service worker says so once the new page has downloaded, and we offer it.
+function showUpdateBanner(version) {
+  if (document.getElementById('update-banner')) return;
+  const b = document.createElement('div');
+  b.id = 'update-banner';
+  b.style.cssText = 'position:fixed;left:8px;right:8px;top:8px;z-index:10000;background:#2b6cb0;color:#fff;padding:10px 12px;border-radius:10px;display:flex;gap:10px;align-items:center;font:14px system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35)';
+  b.innerHTML = `<span style="flex:1">Version ${escapeHtml(version)} is ready. Your sketch is kept.</span>`
+    + '<button id="update-reload" style="background:#fff;color:#2b6cb0;border:0;border-radius:8px;padding:6px 12px;font-weight:600">Reload</button>'
+    + '<button id="update-dismiss" aria-label="Not now" style="background:none;border:0;color:#fff;font-size:18px">✕</button>';
+  document.body.appendChild(b);
+  document.getElementById('update-reload').onclick = () => { writeAutosave(); location.reload(); };
+  document.getElementById('update-dismiss').onclick = () => b.remove();
+}
+
 
 // =============================================================================
 // INIT
 // =============================================================================
 $('header-version').textContent = 'v' + APP_VERSION;
 $('drawer-version').textContent = 'v' + APP_VERSION;
+const restoredSketch = autoRestoreSession();
+if ($('subject-input')) $('subject-input').value = state.subject || '';
 updateEntryDisplay();
 render();
 renderDrawer();
+if (restoredSketch) toast('Restored your last sketch');
+// iOS often skips beforeunload; pagehide and going to the background don't.
+window.addEventListener('pagehide', writeAutosave);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') writeAutosave(); });
 
 // Voice dictation bridge — lets the shared ../dictation.js drive the mobile
 // entry buffer. entryText is a closure-scoped let, so the adapter (defined here,
