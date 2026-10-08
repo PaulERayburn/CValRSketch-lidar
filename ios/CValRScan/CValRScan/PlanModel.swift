@@ -106,6 +106,10 @@ struct PlanGeometry {
         }
         let ws = walls.filter { $0.story == story }
         for w in ws { add(w.a); add(w.b) }
+        // Walls the scan missed have corners too: where a gap in the floor
+        // outline ends (a closet the coats hid), and a hidden wall's ends.
+        for g in gaps where g.story == story { add(g.a); add(g.b) }
+        for l in hiddenLines where l.story == story { add(l.a); add(l.b) }
         for i in ws.indices {
             for j in ws.indices where j > i {
                 let p = ws[i], q = ws[j]
