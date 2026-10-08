@@ -14,6 +14,20 @@ struct WallMeasurement: Equatable {
     var walls: [UUID] = []
     var move: Move = .auto
     var moving: [UUID] = []
+    var entered = ""              // as typed, e.g. "11 11 + 6 5 + 6 2"
+}
+
+// A reading between two scanned corners, for a stretch no single scanned wall
+// covers (RoomPlan splits an outside wall where rooms meet inside). Corners are
+// world metres (x, z); the reading runs along the house's main direction.
+// Outside, it is siding corner to siding corner; inside, face to face.
+struct SpanReading: Equatable {
+    var a: SIMD2<Double>
+    var b: SIMD2<Double>
+    var story: Int
+    var inches: Int
+    var face: WallMeasurement.Face
+    var entered = ""
 }
 
 // Feet-and-inches to the nearest inch, the precision ANSI Z765 asks for.
@@ -24,10 +38,53 @@ enum Feet {
 
 // Reads a length as typed or dictated: "10 9", "10' 9\"", "10 ft 9 in",
 // "ten feet nine inches", "10' 8 29/32", "10.74" (decimal feet), "129 in".
+// Lengths add and subtract, the way a laser is used in pieces:
+// "11 11 + 6 5 + 6 2", "30 0 − 5 6", "ten four plus six two". A minus needs
+// spaces round it, so "10-6" still reads as 10′ 6″.
 // Returns whole inches, rounded half up, or nil when it can't tell.
 enum LengthParser {
-    static func inches(from raw: String) -> Int? {
-        var s = raw.lowercased()
+    static func inches(from raw: String) -> Int? { reading(from: raw)?.total }
+
+    // The total and each signed part, in whole inches. The total is rounded
+    // once, after adding, so fractions are not rounded part by part.
+    static func reading(from raw: String) -> (total: Int, parts: [Int])? {
+        var s = " " + raw.lowercased() + " "
+        for (from, to) in [("+", " plus "), ("−", " minus "), ("–", " minus "), (" - ", " minus ")] {
+            s = s.replacingOccurrences(of: from, with: to)
+        }
+        var terms: [(sign: Double, text: String)] = []
+        var sign = 1.0, current: [Substring] = []
+        func flush() {
+            if !current.isEmpty { terms.append((sign, current.joined(separator: " "))) }
+            current = []
+        }
+        for token in s.split(separator: " ") {
+            if token == "plus" { flush(); sign = 1 }
+            else if token == "minus" { flush(); sign = -1 }
+            else { current.append(token) }
+        }
+        flush()
+        guard !terms.isEmpty else { return nil }
+        var total = 0.0, parts: [Int] = []
+        for t in terms {
+            guard let v = exactInches(t.text) else { return nil }
+            total += t.sign * v
+            parts.append(Int((t.sign * v).rounded()))
+        }
+        guard total > 0, total < 12_000 else { return nil }
+        return (Int(total.rounded()), parts)
+    }
+
+    // "11 11 + 6 5 + 6 2" → "11′ 11″ + 6′ 5″ + 6′ 2″"; nil for a single length.
+    static func describe(_ parts: [Int]) -> String? {
+        guard parts.count > 1 else { return nil }
+        return parts.enumerated().map { i, p in
+            (i == 0 ? (p < 0 ? "−" : "") : (p < 0 ? " − " : " + ")) + Feet.text(abs(p))
+        }.joined()
+    }
+
+    private static func exactInches(_ raw: String) -> Double? {
+        var s = raw
         for (from, to) in [("’", "'"), ("′", "'"), ("”", "\""), ("″", "\""), ("“", "\"")] {
             s = s.replacingOccurrences(of: from, with: to)
         }
@@ -47,8 +104,8 @@ enum LengthParser {
         case 2: total = numbers[0] * 12 + numbers[1] + fraction
         default: return nil
         }
-        guard total > 0, total < 12_000 else { return nil }
-        return Int(total.rounded())
+        guard total > 0 else { return nil }
+        return total
     }
 
     private static let small = ["zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,

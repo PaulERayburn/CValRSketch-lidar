@@ -10,7 +10,7 @@ import simd
 enum PlanExport {
     struct Plan: Encodable {
         var format = "cvalrscan"
-        var version = 4
+        var version = 5
         var units = "m"
         let createdAt: String
         let walls: [Segment]
@@ -23,6 +23,7 @@ enum PlanExport {
         let wallPoints: [WallPointOut]
         let gaps: [Gap]
         let gapDepths: [GapDepthOut]
+        let spans: [SpanOut]
         let measurements: [Measurement]
         let exterior: Exterior
     }
@@ -79,6 +80,17 @@ enum PlanExport {
         let inches: Int
     }
 
+    // A reading between two scanned corners along the house's main direction:
+    // outside, siding corner to siding corner; inside, face to face.
+    struct SpanOut: Encodable {
+        let a: [Double]
+        let b: [Double]
+        let story: Int
+        let inches: Int
+        let face: String
+        let entered: String
+    }
+
     // A face-to-face reading. `side` is +1 for the side the normal (−dy, dx)
     // of the wall's a→b points to, −1 for the other; `walls` is every scanned
     // segment the reading spans; `moving` the end walls that may shift to fit it.
@@ -91,11 +103,12 @@ enum PlanExport {
         let walls: [String]
         let move: String          // auto, start, end or both
         let moving: [String]
+        let entered: String       // as typed, e.g. "11 11 + 6 5 + 6 2"
     }
 
     static func data(for s: CapturedStructure, corners: [SIMD3<Float>],
                      wallPoints: [WallPoint], gapDepths: [GapDepth],
-                     measurements: [UUID: WallMeasurement], exterior: [[SIMD3<Float>]],
+                     measurements: [UUID: WallMeasurement], spans: [SpanReading], exterior: [[SIMD3<Float>]],
                      anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
         let walls = s.walls.map(segment), doors = s.doors.map(segment)
@@ -122,13 +135,17 @@ enum PlanExport {
                 GapDepthOut(gap: [[$0.gapA.x, $0.gapA.y], [$0.gapB.x, $0.gapB.y]],
                             from: $0.from.uuidString, inches: $0.inches)
             },
+            spans: spans.map {
+                SpanOut(a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y], story: $0.story, inches: $0.inches,
+                        face: $0.face.rawValue, entered: $0.entered)
+            },
             measurements: measurements
                 .sorted { $0.key.uuidString < $1.key.uuidString }
                 .map { id, m in
                     Measurement(wall: id.uuidString, inches: m.inches, face: m.face.rawValue,
                                 side: m.sideSign, room: m.room,
                                 walls: (m.walls.isEmpty ? [id] : m.walls).map(\.uuidString),
-                                move: m.move.rawValue, moving: m.moving.map(\.uuidString))
+                                move: m.move.rawValue, moving: m.moving.map(\.uuidString), entered: m.entered)
                 },
             exterior: Exterior(walls: exterior.filter { !$0.isEmpty }.map { $0.map(corner) },
                                anchorStart: anchorStart.map(corner), anchorEnd: anchorEnd.map(corner)))

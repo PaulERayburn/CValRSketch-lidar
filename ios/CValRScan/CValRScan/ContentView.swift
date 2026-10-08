@@ -13,7 +13,7 @@ struct ContentView: View {
     // After Build floor plan: what still needs doing before leaving the site.
     private var buildAdvice: String {
         var lines: [String] = []
-        if scan.measurements.isEmpty {
+        if !scan.hasReadings {
             lines.append("Laser the longest outside wall from inside, face to face, and enter it. Without one, nothing checks the scan's size.")
         }
         let gaps = scan.planGeometry.openGaps.count
@@ -75,7 +75,7 @@ struct ContentView: View {
                         Task {
                             await scan.export()
                             // The importer needs a tape reading to check the scan against.
-                            if scan.structure != nil && (scan.measurements.isEmpty || !scan.planGeometry.openGaps.isEmpty) {
+                            if scan.structure != nil && (!scan.hasReadings || !scan.planGeometry.openGaps.isEmpty) {
                                 askReading = true
                             }
                         }
@@ -85,12 +85,12 @@ struct ContentView: View {
                         Button {
                             measuring = true
                         } label: {
-                            Label(scan.measurements.isEmpty
+                            Label(!scan.hasReadings
                                   ? "Measure walls"
-                                  : "Measure walls (\(scan.measurements.count) entered)",
+                                  : "Measure walls (\(scan.measurements.count + scan.spans.count) entered)",
                                   systemImage: "ruler")
                         }
-                        if scan.measurements.isEmpty {
+                        if !scan.hasReadings {
                             Text("No laser reading yet. Enter at least one so the plan can be checked.")
                                 .font(.footnote)
                                 .foregroundStyle(.orange)
@@ -143,7 +143,7 @@ struct ContentView: View {
             .navigationDestination(isPresented: $measuring) {
                 PlanView(scan: scan)
             }
-            .alert(scan.measurements.isEmpty ? "Enter a laser reading" : "Walls missing", isPresented: $askReading) {
+            .alert(!scan.hasReadings ? "Enter a laser reading" : "Walls missing", isPresented: $askReading) {
                 Button("Measure now") { measuring = true }
                 Button("Later", role: .cancel) {}
             } message: {

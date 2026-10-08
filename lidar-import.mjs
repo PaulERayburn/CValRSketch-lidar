@@ -24,8 +24,8 @@ export function readCvalrScan(d, opts = {}) {
   if (!d || d.format !== 'cvalrscan') {
     return { ok: false, reason: 'unknown-format', message: 'This is not a CValRScan plan (cvalrscan JSON).' };
   }
-  if ((d.version || 0) > 4) {
-    return { ok: false, reason: 'newer-version', message: `This scan is format version ${d.version}; this CValRSketch reads up to version 4. Update the app.` };
+  if ((d.version || 0) > 5) {
+    return { ok: false, reason: 'newer-version', message: `This scan is format version ${d.version}; this CValRSketch reads up to version 5. Update the app.` };
   }
   const defaultIn = opts.exteriorInches ?? DEFAULT_EXTERIOR_IN;
   const turn = houseAngle(d.walls || []);
@@ -57,6 +57,7 @@ export function readCvalrScan(d, opts = {}) {
       } else {
         warnings.push(`${floorTitle(story)}: no outside walk beside the walls; every wall is taken as ${defaultIn}″ thick. Check against a tape measurement.`);
       }
+      checkSpans(d, story, plan, inside, outer, warnings);
       const [floor, type] = classifyStory(story, stories);
       floors.push({
         page: story + 1, building: null, kind: 'floor', floor, type,
@@ -69,8 +70,23 @@ export function readCvalrScan(d, opts = {}) {
     }
   }
   if (!floors.length) return { ok: false, reason: 'no-floors', message: 'The scan has no floor outline to import.', warnings };
-  if (!(d.measurements || []).length) warnings.push('No laser readings in the scan, so nothing checks its overall size. Enter one in CValRScan (Measure walls).');
+  if (!(d.measurements || []).length && !(d.spans || []).length) warnings.push('No laser readings in the scan, so nothing checks its overall size. Enter one in CValRScan (Measure walls).');
   return { ok: true, format: 'CValRScan', profileId: 'cvalrscan', address: '', floors, warnings, buildings: [] };
+}
+
+// Corner-to-corner readings against the imported outline: an outside reading
+// is compared with the outer corners beside its two scanned corners, an inside
+// one with the inside outline, along the house's main direction.
+function checkSpans(d, story, plan, inside, outer, warnings) {
+  const fmt = inches => `${Math.floor(inches / 12)}′ ${Math.round(inches % 12)}″`;
+  for (const sp of (d.spans || []).filter(s => s.story === story)) {
+    const pts = sp.face === 'outside' ? outer : inside;
+    const near = p => pts.reduce((best, q) => Math.hypot(q.x - p.x, q.y - p.y) < Math.hypot(best.x - p.x, best.y - p.y) ? q : best, pts[0]);
+    const a = near(plan(sp.a)), b = near(plan(sp.b));
+    const got = Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y)) * 12;
+    const diff = Math.round(got - sp.inches);
+    warnings.push(`${floorTitle(story)}: ${sp.face} reading ${fmt(sp.inches)}${sp.entered && /[+\-−]/.test(sp.entered) ? ` (${sp.entered})` : ''} between two corners; the import measures ${fmt(got)} there (${diff === 0 ? 'matches' : (diff > 0 ? '+' : '−') + Math.abs(diff) + '″'}).`);
+  }
 }
 
 function floorTitle(story) {

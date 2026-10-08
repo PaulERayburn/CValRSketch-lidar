@@ -79,6 +79,7 @@ struct PlanGeometry {
     var gaps: [PlanGap] = []
     var hiddenLines: [HiddenLine] = []
     var wallPoints: [(story: Int, point: CGPoint)] = []
+    var spans: [(a: CGPoint, b: CGPoint, reading: SpanReading)] = []
     var angle = 0.0                            // radians the world turns to sit square
     var stories: [Int] { Array(Set(walls.map(\.story))).sorted() }
     var openGaps: [PlanGap] { gaps.filter { !$0.filled } }
@@ -87,6 +88,34 @@ struct PlanGeometry {
     func plan(_ w: SIMD2<Double>) -> CGPoint {
         let c = cos(angle), s = sin(angle), ft = 3.28084
         return CGPoint(x: (w.x * c - w.y * s) * ft, y: (w.x * s + w.y * c) * ft)
+    }
+
+    func world(_ p: CGPoint) -> SIMD2<Double> {
+        let c = cos(angle), s = sin(angle), ft = 3.28084
+        let x = Double(p.x) / ft, y = Double(p.y) / ft
+        return SIMD2(x * c + y * s, -x * s + y * c)
+    }
+
+    // Where scanned walls end: the corners a reading can run between.
+    func corners(story: Int) -> [CGPoint] {
+        var out: [CGPoint] = []
+        for w in walls where w.story == story {
+            for p in [w.a, w.b] where !out.contains(where: { hypot($0.x - p.x, $0.y - p.y) < 0.3 }) {
+                out.append(p)
+            }
+        }
+        return out
+    }
+
+    // Feet between two corners along the house's main direction (the plan is
+    // drawn square), the way a laser is run along a wall.
+    static func along(_ a: CGPoint, _ b: CGPoint) -> CGFloat { max(abs(b.x - a.x), abs(b.y - a.y)) }
+
+    // What a reading between two scanned (inside) corners should be: inside,
+    // face to face; outside, siding corner to siding corner, one wall
+    // thickness further at each end.
+    static func spanEstimate(_ a: CGPoint, _ b: CGPoint, outside: Bool) -> Int {
+        Int((Double(along(a, b)) * 12 + (outside ? 2 * Assume.exteriorInches : 0)).rounded())
     }
 
     static let touch: CGFloat = 0.35          // feet: ends this close count as meeting
@@ -303,6 +332,7 @@ extension ScanController {
             (rot([line.a.x, line.a.y]), rot([line.b.x, line.b.y]))
         }
         addHiddenWalls(to: &g, structure: structure)
+        g.spans = spans.map { (g.plan($0.a), g.plan($0.b), $0) }
         return g
     }
 

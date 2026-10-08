@@ -12,6 +12,11 @@ struct PlanView: View {
     @State private var story: Int?
     @State private var selected: PlanWall?
     @State private var selectedGap: PlanGap?
+    // Corner to corner: on while picking, the first corner once tapped, and
+    // the pair waiting for its reading.
+    @State private var cornerMode = false
+    @State private var spanStart: CGPoint?
+    @State private var spanDraft: SpanDraft?
     @State private var preview = ReadingPreview()
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
@@ -29,8 +34,12 @@ struct PlanView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
             }
-            if scan.measurements.isEmpty {
-                Text("Start with the longest outside wall, in purple: tap it and enter its laser reading.")
+            if cornerMode {
+                Text(spanStart == nil ? "Tap the corner where your reading starts." : "Now tap the corner where it ends.")
+                    .font(.footnote.bold())
+                    .foregroundStyle(.blue)
+            } else if !scan.hasReadings {
+                Text("Start with the longest outside wall, in purple: tap it and enter its laser reading. Or tap Corners to measure between any two corners.")
                     .font(.footnote)
                     .foregroundStyle(.purple)
             } else {
@@ -55,6 +64,26 @@ struct PlanView: View {
                                     pan.height += v.translation.height
                                 }))
                     .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+                        if cornerMode {
+                            let corners = geo.corners(story: shown)
+                            guard let c = corners.min(by: { hypot(view.map($0).x - tap.location.x, view.map($0).y - tap.location.y)
+                                    < hypot(view.map($1).x - tap.location.x, view.map($1).y - tap.location.y) }),
+                                  hypot(view.map(c).x - tap.location.x, view.map(c).y - tap.location.y) < 30 else { return }
+                            UISelectionFeedbackGenerator().selectionChanged()
+                            if let start = spanStart {
+                                guard hypot(c.x - start.x, c.y - start.y) > 0.3 else { return }
+                                let existing = geo.spans.first {
+                                    (hypot($0.a.x - start.x, $0.a.y - start.y) < 0.5 && hypot($0.b.x - c.x, $0.b.y - c.y) < 0.5)
+                                        || (hypot($0.a.x - c.x, $0.a.y - c.y) < 0.5 && hypot($0.b.x - start.x, $0.b.y - start.y) < 0.5)
+                                }?.reading
+                                spanDraft = SpanDraft(a: start, b: c, story: shown, existing: existing)
+                                spanStart = nil
+                                cornerMode = false
+                            } else {
+                                spanStart = c
+                            }
+                            return
+                        }
                         let wall = view.nearest(to: tap.location, in: geo.walls.filter { $0.story == shown })
                         // A gap wins when it's nearer than any wall.
                         let gaps = geo.gaps.filter { $0.story == shown }
@@ -69,6 +98,17 @@ struct PlanView: View {
                         focus(on: wall, geo: geo, story: shown, size: box.size)
                         selected = wall
                     })
+                    .sheet(item: $spanDraft) { draft in
+                        SpanSheet(draft: draft) { reading in
+                            scan.setSpan(reading.map {
+                                var r = $0
+                                r.a = geo.world(draft.a); r.b = geo.world(draft.b)
+                                return r
+                            }, a: geo.world(draft.a), b: geo.world(draft.b))
+                        }
+                        .presentationDetents([.fraction(0.55), .large])
+                        .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.55)))
+                    }
                     .sheet(item: $selectedGap) { gap in
                         GapSheet(gap: gap, geo: geo) { scan.setGapDepth($0, for: gap) }
                             .presentationDetents([.fraction(0.55), .large])
@@ -81,7 +121,13 @@ struct PlanView: View {
         .navigationTitle("Measure walls")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            Button("Fit") { withAnimation { zoom = 1; pan = .zero } }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button(cornerMode ? "Cancel" : "Corners") {
+                    cornerMode.toggle()
+                    spanStart = nil
+                }
+                Button("Fit") { withAnimation { zoom = 1; pan = .zero } }
+            }
         }
         .sheet(item: $selected, onDismiss: { preview = ReadingPreview() }) { wall in
             MeasureSheet(wall: wall, geo: geo, measured: measuredIDs(excluding: wall.id),
@@ -149,10 +195,11 @@ struct PlanView: View {
         let preview = self.preview
         // Until there is a reading, suggest the longest outside wall: the
         // reading that checks the most of the plan.
-        let suggested = measurements.isEmpty
+        let suggested = !scan.hasReadings
             ? walls.filter(\.exterior).max { $0.length < $1.length }?.id : nil
         // While a gap's sheet is open, the wall its laser depth starts from.
         let reference = selectedGap.flatMap { geo.referenceWall(for: $0)?.wall.id }
+        let cornerMode = self.cornerMode, spanStart = self.spanStart, draft = self.spanDraft
         return Canvas { ctx, _ in
             for f in geo.floors where f.story == story {
                 var p = Path()
@@ -214,9 +261,28 @@ struct PlanView: View {
                 }
             }
 
+            // Corners to pick from, the one picked, and the pair being entered.
+            if cornerMode {
+                for c in geo.corners(story: story) {
+                    let p = view.map(c)
+                    ctx.stroke(Path(ellipseIn: CGRect(x: p.x - 7, y: p.y - 7, width: 14, height: 14)),
+                               with: .color(.blue), lineWidth: 2)
+                }
+            }
+            for c in [spanStart, draft?.a, draft?.b].compactMap({ $0 }) {
+                let p = view.map(c)
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16)), with: .color(.blue))
+            }
+
             // Labels: readings first, drawn on the side they were taken and
             // across the whole stretch they cover, then the scan's estimates.
             var placed: [CGRect] = []
+            for span in geo.spans where span.reading.story == story {
+                let (a, end, side) = Self.spanLine(span.a, span.b)
+                drawDimension(ctx, view: view, a: a, b: end, side: side,
+                              text: "\(Feet.text(span.reading.inches)) \(span.reading.face == .outside ? "out" : "in") ✓",
+                              colour: .green, force: true, placed: &placed)
+            }
             var labelled = Set<UUID>()
             for (key, m) in measurements {
                 guard let w = geo.wall(key), w.story == story else { continue }
@@ -236,6 +302,13 @@ struct PlanView: View {
                               force: w.id == selectedID, placed: &placed)
             }
         }
+    }
+
+    // A corner-to-corner reading drawn along the house's main direction,
+    // offset up or left, with the second end lined up with the first.
+    static func spanLine(_ a: CGPoint, _ b: CGPoint) -> (CGPoint, CGPoint, CGVector) {
+        if abs(b.x - a.x) >= abs(b.y - a.y) { return (a, CGPoint(x: b.x, y: a.y), CGVector(dx: 0, dy: -1)) }
+        return (a, CGPoint(x: a.x, y: b.y), CGVector(dx: -1, dy: 0))
     }
 
     // A dimension line with end ticks beside the wall, on the given side,
@@ -351,6 +424,7 @@ struct MeasureSheet: View {
         let run = geo.run(from: wall, sign: place.sign, outside: place.outside)
         let estimate = geo.estimateInches(run)
         let parsed = LengthParser.inches(from: text)
+        let sum = LengthParser.reading(from: text).flatMap { LengthParser.describe($0.parts) }
         let moving = resolveMoving(run)
         NavigationStack {
             Form {
@@ -369,7 +443,7 @@ struct MeasureSheet: View {
                 }
                 Section("Your reading") {
                     HStack {
-                        TextField("e.g. 10 9  or  10' 9\"", text: $text)
+                        TextField("e.g. 10 9  or  6 5 + 6 2", text: $text)
                             .keyboardType(.numbersAndPunctuation)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
@@ -383,6 +457,9 @@ struct MeasureSheet: View {
                             Spacer()
                             Text(diff == 0 ? "matches scan" : "\(diff > 0 ? "+" : "−")\(abs(diff))″ vs scan")
                                 .foregroundStyle(abs(diff) > 2 ? .orange : .secondary)
+                        }
+                        if let sum {
+                            Text(sum).font(.footnote).foregroundStyle(.secondary)
                         }
                         if abs(diff) > 2 {
                             Text("More than 2″ off. Check it's the blue stretch and the right room.")
@@ -419,7 +496,8 @@ struct MeasureSheet: View {
                         if let parsed {
                             onSave(WallMeasurement(inches: parsed, face: place.outside ? .outside : .inside,
                                                    sideSign: place.sign, room: place.room,
-                                                   walls: run.walls.map(\.id), move: move, moving: moving))
+                                                   walls: run.walls.map(\.id), move: move, moving: moving,
+                                                   entered: text.trimmingCharacters(in: .whitespaces)))
                         }
                         dismiss()
                     }
@@ -428,7 +506,7 @@ struct MeasureSheet: View {
             }
             .onAppear {
                 if let existing {
-                    text = "\(existing.inches / 12) \(existing.inches % 12)"
+                    text = existing.entered.isEmpty ? "\(existing.inches / 12) \(existing.inches % 12)" : existing.entered
                     choice = places.firstIndex { $0.sign == existing.sideSign && $0.outside == (existing.face == .outside) } ?? 0
                     move = existing.move
                 }
@@ -461,5 +539,104 @@ struct MeasureSheet: View {
             return "The \(kind(run.endWall)) at the \(geo.endName(run, start: false)) moves; the other end stays."
         }
         return "Nothing closes this stretch, so nothing moves."
+    }
+}
+
+// The two corners picked for a reading, waiting for the number.
+struct SpanDraft: Identifiable {
+    let id = UUID()
+    let a: CGPoint
+    let b: CGPoint
+    let story: Int
+    let existing: SpanReading?
+}
+
+// A reading between two corners. Outside it runs siding corner to siding
+// corner; inside, face to face. Lengths can be added and subtracted, the way a
+// long wall is lasered in pieces.
+struct SpanSheet: View {
+    let draft: SpanDraft
+    let onSave: (SpanReading?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var face = WallMeasurement.Face.outside
+
+    var body: some View {
+        let estimate = PlanGeometry.spanEstimate(draft.a, draft.b, outside: face == .outside)
+        let reading = LengthParser.reading(from: text)
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Measured", selection: $face) {
+                        Text("Outside").tag(WallMeasurement.Face.outside)
+                        Text("Inside").tag(WallMeasurement.Face.inside)
+                    }
+                    .pickerStyle(.segmented)
+                    LabeledContent("Scan estimate", value: Feet.text(estimate))
+                } header: {
+                    Text("Between the two blue corners")
+                } footer: {
+                    Text(face == .outside
+                         ? "Outside: siding corner to siding corner, along the wall. The estimate adds a \(Int(Assume.exteriorInches))″ wall at each end."
+                         : "Inside: face to face, along the wall.")
+                }
+                Section {
+                    HStack {
+                        TextField("e.g. 24 6  or  11 11 + 6 5 + 6 2", text: $text)
+                            .keyboardType(.numbersAndPunctuation)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        Button("Paste") { text = UIPasteboard.general.string ?? text }
+                            .buttonStyle(.bordered)
+                    }
+                    if let reading {
+                        let diff = reading.total - estimate
+                        HStack {
+                            Text("= \(Feet.text(reading.total))").font(.title2.bold())
+                            Spacer()
+                            Text(diff == 0 ? "matches scan" : "\(diff > 0 ? "+" : "−")\(abs(diff))″ vs scan")
+                                .foregroundStyle(abs(diff) > 6 ? .orange : .secondary)
+                        }
+                        if let sum = LengthParser.describe(reading.parts) {
+                            Text(sum).font(.footnote).foregroundStyle(.secondary)
+                        }
+                    } else if !text.isEmpty {
+                        Text("Not understood. Try feet then inches, like 24 6, or pieces like 11 11 + 6 5 + 6 2.")
+                            .foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Your reading")
+                } footer: {
+                    Text("Add pieces with +, or take one off with − (spaces round it), e.g. to the fence and back: 30 0 − 5 6.")
+                }
+                if draft.existing != nil {
+                    Button("Remove reading", role: .destructive) {
+                        onSave(nil)
+                        dismiss()
+                    }
+                }
+            }
+            .navigationTitle("Corner to corner")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if let reading {
+                            onSave(SpanReading(a: .zero, b: .zero, story: draft.story, inches: reading.total, face: face,
+                                               entered: text.trimmingCharacters(in: .whitespaces)))
+                        }
+                        dismiss()
+                    }
+                    .disabled(reading == nil)
+                }
+            }
+            .onAppear {
+                if let e = draft.existing {
+                    face = e.face
+                    text = e.entered.isEmpty ? "\(e.inches / 12) \(e.inches % 12)" : e.entered
+                }
+            }
+        }
     }
 }

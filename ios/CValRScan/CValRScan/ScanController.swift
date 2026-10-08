@@ -17,6 +17,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     @Published var corners: [SIMD3<Float>] = []        // older scans only; Mark wall replaced them
     @Published private(set) var wallPoints: [WallPoint] = []
     @Published private(set) var gapDepths: [GapDepth] = []
+    @Published private(set) var spans: [SpanReading] = []
+    var hasReadings: Bool { !measurements.isEmpty || !spans.isEmpty }
     @Published private(set) var structure: CapturedStructure?
     @Published private(set) var measurements: [UUID: WallMeasurement] = [:]
     @Published private(set) var savedScans: [String] = []   // timestamps, newest first
@@ -144,6 +146,17 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
 
     func undoWallPoint() {
         if !wallPoints.isEmpty { wallPoints.removeLast() }
+        writeFiles()
+    }
+
+    // Sets or clears the reading between two corners (either order).
+    func setSpan(_ span: SpanReading?, a: SIMD2<Double>, b: SIMD2<Double>) {
+        func same(_ s: SpanReading) -> Bool {
+            (simd_distance(s.a, a) < 0.15 && simd_distance(s.b, b) < 0.15)
+                || (simd_distance(s.a, b) < 0.15 && simd_distance(s.b, a) < 0.15)
+        }
+        spans.removeAll(where: same)
+        if let span { spans.append(span) }
         writeFiles()
     }
 
@@ -398,7 +411,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             let planURL = dir.appendingPathComponent("scan-\(stamp).cvalrscan.json")
             let rawURL = dir.appendingPathComponent("scan-\(stamp).capturedstructure.json")
             try PlanExport.data(for: structure, corners: corners, wallPoints: wallPoints, gapDepths: gapDepths,
-                                measurements: measurements,
+                                measurements: measurements, spans: spans,
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
@@ -432,6 +445,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         corners = []
         wallPoints = []
         gapDepths = []
+        spans = []
         measurements = [:]
         exteriorWalls = []
         anchorStart = nil
@@ -465,12 +479,19 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                     sideSign: r.side ?? 1, room: r.room ?? "",
                     walls: (r.walls ?? [r.wall]).compactMap(UUID.init(uuidString:)),
                     move: WallMeasurement.Move(rawValue: r.move ?? "auto") ?? .auto,
-                    moving: (r.moving ?? []).compactMap(UUID.init(uuidString:)))
+                    moving: (r.moving ?? []).compactMap(UUID.init(uuidString:)),
+                    entered: r.entered ?? "")
             }
             measurements = m
             wallPoints = (saved?.wallPoints ?? []).map {
                 WallPoint(point: SIMD3(Float($0.point[0]), Float($0.elevation), Float($0.point[1])),
                           normal: SIMD3(Float($0.normal[0]), 0, Float($0.normal[1])))
+            }
+            spans = (saved?.spans ?? []).compactMap { r in
+                guard r.a.count == 2, r.b.count == 2 else { return nil }
+                return SpanReading(a: SIMD2(r.a[0], r.a[1]), b: SIMD2(r.b[0], r.b[1]), story: r.story,
+                                   inches: r.inches, face: WallMeasurement.Face(rawValue: r.face) ?? .outside,
+                                   entered: r.entered ?? "")
             }
             gapDepths = (saved?.gapDepths ?? []).compactMap { d in
                 guard d.gap.count == 2, let from = UUID(uuidString: d.from) else { return nil }
@@ -535,13 +556,18 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         struct Reading: Decodable {
             let wall: String; let inches: Int; let face: String
             let side: Int?; let room: String?; let walls: [String]?; let move: String?; let moving: [String]?
+            let entered: String?
         }
         struct Exterior: Decodable { let walls: [[Point]]; let anchorStart: Point?; let anchorEnd: Point? }
         struct WallPointIn: Decodable { let point: [Double]; let elevation: Double; let normal: [Double] }
         struct GapDepthIn: Decodable { let gap: [[Double]]; let from: String; let inches: Int }
+        struct SpanIn: Decodable {
+            let a: [Double]; let b: [Double]; let story: Int; let inches: Int; let face: String; let entered: String?
+        }
         let corners: [Point]?
         let wallPoints: [WallPointIn]?
         let gapDepths: [GapDepthIn]?
+        let spans: [SpanIn]?
         let measurements: [Reading]?
         let exterior: Exterior?
     }
