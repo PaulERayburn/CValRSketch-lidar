@@ -36,7 +36,8 @@
     padding: 8px 12px;
     flex: 0 0 auto;
   }
-  header .title { flex: 1; min-width: 0; font-size: 14px; font-weight: bold; display: flex; align-items: baseline; gap: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  /* Name over version, so the header buttons can never squeeze the version out. */
+  header .title { flex: 1; min-width: 0; font-size: 14px; font-weight: bold; display: flex; flex-direction: column; justify-content: center; line-height: 1.15; overflow: hidden; white-space: nowrap; }
   header button { flex: 0 0 auto; }
   header .ver { font-size: 11px; font-weight: normal; color: rgba(255,255,255,0.65); }
   header button {
