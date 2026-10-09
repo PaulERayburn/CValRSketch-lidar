@@ -344,11 +344,12 @@ struct PlanView: View {
             .onEnded { _ in pinchStart = nil }
     }
 
-    // The middle of the screen always stays over the plan's central area (its
-    // bounds less 15% each side), so it can't be panned or zoomed out of sight.
+    // The middle of the screen stays within the plan's bounds plus a quarter of
+    // the view, so every edge can be brought to the middle at any zoom while the
+    // plan can never be panned out of sight.
     private func clamp(_ p: CGSize, geo: PlanGeometry, story: Int, size: CGSize, zoom: CGFloat) -> CGSize {
         let r = Viewport(geo: geo, story: story, size: size, zoom: zoom, pan: .zero).bounds
-        let inner = r.insetBy(dx: r.width * 0.15, dy: r.height * 0.15)
+        let inner = r.insetBy(dx: -size.width * 0.25, dy: -size.height * 0.25)
         let cx = size.width / 2, cy = size.height / 2
         return CGSize(width: min(max(p.width, cx - inner.maxX), cx - inner.minX),
                       height: min(max(p.height, cy - inner.maxY), cy - inner.minY))
