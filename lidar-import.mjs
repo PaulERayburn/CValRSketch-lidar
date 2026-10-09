@@ -88,7 +88,10 @@ export function readCvalrScan(d, opts = {}) {
   }
   if (!floors.length) return { ok: false, reason: 'no-floors', message: 'The scan has no floor outline to import.', warnings };
   if (!(d.measurements || []).length && !(d.spans || []).length) warnings.push('No laser readings in the scan, so nothing checks its overall size. Enter one in CValRScan (Measure walls).');
-  return { ok: true, format: 'CValRScan', profileId: 'cvalrscan', address: '', floors, warnings, buildings: [] };
+  // Where the plan came from goes in the page subtitle, not on the areas.
+  const readings = (d.measurements || []).length + (d.spans || []).length;
+  const subtitle = 'Measured by LiDAR scan' + (readings ? `, fitted to ${readings} laser reading${readings > 1 ? 's' : ''}` : '');
+  return { ok: true, format: 'CValRScan', profileId: 'cvalrscan', address: '', subtitle, floors, warnings, buildings: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -278,8 +281,11 @@ function interiorDetail(d, story, plan, before, after) {
   return { lines, rooms };
 }
 
+// RoomPlan counts floors from where scanning began (0); appraisal plans name them.
 function floorTitle(story) {
-  return story === 0 ? 'Scanned floor' : story > 0 ? `Scanned floor +${story}` : `Scanned floor ${story}`;
+  const above = ['First floor', 'Second floor', 'Third floor', 'Fourth floor'];
+  if (story >= 0) return above[story] || `Floor ${story + 1}`;
+  return story === -1 ? 'Basement' : `Lower level ${-story}`;
 }
 
 // RoomPlan numbers floors from where scanning began; the lowest of several is a

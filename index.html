@@ -5959,7 +5959,7 @@ document.getElementById('import-pdf').addEventListener('change', async (e) => {
 // ===== LIDAR SCAN IMPORT =====
 // A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
 // lidar-import.mjs loads only when a scan is picked.
-const LIDAR_IMPORT_VERSION = '0.5.0';
+const LIDAR_IMPORT_VERSION = '0.5.1';
 async function importScan(file) {
   let d;
   try { d = JSON.parse(await file.text()); }
@@ -6084,6 +6084,7 @@ function openPdfImportModal(res, fname) {
     const oneBuilding = new Set(d.shapes.map(sh => sh.building)).size === 1;
     if (!state.shapes.length && oneBuilding) addFileToProject(d, { [DEFAULT_BUILDING]: DEFAULT_BUILDING }, false);
     else if (!(await openAddFileModal(d, fname, ''))) return;
+    if (!(state.subtitle || '').trim() && res.subtitle) state.subtitle = res.subtitle;
     if (!(state.subject || '').trim() && d.subject) {
       state.subject = d.subject;
       const subjInp = document.getElementById('subject-input'); if (subjInp) subjInp.value = d.subject;
