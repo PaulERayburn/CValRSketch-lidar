@@ -54,20 +54,17 @@ export function readCvalrScan(d, opts = {}) {
       const scanned = sides.map((s, i) => offsetSide(s, outwardSign(inside), thick[i].inches / 12));
       const fit = applyReadings(d, story, plan, scanned, warnings);
       const outer = tidy(outline(fit.sides));
-      // A label inside the house beside each wall that was calculated, not measured.
-      const cx = outer.reduce((s, p) => s + p.x, 0) / outer.length, cy = outer.reduce((s, p) => s + p.y, 0) / outer.length;
-      // Neighbouring calculated walls (a notch) share one label.
-      const groups = [];
-      for (const w of fit.walls.filter(w => w.kind === 'calculated')) {
-        const g = groups.find(g => g.some(o => Math.hypot(o.at.x - w.at.x, o.at.y - w.at.y) < 6));
-        if (g) g.push(w); else groups.push([w]);
-      }
-      const notes = groups.map(g => {
-        const ax = g.reduce((s, w) => s + w.at.x, 0) / g.length, ay = g.reduce((s, w) => s + w.at.y, 0) / g.length;
-        const dx = cx - ax, dy = cy - ay, k = 8 / (Math.hypot(dx, dy) || 1);
-        const fmtW = w => `${Math.floor(w.inches / 12)}′ ${w.inches % 12}″`;
-        return { x: +(ax + dx * k).toFixed(3), y: +(ay + dy * k).toFixed(3),
-                 text: `Calculated, not measured:\n${g.map(fmtW).join(' and ')}` };
+      // The outline's edges that are calculated walls: an edge through the
+      // midpoint of a calculated wall, along it.
+      const calcWalls = [];
+      fit.walls.filter(w => w.kind === 'calculated').forEach(w => {
+        outer.forEach((a, i) => {
+          const b = outer[(i + 1) % outer.length], L = Math.hypot(b.x - a.x, b.y - a.y);
+          if (L < 0.1) return;
+          const t = ((w.at.x - a.x) * (b.x - a.x) + (w.at.y - a.y) * (b.y - a.y)) / (L * L);
+          const off = Math.abs((w.at.x - a.x) * (b.y - a.y) - (w.at.y - a.y) * (b.x - a.x)) / L;
+          if (t > 0.05 && t < 0.95 && off < 0.1 && !calcWalls.includes(i)) calcWalls.push(i);
+        });
       });
       if (measured.length) {
         const list = [...new Set(measured.map(t => Math.round(t.inches)))].sort((a, b) => a - b).join('″, ') + '″';
@@ -83,7 +80,7 @@ export function readCvalrScan(d, opts = {}) {
         points: outer, traced: Math.abs(signedArea(outer)),
         interior: Math.abs(signedArea(inside)), interiorPoints: tidy(inside),
         sides: thick.map(t => ({ inches: +t.inches.toFixed(1), measured: t.measured })),
-        scanTraced: Math.abs(signedArea(tidy(outline(scanned)))), walls: fit.walls, notes,
+        scanTraced: Math.abs(signedArea(tidy(outline(scanned)))), walls: fit.walls, calcWalls,
         detail: interiorDetail(d, story, plan, scanned, fit.sides),
         areas: {}, stated: null, excludedTraced: null, placement: 'reference', turned: 0,
       });

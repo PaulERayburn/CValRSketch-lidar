@@ -754,6 +754,7 @@ function splitPolygon(shape, idx1, idx2) {
   const toB = j => (j >= idx1 && j < idx2) ? j - idx1 : null;
   a.arcs = remapByWall(shape.arcs, toA); b.arcs = remapByWall(shape.arcs, toB);
   a.dimOffsets = remapByWall(shape.dimOffsets, toA); b.dimOffsets = remapByWall(shape.dimOffsets, toB);
+  a.calc = remapByWall(shape.calc, toA); b.calc = remapByWall(shape.calc, toB);
   rebuildSegments(a); rebuildSegments(b);
   return { a, b };
 }
@@ -1331,9 +1332,11 @@ function renderShape(sh, W, isGhost) {
         const man = sh.dimOffsets && sh.dimOffsets[i];
         const tx = autoX + (man ? man.dx * viewTransform.scale : 0);
         const ty = autoY + (man ? man.dy * viewTransform.scale : 0);
-        const label = formatLength(sh.segments[i].length);
+        // A calculated wall (no tape on it; it is what closes the outline) is marked *.
+        const calc = !!(sh.calc && sh.calc[i]);
+        const label = formatLength(sh.segments[i].length) + (calc ? '*' : '');
         // No ghost fade on dimensions: a surfaced floor's dims should read crisply.
-        addEl('text', { x: tx, y: ty, 'text-anchor':anchor, 'dominant-baseline':'middle', 'font-size':skFont(11), 'font-weight':'bold', fill:'#0066cc' }, label);
+        addEl('text', { x: tx, y: ty, 'text-anchor':anchor, 'dominant-baseline':'middle', 'font-size':skFont(11), 'font-weight':'bold', fill: calc ? '#c2410c' : '#0066cc' }, label);
         if (!isGhost && state.mode === 'edit') {
           // Drag handle over the label (ui-overlay → never exported). Double-click resets.
           const tw = label.length * skFont(11) * 0.62, th = skFont(11) + 6;
@@ -3268,14 +3271,14 @@ function wallRemovalOptions(sh, wi) {
     const m = mergeAcrossWall(sh, wi, o);
     if (!m) return;
     (shapeArea(o) >= shapeArea(sh) ? [o, sh] : [sh, o]).forEach(keep => {
-      const res = { ...clone(keep), points: m.points, arcs: m.arcs, dimOffsets: undefined };
+      const res = { ...clone(keep), points: m.points, arcs: m.arcs, dimOffsets: undefined, calc: undefined };
       rebuildSegments(res);
       opts.push({ res, dropId: (keep === sh ? o : sh).id, text: `Merge with “${o.label}” into one ${typeName(keep.type)} area` });
     });
   });
   const ext = extendNeighboursAcross(sh, wi);
   if (ext) {
-    const res = { ...clone(sh), points: ext, dimOffsets: undefined };
+    const res = { ...clone(sh), points: ext, dimOffsets: undefined, calc: undefined };
     res.arcs = carryArcs(ext, [sh]);
     rebuildSegments(res);
     opts.push({ res, text: 'Run the walls on each side on until they meet' });
@@ -3464,6 +3467,7 @@ function copySelectedShape() {
     points: sh.points.map(p => ({ x: p.x + seg.dx, y: p.y + seg.dy })),
     segments: sh.segments.map(s => ({ ...s })),
     ...(sh.arcs ? { arcs: { ...sh.arcs } } : {}),
+    ...(sh.calc ? { calc: { ...sh.calc } } : {}),
   };
   state.shapes.push(newShape);
   state.selection = { kind: 'shape', shapeId: newId };
@@ -3517,9 +3521,14 @@ function confirmSplitProject() {
   pushUndo();
   // Insert a new vertex on the hit wall (between points[wallIdx] and points[wallIdx+1]).
   const wallIdx = sp.hit.wallIdx;
-  const arcsBefore = sh.arcs;
+  const arcsBefore = sh.arcs, calcBefore = sh.calc;
   sh.points.splice(wallIdx + 1, 0, { x: sp.hit.point.x, y: sp.hit.point.y });
   sh.arcs = remapByWall(sh.arcs, i => i < wallIdx ? i : i > wallIdx ? i + 1 : null);
+  if (sh.calc) {
+    const o = remapByWall(sh.calc, i => i < wallIdx ? i : i > wallIdx ? i + 1 : null) || {};
+    if (sh.calc[wallIdx]) { o[wallIdx] = true; o[wallIdx + 1] = true; }
+    sh.calc = o;
+  }
   rebuildSegments(sh);
   // Origin index may have shifted if it was after the inserted vertex.
   let originIdx = sp.originIdx;
@@ -3529,7 +3538,7 @@ function confirmSplitProject() {
   if (!result) {
     // Revert insert + undo
     sh.points.splice(wallIdx + 1, 1);
-    sh.arcs = arcsBefore;
+    sh.arcs = arcsBefore; sh.calc = calcBefore;
     rebuildSegments(sh);
     state.undoStack.pop();
     state.splitPreview = null;
@@ -5680,6 +5689,14 @@ function svgForExport() {
     out.appendChild(mk('text', {
       x: x0 + 236, y: footerY + 9, 'font-family':'Arial, sans-serif', 'font-size': 10, fill:'#222'
     }, 'Open / dashed edge'));
+    if (visibleShapes().some(s => s.calc && Object.keys(s.calc).length)) {
+      out.appendChild(mk('text', {
+        x: x0 + 380, y: footerY + 9, 'font-family':'Arial, sans-serif', 'font-size': 10, 'font-weight':'bold', fill:'#c2410c'
+      }, '*'));
+      out.appendChild(mk('text', {
+        x: x0 + 392, y: footerY + 9, 'font-family':'Arial, sans-serif', 'font-size': 10, fill:'#222'
+      }, 'Calculated, not measured'));
+    }
   }
 
   // Optional credit in the bottom margin (Settings → Your branding). Off by default.
@@ -5942,7 +5959,7 @@ document.getElementById('import-pdf').addEventListener('change', async (e) => {
 // ===== LIDAR SCAN IMPORT =====
 // A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
 // lidar-import.mjs loads only when a scan is picked.
-const LIDAR_IMPORT_VERSION = '0.4.0';
+const LIDAR_IMPORT_VERSION = '0.5.0';
 async function importScan(file) {
   let d;
   try { d = JSON.parse(await file.text()); }
@@ -6103,8 +6120,8 @@ function pdfImportToSketch(res, picked) {
         sh.detail = { lines: r.f.detail.lines.map(l => ({ a: rel(l.a), b: rel(l.b), kind: l.kind })),
                       rooms: r.f.detail.rooms.map(rm => ({ ...rel(rm), name: rm.name })) };
       }
-      // A scan's notes (e.g. walls calculated, not measured) ride along as labels.
-      (r.f.notes || []).forEach(t => labels.push({ x: +(t.x - ox + nextX).toFixed(4), y: +(t.y - oy).toFixed(4), text: t.text, floor: r.floor }));
+      // Walls a scan's fit calculated rather than measured.
+      if ((r.f.calcWalls || []).length) sh.calc = Object.fromEntries(r.f.calcWalls.map(i => [i, true]));
     });
     nextX += w + 20;
   });

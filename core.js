@@ -403,6 +403,11 @@ function syncClosure(shape, movedIdx) {
 // ----- Edit operations -----
 
 function setWallLength(shape, wallIdx, newLength, mode) {
+  // A length typed in is a measured length.
+  if (shape.calc && shape.calc[wallIdx]) {
+    delete shape.calc[wallIdx];
+    if (!Object.keys(shape.calc).length) shape.calc = undefined;
+  }
   const unit = wallUnit(shape, wallIdx);
   const curLen = wallLength(shape, wallIdx);
   const delta = newLength - curLen;
@@ -465,6 +470,12 @@ function insertVertexOnWall(shape, wallIdx, t = 0.5) {
     shape.dimOffsets = Object.keys(o).length ? o : undefined;
   }
   shape.arcs = remapByWall(shape.arcs, i => i < wallIdx ? i : i > wallIdx ? i + 1 : null);
+  // A calculated wall split in two: both halves are still calculated.
+  if (shape.calc) {
+    const o = {};
+    for (const k in shape.calc) { const i = +k; if (i < wallIdx) o[i] = true; else if (i > wallIdx) o[i + 1] = true; else { o[i] = true; o[i + 1] = true; } }
+    shape.calc = o;
+  }
   rebuildSegments(shape);
 }
 
@@ -497,6 +508,15 @@ function deleteVertex(shape, vIdx) {
   shape.arcs = remapByWall(shape.arcs, (vIdx === 0 || vIdx === n - 1)
     ? (i => (i >= 1 && i <= n - 3) ? i - 1 : null)
     : (i => i < vIdx - 1 ? i : i > vIdx ? i - 1 : null));
+  // Two walls merging: the result is calculated if either part was.
+  if (shape.calc) {
+    const ends = vIdx === 0 || vIdx === n - 1;
+    const merged = ends ? (shape.calc[0] || shape.calc[n - 2]) : (shape.calc[vIdx - 1] || shape.calc[vIdx]);
+    const o = remapByWall(shape.calc, ends ? (i => (i >= 1 && i <= n - 3) ? i - 1 : null)
+                                           : (i => i < vIdx - 1 ? i : i > vIdx ? i - 1 : null)) || {};
+    if (merged) o[ends ? n - 3 : vIdx - 1] = true;
+    shape.calc = Object.keys(o).length ? o : undefined;
+  }
   rebuildSegments(shape);
   return true;
 }
