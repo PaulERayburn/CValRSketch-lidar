@@ -1330,11 +1330,39 @@ function renderShape(sh, W, isGhost) {
         const autoX = mx + ox*gap, autoY = my + oy*gap;
         // Manual nudge (world feet) set by dragging the label in Edit mode.
         const man = sh.dimOffsets && sh.dimOffsets[i];
-        const tx = autoX + (man ? man.dx * viewTransform.scale : 0);
-        const ty = autoY + (man ? man.dy * viewTransform.scale : 0);
+        let tx = autoX + (man ? man.dx * viewTransform.scale : 0);
+        let ty = autoY + (man ? man.dy * viewTransform.scale : 0);
         // A calculated wall (no tape on it; it is what closes the outline) is marked *.
         const calc = !!(sh.calc && sh.calc[i]);
         const label = formatLength(sh.segments[i].length) + (calc ? '*' : '');
+        // Short walls meeting at a corner put their labels on top of each other: a
+        // label that would overlap one already drawn is nudged out from its wall,
+        // then along it, until clear. A label dragged by hand stays where it was put.
+        const tw0 = label.length * skFont(11) * 0.6, th0 = skFont(11) + 2;
+        const dimBox = (x, y) => {
+          const x0 = anchor === 'start' ? x : anchor === 'end' ? x - tw0 : x - tw0 / 2;
+          return { x0, x1: x0 + tw0, y0: y - th0 / 2, y1: y + th0 / 2 };
+        };
+        const overlaps = b => drawnLabelBoxes.some(o => b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0);
+        // A nudged dimension must stay outside the outline, or it reads as an inside one.
+        const inside = (x, y) => {
+          let r = false;
+          for (let k = 0, j = screenPts.length - 1; k < screenPts.length; j = k++) {
+            const p = screenPts[k], q = screenPts[j];
+            if ((p.y > y) !== (q.y > y) && x < (q.x - p.x) * (y - p.y) / (q.y - p.y) + p.x) r = !r;
+          }
+          return r;
+        };
+        const clear = b => !overlaps(b) && ![[b.x0, b.y0], [b.x1, b.y0], [b.x0, b.y1], [b.x1, b.y1]].some(([x, y]) => inside(x, y));
+        if (!man && !isGhost && overlaps(dimBox(tx, ty))) {
+          const ux = dx / len, uy = dy / len, step = th0 + 2;
+          const tries = [[0, 1], [0, -1], [1, 0], [1, 1], [1, -1], [0, 2], [0, -2], [2, 0], [2, 2], [2, -2]];
+          for (const [out, along] of tries) {
+            const x = tx + ox * out * step + ux * along * tw0 * 0.6, y = ty + oy * out * step + uy * along * step;
+            if (clear(dimBox(x, y))) { tx = x; ty = y; break; }
+          }
+        }
+        if (!isGhost) drawnLabelBoxes.push(dimBox(tx, ty));
         // No ghost fade on dimensions: a surfaced floor's dims should read crisply.
         addEl('text', { x: tx, y: ty, 'text-anchor':anchor, 'dominant-baseline':'middle', 'font-size':skFont(11), 'font-weight':'bold', fill: calc ? '#c2410c' : '#0066cc' }, label);
         if (!isGhost && state.mode === 'edit') {
