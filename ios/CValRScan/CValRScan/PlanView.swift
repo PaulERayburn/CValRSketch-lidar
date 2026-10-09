@@ -27,6 +27,8 @@ struct PlanView: View {
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
     @GestureState private var pinch: CGFloat = 1
+    // Zoom and pan when a pinch began, so it zooms about the fingers.
+    @State private var pinchStart: (zoom: CGFloat, pan: CGSize)?
     @GestureState private var drag: CGSize = .zero
 
     var body: some View {
@@ -54,7 +56,7 @@ struct PlanView: View {
                     .font(.footnote)
                     .foregroundStyle(.purple)
             } else {
-                Text("Pinch to zoom, drag to move. Tap a wall to enter a reading.")
+                Text("Pinch to zoom, drag to move, Fit to re-centre. Tap a wall to enter a reading.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -63,11 +65,9 @@ struct PlanView: View {
                                     pan: CGSize(width: pan.width + drag.width, height: pan.height + drag.height))
                 canvas(geo: geo, story: shown, view: view)
                     .contentShape(Rectangle())
-                    .gesture(editMode ? AnyGesture(editDrag(geo: geo, story: shown, view: view).map { _ in () })
-                                      : AnyGesture(panAndZoom.map { _ in () }))
-                    .simultaneousGesture(MagnifyGesture()
-                        .updating($pinch) { v, s, _ in if editMode { s = v.magnification } }
-                        .onEnded { v in if editMode { zoom = min(max(zoom * v.magnification, 1), 15) } })
+                    .gesture(editMode ? AnyGesture(editDrag(geo: geo, story: shown, view: view, size: box.size).map { _ in () })
+                                      : AnyGesture(panDrag(geo: geo, story: shown, size: box.size).map { _ in () }))
+                    .simultaneousGesture(anchoredZoom(geo: geo, story: shown, size: box.size))
                     .simultaneousGesture(SpatialTapGesture().onEnded { tap in
                         if editMode {
                             let walls = geo.walls.filter { $0.story == shown }
@@ -184,23 +184,45 @@ struct PlanView: View {
         }
     }
 
-    private var panAndZoom: some Gesture {
-        SimultaneousGesture(
-            MagnifyGesture()
-                .updating($pinch) { v, s, _ in s = v.magnification }
-                .onEnded { v in zoom = min(max(zoom * v.magnification, 1), 15) },
-            DragGesture(minimumDistance: 8)
-                .updating($drag) { v, s, _ in s = v.translation }
-                .onEnded { v in
-                    pan.width += v.translation.width
-                    pan.height += v.translation.height
-                })
+    private func panDrag(geo: PlanGeometry, story: Int, size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 8)
+            .updating($drag) { v, s, _ in s = v.translation }
+            .onEnded { v in
+                pan = clamp(CGSize(width: pan.width + v.translation.width, height: pan.height + v.translation.height),
+                            geo: geo, story: story, size: size, zoom: zoom)
+            }
+    }
+
+    // Zooms about the point between the fingers, so what is under them stays
+    // put, rather than about the middle of the screen.
+    private func anchoredZoom(geo: PlanGeometry, story: Int, size: CGSize) -> some Gesture {
+        MagnifyGesture()
+            .onChanged { v in
+                if pinchStart == nil { pinchStart = (zoom, pan) }
+                guard let s = pinchStart else { return }
+                let z = min(max(s.zoom * v.magnification, 1), 15), k = z / s.zoom
+                let ax = v.startLocation.x - size.width / 2, ay = v.startLocation.y - size.height / 2
+                zoom = z
+                pan = clamp(CGSize(width: ax * (1 - k) + s.pan.width * k, height: ay * (1 - k) + s.pan.height * k),
+                            geo: geo, story: story, size: size, zoom: z)
+            }
+            .onEnded { _ in pinchStart = nil }
+    }
+
+    // The middle of the screen always stays over the plan's central area (its
+    // bounds less 15% each side), so it can't be panned or zoomed out of sight.
+    private func clamp(_ p: CGSize, geo: PlanGeometry, story: Int, size: CGSize, zoom: CGFloat) -> CGSize {
+        let r = Viewport(geo: geo, story: story, size: size, zoom: zoom, pan: .zero).bounds
+        let inner = r.insetBy(dx: r.width * 0.15, dy: r.height * 0.15)
+        let cx = size.width / 2, cy = size.height / 2
+        return CGSize(width: min(max(p.width, cx - inner.maxX), cx - inner.minX),
+                      height: min(max(p.height, cy - inner.maxY), cy - inner.minY))
     }
 
     // Editing: a drag that starts on a wall end moves that end (and every wall
     // end joined to it), snapping to other corners and to square; any other
     // drag pans as usual.
-    private func editDrag(geo: PlanGeometry, story: Int, view: Viewport) -> some Gesture {
+    private func editDrag(geo: PlanGeometry, story: Int, view: Viewport, size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { v in
                 if endDrag == nil && panBase == nil {
@@ -217,7 +239,8 @@ struct PlanView: View {
                 if let d = endDrag {
                     endDrag = (d.from, snap(view.unmap(v.location), from: d.from, geo: geo, story: story, view: view))
                 } else if let b = panBase {
-                    pan = CGSize(width: b.width + v.translation.width, height: b.height + v.translation.height)
+                    pan = clamp(CGSize(width: b.width + v.translation.width, height: b.height + v.translation.height),
+                                geo: geo, story: story, size: size, zoom: zoom)
                 }
             }
             .onEnded { _ in
@@ -236,13 +259,16 @@ struct PlanView: View {
         if let c = others.min(by: { hypot(view.map($0).x - view.map(p).x, view.map($0).y - view.map(p).y)
                 < hypot(view.map($1).x - view.map(p).x, view.map($1).y - view.map(p).y) }),
            hypot(view.map(c).x - view.map(p).x, view.map(c).y - view.map(p).y) < 14 { return c }
+        // Lining up square catches within 10 points on screen, so zoomed in it
+        // catches only a fraction of an inch.
+        let catchFt = 10 / (view.scale * view.zoom)
         var q = p
         for w in geo.walls where w.story == story {
             let far: CGPoint? = hypot(w.a.x - from.x, w.a.y - from.y) < 0.3 ? w.b
                 : hypot(w.b.x - from.x, w.b.y - from.y) < 0.3 ? w.a : nil
             guard let o = far else { continue }
-            if abs(q.x - o.x) < 0.4 { q.x = o.x }
-            if abs(q.y - o.y) < 0.4 { q.y = o.y }
+            if abs(q.x - o.x) < catchFt { q.x = o.x }
+            if abs(q.y - o.y) < catchFt { q.y = o.y }
         }
         return q
     }
@@ -502,6 +528,13 @@ private struct Viewport {
         let q = CGPoint(x: (p.x - minX) * scale + ox, y: (p.y - minY) * scale + oy)
         return CGPoint(x: centre.x + (q.x - centre.x) * zoom + pan.width,
                        y: centre.y + (q.y - centre.y) * zoom + pan.height)
+    }
+
+    // Where the plan sits on screen.
+    var bounds: CGRect {
+        let a = map(CGPoint(x: minX, y: minY))
+        let b = map(CGPoint(x: minX + (centre.x * 2 - ox * 2) / scale, y: minY + (centre.y * 2 - oy * 2) / scale))
+        return CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(b.x - a.x), height: abs(b.y - a.y))
     }
 
     // Screen point back to plan feet.
