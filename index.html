@@ -5507,11 +5507,11 @@ function svgForExport() {
 
   // Title + legend layout in PAGE coords (slimmed so the drawing gets more room).
   const titleH = (includeTitle || hasBrand) ? 48 : 0;
-  const legendRowH = 20;
-  const legendFooterH = 24;
+  const legendRowH = 22;
+  const legendFooterH = 16;
   const legendPad = 10;
-  const legendHeaderH = 20;
-  const summaryRowH = (gradeSummary && includeLegend) ? 18 : 0;  // grade/basement totals live in the legend
+  const legendHeaderH = 22;
+  const summaryRowH = (gradeSummary && includeLegend) ? 20 : 0;  // grade/basement totals live in the legend
   const legendH = includeLegend ? (legendPad*2 + legendHeaderH + usedTypes.length * legendRowH + summaryRowH + legendFooterH) : 0;
 
   // ---- 2. Capture the drawing panel(s) ----
@@ -5566,9 +5566,12 @@ function svgForExport() {
     pageW = page.w;
     pageH = page.h;
   } else {
-    // Auto: page width = content width + margins; height fits content + title + legend
-    pageW = Math.max(640, contentW + fixedW + sideMargin * 2);
-    pageH = titleH + sideMargin + contentH + fixedH + sideMargin + legendH;
+    // Auto: page width = content width + margins; height fits content + title + legend.
+    // A small plan is scaled up (to 1.5x) to fill a 760 px page, so its dimensions
+    // and labels print at a readable size instead of floating small in the middle.
+    const up = Math.min(1.5, Math.max(1, (760 - sideMargin * 2 - fixedW) / contentW));
+    pageW = Math.max(640, contentW * up + fixedW + sideMargin * 2);
+    pageH = titleH + sideMargin + contentH * up + fixedH + sideMargin + legendH;
   }
 
   const canvasAvailW = pageW - sideMargin * 2;
@@ -5670,8 +5673,8 @@ function svgForExport() {
       fill: 'none', stroke: '#999', 'stroke-width': 0.75
     }));
     out.appendChild(mk('text', {
-      x: x0 + 12, y: y0 + 2, 'font-family':'Arial, sans-serif',
-      'font-size': 13, 'font-weight':'bold', fill:'#222'
+      x: x0 + 12, y: y0 + 4, 'font-family':'Arial, sans-serif',
+      'font-size': 14, 'font-weight':'bold', fill:'#222'
     }, 'Legend'));
     // Two-column layout if there are many types
     const usePerColumn = usedTypes.length > 4 ? Math.ceil(usedTypes.length / 2) : usedTypes.length;
@@ -5682,7 +5685,7 @@ function svgForExport() {
       const col = Math.floor(i / usePerColumn);
       const rowInCol = i % usePerColumn;
       const rowX = x0 + 12 + col * colW;
-      const rowY = y0 + 16 + rowInCol * legendRowH;
+      const rowY = y0 + 14 + rowInCol * legendRowH;
       const swatch = mk('rect', {
         x: rowX, y: rowY, width: 22, height: 13,
         fill: fillFor(st), stroke: 'black', 'stroke-width': 1
@@ -5690,22 +5693,22 @@ function svgForExport() {
       if (t.dashed) swatch.setAttribute('stroke-dasharray','5,3');
       out.appendChild(swatch);
       out.appendChild(mk('text', {
-        x: rowX + 30, y: rowY + 11, 'font-family':'Arial, sans-serif', 'font-size': 11, fill:'#222'
+        x: rowX + 30, y: rowY + 11, 'font-family':'Arial, sans-serif', 'font-size': 12.5, fill:'#222'
       }, t.name));
       const total = visibleShapes().filter(s => s.type === key).reduce((a, s) => a + shapeArea(s), 0);
       out.appendChild(mk('text', {
         x: rowX + colW - 20, y: rowY + 11, 'text-anchor':'end',
-        'font-family':'Arial, sans-serif', 'font-size': 11, 'font-weight':'bold', fill:'#444'
+        'font-family':'Arial, sans-serif', 'font-size': 12.5, 'font-weight':'bold', fill:'#444'
       }, `${Math.round(total)} sq ft`));
     });
     // Grade/basement totals consolidated into the legend (below the type rows)
-    let summaryBottom = y0 + 16 + usePerColumn * legendRowH;
+    let summaryBottom = y0 + 14 + usePerColumn * legendRowH;
     if (gradeSummary) {
       out.appendChild(mk('text', {
         x: x0 + 12, y: summaryBottom + 12, 'font-family':'Arial, sans-serif',
-        'font-size': 11, 'font-weight':'bold', fill:'#2b3a4a'
+        'font-size': 12.5, 'font-weight':'bold', fill:'#2b3a4a'
       }, gradeSummary));
-      summaryBottom += 18;
+      summaryBottom += 20;
     }
     // Wall-style swatches as a footer row
     const footerY = summaryBottom + 6;
@@ -5714,21 +5717,21 @@ function svgForExport() {
       stroke:'black', 'stroke-width': 2.5
     }));
     out.appendChild(mk('text', {
-      x: x0 + 58, y: footerY + 9, 'font-family':'Arial, sans-serif', 'font-size': 10, fill:'#222'
+      x: x0 + 58, y: footerY + 9, 'font-family':'Arial, sans-serif', 'font-size': 11.5, fill:'#222'
     }, 'Enclosed wall'));
     out.appendChild(mk('line', {
       x1: x0 + 190, y1: footerY + 5, x2: x0 + 230, y2: footerY + 5,
       stroke:'black', 'stroke-width': 2.5, 'stroke-dasharray':'8,5'
     }));
     out.appendChild(mk('text', {
-      x: x0 + 236, y: footerY + 9, 'font-family':'Arial, sans-serif', 'font-size': 10, fill:'#222'
+      x: x0 + 236, y: footerY + 9, 'font-family':'Arial, sans-serif', 'font-size': 11.5, fill:'#222'
     }, 'Open / dashed edge'));
     if (visibleShapes().some(s => s.calc && Object.keys(s.calc).length)) {
       out.appendChild(mk('text', {
-        x: x0 + 380, y: footerY + 9, 'font-family':'Arial, sans-serif', 'font-size': 10, 'font-weight':'bold', fill:'#c2410c'
+        x: x0 + 380, y: footerY + 9, 'font-family':'Arial, sans-serif', 'font-size': 12, 'font-weight':'bold', fill:'#c2410c'
       }, '*'));
       out.appendChild(mk('text', {
-        x: x0 + 392, y: footerY + 9, 'font-family':'Arial, sans-serif', 'font-size': 10, fill:'#222'
+        x: x0 + 392, y: footerY + 9, 'font-family':'Arial, sans-serif', 'font-size': 11.5, fill:'#222'
       }, 'Calculated, not measured'));
     }
   }
