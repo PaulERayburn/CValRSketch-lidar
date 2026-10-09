@@ -11,6 +11,12 @@
 // missed (closet backs) are moved out to where the app placed them, and each side
 // is pushed out by that wall's thickness: measured where the outside walk marked
 // the siding beside it, otherwise the default. GLA is figured from the result.
+//
+// The outside walk is first lined up with the scan (tracking can re-settle
+// between the two, leaving the walk turned or shifted). Floor the scan carried
+// outdoors through an edge with no wall (an open porch seen through a glass
+// entry) is cut back to where the walk shows the house ends, and the floor the
+// walk went around is the main floor.
 
 const FT = 3.28084;
 const SQUARE_DEG = 8;             // sides within this of the house's main directions are squared
@@ -18,7 +24,14 @@ const MERGE_FT = 0.25;            // neighbouring squared sides closer than this
 const MIN_SIDE_FT = 0.15;         // shorter sides are noise in the outline
 const WALK_SPLIT_IN = 6;          // outside-walk points further than this off one line turned a corner
 const THICKNESS_RANGE_IN = [2, 16];
+const WALK_TILT_FIX_DEG = 1.5;    // an outside walk turned more than this from the scan is turned back
+const CELL_FT = 0.1;              // grid for finding floor that lies outside the outside walk
+const MIN_CUT_SF = 4;             // smaller pieces outside the walk are noise
 export const DEFAULT_EXTERIOR_IN = 6;
+
+// The floor the outside walk was taken beside is the main floor; floors are
+// named from it. Set per scan by readCvalrScan.
+let mainStory = 0;
 
 export function readCvalrScan(d, opts = {}) {
   if (!d || d.format !== 'cvalrscan') {
@@ -34,6 +47,18 @@ export function readCvalrScan(d, opts = {}) {
   if (d.app) warnings.push(`Scanned with ${d.app}, scan format ${d.version}.`);
 
   const walk = outsideWalk(d.exterior, plan);
+  mainStory = walkStory(d) ?? 0;
+  // An outside walk can sit turned or shifted from the scan (tracking that
+  // re-settled between the two). Line it up with the walk's floor first.
+  const mainSides = (d.floors || []).filter(f => f.story === mainStory && (f.polygon || []).length >= 3)
+    .flatMap(f => { const ss = squareSides(f.polygon.map(plan)), out = outwardSign(outline(ss)); return ss.map(s => ({ ...s, out })); });
+  if (walk.lines.length >= 3) {
+    const fit = registerWalk(walk, mainSides);
+    if (fit) {
+      walk.lines = fit.lines;
+      warnings.push(`The outside walk sat ${Math.abs(fit.tiltDeg).toFixed(1)}° turned and ${Math.hypot(fit.dx, fit.dy).toFixed(1)} ft off from the scan; it was lined up with the scanned walls.`);
+    }
+  }
   if (walk.split) warnings.push(`${walk.split} outside-walk wall${walk.split > 1 ? 's' : ''} turned a corner without Next wall; split at the corner.`);
   if (walk.driftIn != null && walk.driftIn > 6) warnings.push(`The outside walk drifted ${walk.driftIn.toFixed(1)}″; its wall thicknesses are less certain.`);
 
@@ -43,8 +68,19 @@ export function readCvalrScan(d, opts = {}) {
   for (const story of stories) {
     for (const f of d.floors.filter(f => f.story === story)) {
       if (!f.polygon || f.polygon.length < 3) continue;
-      let sides = squareSides(f.polygon.map(plan));
-      const gaps = (d.gaps || []).filter(g => g.story === story).map(g => ({ a: plan(g.a), b: plan(g.b) }));
+      let poly = f.polygon.map(plan);
+      let gaps = (d.gaps || []).filter(g => g.story === story).map(g => ({ a: plan(g.a), b: plan(g.b) }));
+      // Floor the scan carried out through an edge with no wall (a porch seen
+      // through a glass door) that the outside walk shows is outdoors.
+      if (story === mainStory && walk.lines.length >= 3 && gaps.length) {
+        const cut = cutOutside(poly, d, story, plan, walk.lines, walkThickness(walk.lines, mainSides) ?? DEFAULT_EXTERIOR_IN / 12);
+        if (cut) {
+          poly = cut.poly;
+          gaps = gaps.filter(g => onOutline(poly, { x: (g.a.x + g.b.x) / 2, y: (g.a.y + g.b.y) / 2 }, 0.4));
+          warnings.push(`${floorTitle(story)}: ${Math.round(cut.sf)} sf of scanned floor lies outside the outside walk (an open porch or entry seen through glass?) and was left out. Check it.`);
+        }
+      }
+      let sides = squareSides(poly);
       const filled = fillHidden(sides, gaps, hidden.filter(h => h.story === story));
       const open = gaps.length - filled;
       if (open > 0) warnings.push(`${floorTitle(story)}: ${open} missing wall${open > 1 ? 's' : ''} in the scan (closet backs?) kept where the scan's floor stopped; check ${open > 1 ? 'them' : 'it'}.`);
@@ -287,6 +323,7 @@ function interiorDetail(d, story, plan, before, after) {
 
 // RoomPlan counts floors from where scanning began (0); appraisal plans name them.
 function floorTitle(story) {
+  story -= mainStory;
   const above = ['First floor', 'Second floor', 'Third floor', 'Fourth floor'];
   if (story >= 0) return above[story] || `Floor ${story + 1}`;
   return story === -1 ? 'Basement' : `Lower level ${-story}`;
@@ -295,6 +332,7 @@ function floorTitle(story) {
 // RoomPlan numbers floors from where scanning began; the lowest of several is a
 // basement only when the user says so, so the start floor is main.
 function classifyStory(story, stories) {
+  story -= mainStory;
   if (story === 0 || stories.length === 1) return ['main', 'living'];
   return story > 0 ? ['upper', 'upper'] : ['basement', 'finished'];
 }
@@ -445,6 +483,297 @@ function outsideWalk(ext, plan) {
     for (const part of parts) if (part.length >= 2) lines.push(fitLine(part));
   }
   return { lines, split, driftIn: ext.anchorStart && ext.anchorEnd ? Math.hypot(...drift) * 39.37 : null };
+}
+
+// The story the walk was taken beside: the highest floor at least a foot below
+// the phone's median height on the walk.
+function walkStory(d) {
+  const els = (d.exterior?.walls || []).flat().map(p => p.elevation).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!els.length || !(d.floors || []).length) return null;
+  const phone = els[Math.floor(els.length / 2)];
+  const below = d.floors.filter(f => Number.isFinite(f.elevation) && f.elevation <= phone - 0.3)
+    .sort((a, b) => b.elevation - a.elevation)[0];
+  return below ? below.story : null;
+}
+
+// Turns and slides the walk's lines to sit evenly outside the scanned sides.
+// The turn is the walk's typical angle off square; the slide is the one that
+// puts the most walk length a wall's thickness outside a parallel side, taken
+// at the middle of the range of equally good slides. Returns null when the
+// walk already fits as well as anything found.
+function registerWalk(walk, sides) {
+  const angleOff = l => { let a = Math.atan2(l.uy, l.ux) * 180 / Math.PI; a = ((a % 90) + 90) % 90; return a > 45 ? a - 90 : a; };
+  const long = walk.lines.filter(l => l.hi - l.lo >= 4);
+  if (long.length < 3) return null;
+  const sorted = long.map(l => ({ a: angleOff(l), w: l.hi - l.lo })).sort((p, q) => p.a - q.a);
+  const half = sorted.reduce((t, x) => t + x.w, 0) / 2;
+  let acc = 0, tilt = 0;
+  for (const x of sorted) { acc += x.w; if (acc >= half) { tilt = x.a; break; } }
+  const turnLines = deg => {
+    if (Math.abs(deg) < WALK_TILT_FIX_DEG) return walk.lines;
+    const cx = walk.lines.reduce((t, l) => t + l.mx, 0) / walk.lines.length, cy = walk.lines.reduce((t, l) => t + l.my, 0) / walk.lines.length;
+    const r = -deg * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+    return walk.lines.map(l => ({ ...l, mx: cx + (l.mx - cx) * c - (l.my - cy) * s, my: cy + (l.mx - cx) * s + (l.my - cy) * c,
+                                  ux: l.ux * c - l.uy * s, uy: l.ux * s + l.uy * c }));
+  };
+  const score = (lines, dx, dy) => {
+    let total = 0;
+    for (const l of lines) {
+      let best = 0;
+      const lx = l.mx + dx, ly = l.my + dy;
+      for (const s of sides) {
+        if (s.kind === 'free') continue;
+        const h = s.kind === 'h';
+        if ((h ? Math.abs(l.ux) : Math.abs(l.uy)) < Math.cos(5 * Math.PI / 180)) continue;
+        const n = outwardNormal(s, s.out);
+        const gapIn = ((h ? ly - s.c : lx - s.c) * (h ? Math.sign(n.y) : Math.sign(n.x))) * 12;
+        if (gapIn < 3 || gapIn > 20) continue;
+        const u = h ? l.ux : l.uy, m = h ? lx : ly;
+        const l0 = m + Math.min(l.lo * u, l.hi * u), l1 = m + Math.max(l.lo * u, l.hi * u);
+        const lo = Math.min(s.a[h ? 'x' : 'y'], s.b[h ? 'x' : 'y']), hi = Math.max(s.a[h ? 'x' : 'y'], s.b[h ? 'x' : 'y']);
+        best = Math.max(best, Math.min(hi, l1) - Math.max(lo, l0));
+      }
+      total += best;
+    }
+    return total;
+  };
+  const asIs = score(walk.lines, 0, 0);
+  let found = null;
+  for (const deg of Math.abs(tilt) >= WALK_TILT_FIX_DEG ? [0, tilt] : [0]) {
+    const lines = turnLines(deg);
+    const grid = [];
+    let max = 0;
+    for (let dx = -12; dx <= 12; dx += 0.25) for (let dy = -12; dy <= 12; dy += 0.25) {
+      const v = score(lines, dx, dy);
+      grid.push([dx, dy, v]);
+      if (v > max) max = v;
+    }
+    const top = grid.filter(g => g[2] >= max * 0.97);
+    const dx = top.reduce((t, g) => t + g[0], 0) / top.length, dy = top.reduce((t, g) => t + g[1], 0) / top.length;
+    if (!found || max > found.max) found = { max, lines, dx, dy, tiltDeg: deg };
+  }
+  const total = walk.lines.reduce((t, l) => t + (l.hi - l.lo), 0);
+  if (!found || found.max < asIs * 1.3 + 2 || found.max < total * 0.4 || (Math.hypot(found.dx, found.dy) < 0.3 && !found.tiltDeg)) return null;
+  return { ...found, lines: found.lines.map(l => ({ ...l, mx: l.mx + found.dx, my: l.my + found.dy })) };
+}
+
+// Floor that lies outside the outside walk. On a grid, the outdoors is flooded
+// in from the edge, stopped by scanned walls (with their doors and windows) and
+// by the walk's lines; the flood reaches floor only where the scan's floor ran
+// out past an edge with no wall. A flooded piece of floor is cut when it lies
+// against the walk; then the floor is trimmed back from the walk by one wall
+// thickness, to the inside face. Returns the new outline, or null.
+function cutOutside(poly, d, story, plan, lines, thickFt) {
+  const segs = ['walls', 'doors', 'windows', 'openings'].flatMap(k => (d[k] || []).filter(w => w.story === story))
+    .map(w => [plan(w.a), plan(w.b)]);
+  const walkSegs = lines.map(l => [
+    { x: l.mx + l.ux * (l.lo - 1.5), y: l.my + l.uy * (l.lo - 1.5) },
+    { x: l.mx + l.ux * (l.hi + 1.5), y: l.my + l.uy * (l.hi + 1.5) }]);
+  const all = [...poly, ...walkSegs.flat()];
+  const x0 = Math.min(...all.map(p => p.x)) - 2, y0 = Math.min(...all.map(p => p.y)) - 2;
+  const W = Math.ceil((Math.max(...all.map(p => p.x)) + 2 - x0) / CELL_FT), H = Math.ceil((Math.max(...all.map(p => p.y)) + 2 - y0) / CELL_FT);
+  if (W * H > 4e6) return null;
+  const idx = (i, j) => j * W + i;
+  // Floor cells: centres inside the polygon, row by row.
+  const floor = new Uint8Array(W * H);
+  for (let j = 0; j < H; j++) {
+    const y = y0 + (j + 0.5) * CELL_FT, xs = [];
+    for (let k = 0; k < poly.length; k++) {
+      const a = poly[k], b = poly[(k + 1) % poly.length];
+      if ((a.y <= y) !== (b.y <= y)) xs.push(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      for (let i = Math.max(0, Math.ceil((xs[k] - x0) / CELL_FT - 0.5)); i < W && x0 + (i + 0.5) * CELL_FT < xs[k + 1]; i++) floor[idx(i, j)] = 1;
+    }
+  }
+  // Barriers: 1 a scanned wall, 2 the walk.
+  const bar = new Uint8Array(W * H);
+  const draw = ([a, b], v) => {
+    const n = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / (CELL_FT / 2)) + 1;
+    for (let k = 0; k <= n; k++) {
+      const ci = Math.floor((a.x + (b.x - a.x) * k / n - x0) / CELL_FT), cj = Math.floor((a.y + (b.y - a.y) * k / n - y0) / CELL_FT);
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const i = ci + di, j = cj + dj;
+        if (i >= 0 && j >= 0 && i < W && j < H && (bar[idx(i, j)] === 0 || v === 1)) bar[idx(i, j)] = v;
+      }
+    }
+  };
+  walkSegs.forEach(s => draw(s, 2));
+  segs.forEach(s => draw(s, 1));
+  // Flood the outdoors from the grid's edge.
+  const out = new Uint8Array(W * H), queue = [];
+  const push = (i, j) => { const k = idx(i, j); if (!out[k] && !bar[k]) { out[k] = 1; queue.push(k); } };
+  for (let i = 0; i < W; i++) { push(i, 0); push(i, H - 1); }
+  for (let j = 0; j < H; j++) { push(0, j); push(W - 1, j); }
+  const step = (k, f) => { const i = k % W, j = (k - i) / W; if (i > 0) f(i - 1, j); if (i < W - 1) f(i + 1, j); if (j > 0) f(i, j - 1); if (j < H - 1) f(i, j + 1); };
+  // Diagonal steps too, so a distance measured with it keeps corners square.
+  const step8 = (k, f) => {
+    const i = k % W, j = (k - i) / W;
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+      const a = i + di, b = j + dj;
+      if ((di || dj) && a >= 0 && b >= 0 && a < W && b < H) f(a, b);
+    }
+  };
+  for (let q = 0; q < queue.length; q++) step(queue[q], push);
+  // Inside the walk's loop, a straight line from a cell crosses the walk
+  // whichever way it runs; outside, at least one way it reaches open ground.
+  // A piece is outside when most of a sample of its cells are.
+  const escapes = k => {
+    const i0 = k % W, j0 = (k - i0) / W;
+    return [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([di, dj]) => {
+      for (let i = i0 + di, j = j0 + dj; i >= 0 && j >= 0 && i < W && j < H; i += di, j += dj) if (bar[idx(i, j)] === 2) return false;
+      return true;
+    });
+  };
+  const outsideLoop = piece => {
+    const n = Math.min(piece.length, 200);
+    let outside = 0;
+    for (let t = 0; t < n; t++) if (escapes(piece[Math.floor(t * piece.length / n)])) outside++;
+    return outside > n / 2;
+  };
+  // Flooded floor in pieces; keep the pieces that lie against the walk.
+  const cut = new Uint8Array(W * H), seen = new Uint8Array(W * H), strips = [];
+  let cutCells = 0, floorCells = 0;
+  for (let k = 0; k < W * H; k++) floorCells += floor[k];
+  for (let k0 = 0; k0 < W * H; k0++) {
+    if (!floor[k0] || !out[k0] || seen[k0]) continue;
+    const piece = [k0];
+    seen[k0] = 1;
+    let byWalk = false;
+    for (let q = 0; q < piece.length; q++) step(piece[q], (i, j) => {
+      const k = idx(i, j);
+      if (bar[k] === 2) byWalk = true;
+      if (floor[k] && out[k] && !seen[k]) { seen[k] = 1; piece.push(k); }
+    });
+    if (byWalk && piece.length * CELL_FT * CELL_FT >= MIN_CUT_SF && outsideLoop(piece)) { piece.forEach(k => { cut[k] = 1; }); cutCells += piece.length; }
+    else if (byWalk) strips.push(piece);
+  }
+  // A thin flooded strip lying wholly within a wall's thickness of the walk,
+  // next to a cut, is the wall itself (the porch side of a garage wall).
+  if (cutCells) {
+    const nearWalk = new Int32Array(W * H).fill(-1), q = [];
+    for (let k = 0; k < W * H; k++) if (bar[k] === 2) { nearWalk[k] = 0; q.push(k); }
+    const lim = Math.round((thickFt + 0.5) / CELL_FT);
+    for (let t = 0; t < q.length; t++) {
+      const k0 = q[t];
+      if (nearWalk[k0] >= lim) continue;
+      step(k0, (i, j) => { const k = idx(i, j); if (nearWalk[k] === -1 && floor[k]) { nearWalk[k] = nearWalk[k0] + 1; q.push(k); } });
+    }
+    for (const piece of strips) {
+      if (piece.every(k => nearWalk[k] !== -1)) { piece.forEach(k => { cut[k] = 1; }); cutCells += piece.length; }
+    }
+  }
+  if (!cutCells || cutCells > floorCells * 0.3) return null;
+  // Trim back from the walk by a wall's thickness to the inside face: floor
+  // reached from the cut across the walk line (never through a scanned wall).
+  const reach = Math.round(thickFt / CELL_FT) + 2;
+  const dist = new Int32Array(W * H).fill(-1), q2 = [];
+  for (let k = 0; k < W * H; k++) if (cut[k]) { dist[k] = 0; q2.push(k); }
+  for (let q = 0; q < q2.length; q++) {
+    const k0 = q2[q];
+    if (dist[k0] >= reach) continue;
+    step8(k0, (i, j) => {
+      const k = idx(i, j);
+      if (dist[k] !== -1 || bar[k] === 1 || (!floor[k] && bar[k] !== 2)) return;
+      dist[k] = dist[k0] + 1; q2.push(k);
+    });
+  }
+  let keep = new Uint8Array(W * H);
+  for (let k = 0; k < W * H; k++) keep[k] = floor[k] && dist[k] === -1 ? 1 : 0;
+  // Smooth the new edges only (not the rest of the scan): drop nubs under
+  // about a foot near where the floor was cut. (Filling nicks too would put
+  // back the trimmed wall.)
+  const zone = new Uint8Array(W * H);
+  for (let k = 0; k < W * H; k++) if (dist[k] !== -1) {
+    const i = k % W, j = (k - i) / W;
+    for (let dj = -8; dj <= 8; dj++) for (let di = -8; di <= 8; di++) {
+      const a = i + di, b = j + dj;
+      if (a >= 0 && b >= 0 && a < W && b < H) zone[idx(a, b)] = 1;
+    }
+  }
+  const morph = (src, grow) => {
+    const dst = src.slice();
+    for (let k = 0; k < W * H; k++) {
+      if (!zone[k]) continue;
+      const i = k % W, j = (k - i) / W;
+      let v = grow ? 0 : 1;
+      for (let dj = -5; dj <= 5 && v === (grow ? 0 : 1); dj++) for (let di = -5; di <= 5; di++) {
+        const a = i + di, b = j + dj;
+        const c = a >= 0 && b >= 0 && a < W && b < H ? src[idx(a, b)] : 0;
+        if (grow ? c : !c) { v = grow ? 1 : 0; break; }
+      }
+      dst[k] = v && (grow ? floor[k] : 1) ? v : 0;
+    }
+    return dst;
+  };
+  keep = morph(morph(keep, false), true);   // open: drop nubs
+  const traced = traceCells(keep, W, H);
+  if (!traced) return null;
+  const pts = traced.map(([i, j]) => ({ x: x0 + i * CELL_FT, y: y0 + j * CELL_FT }));
+  return { poly: pts, sf: (floorCells - traced.cells) * CELL_FT * CELL_FT };
+}
+
+// The outer boundary of the largest piece of set cells, as corner points.
+function traceCells(m, W, H) {
+  // Directed cell edges with the piece on the right, joined into loops.
+  const next = new Map();
+  const key = (i, j) => j * (W + 1) + i;
+  const at = (i, j) => i >= 0 && j >= 0 && i < W && j < H && m[j * W + i];
+  let cells = 0;
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    if (!m[j * W + i]) continue;
+    cells++;
+    if (!at(i, j - 1)) next.set(key(i, j), key(i + 1, j));
+    if (!at(i + 1, j)) next.set(key(i + 1, j), key(i + 1, j + 1));
+    if (!at(i, j + 1)) next.set(key(i + 1, j + 1), key(i, j + 1));
+    if (!at(i - 1, j)) next.set(key(i, j + 1), key(i, j));
+  }
+  let best = null, bestArea = 0;
+  const done = new Set();
+  for (const start of next.keys()) {
+    if (done.has(start)) continue;
+    const loop = [];
+    for (let k = start; !done.has(k) && next.has(k); k = next.get(k)) { done.add(k); loop.push([k % (W + 1), Math.floor(k / (W + 1))]); }
+    const area = Math.abs(signedArea(loop.map(([x, y]) => ({ x, y }))));
+    if (area > bestArea) { bestArea = area; best = loop; }
+  }
+  if (!best) return null;
+  // Corners only: drop points on a straight run.
+  const pts = best.filter((p, n) => {
+    const a = best[(n + best.length - 1) % best.length], b = best[(n + 1) % best.length];
+    return (p[0] - a[0]) * (b[1] - p[1]) - (p[1] - a[1]) * (b[0] - p[0]) !== 0;
+  });
+  return Object.assign(pts, { cells });
+}
+
+// The walk's typical gap outside the scanned sides beside it: the wall
+// thickness, in feet.
+function walkThickness(lines, sides) {
+  const gaps = [];
+  for (const l of lines) for (const s of sides) {
+    if (s.kind === 'free') continue;
+    const h = s.kind === 'h';
+    if ((h ? Math.abs(l.ux) : Math.abs(l.uy)) < Math.cos(5 * Math.PI / 180)) continue;
+    const n = outwardNormal(s, s.out);
+    const gapIn = ((h ? l.my - s.c : l.mx - s.c) * (h ? Math.sign(n.y) : Math.sign(n.x))) * 12;
+    if (gapIn < THICKNESS_RANGE_IN[0] || gapIn > THICKNESS_RANGE_IN[1]) continue;
+    const u = h ? l.ux : l.uy, m = h ? l.mx : l.my;
+    const l0 = m + Math.min(l.lo * u, l.hi * u), l1 = m + Math.max(l.lo * u, l.hi * u);
+    const lo = Math.min(s.a[h ? 'x' : 'y'], s.b[h ? 'x' : 'y']), hi = Math.max(s.a[h ? 'x' : 'y'], s.b[h ? 'x' : 'y']);
+    if (Math.min(hi, l1) - Math.max(lo, l0) >= 1) gaps.push(gapIn);
+  }
+  if (!gaps.length) return null;
+  gaps.sort((a, b) => a - b);
+  return gaps[Math.floor(gaps.length / 2)] / 12;
+}
+
+function onOutline(poly, p, tol) {
+  return poly.some((a, k) => {
+    const b = poly[(k + 1) % poly.length], dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2));
+    return Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y) <= tol;
+  });
 }
 
 function splitWalk(pts) {
