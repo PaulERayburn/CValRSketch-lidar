@@ -35,6 +35,9 @@ struct PlanFeature {
     let b: CGPoint
     var id: UUID? = nil          // the scan's door or opening
     var wall: UUID? = nil        // the wall it is in
+    var hingeAtB = false         // doors: which end the leaf turns on
+    var side = 1                 // doors: +1 opens to the normal (−dy, dx) side of a→b
+    var style = DoorStyle.swing
 }
 
 // A stretch of one face that a single laser reading covers: collinear
@@ -360,12 +363,15 @@ extension ScanController {
             g.features += list.filter { !hiddenOpenings.contains($0.identifier) }.map { s in
                 let seg = PlanExport.segment(s)
                 return PlanFeature(kind: kind, story: s.story, a: rot(seg.a), b: rot(seg.b),
-                                   id: s.identifier, wall: s.parentIdentifier)
+                                   id: s.identifier, wall: s.parentIdentifier,
+                                   side: kind == .door ? PlanExport.defaultSide(a: seg.a, b: seg.b, story: s.story,
+                                                                               floors: structure.floors.map(PlanExport.floor)) : 1)
             }
         }
         for (i, o) in addedOpenings.enumerated() {
             let a = rot([o.a.x, o.a.y]), b = rot([o.b.x, o.b.y])
-            g.features.append(PlanFeature(kind: o.kind == .entrance ? .entrance : o.kind == .interior ? .door : .opening, story: o.story, a: a, b: b))
+            g.features.append(PlanFeature(kind: o.kind == .entrance ? .entrance : o.kind == .interior ? .door : .opening,
+                                          story: o.story, a: a, b: b, hingeAtB: o.hingeAtB, side: o.side, style: o.style))
             g.addedOpenings.append((i, o.story, a, b))
         }
         g.walls = segs.map { surface, s in

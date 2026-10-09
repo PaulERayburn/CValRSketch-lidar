@@ -659,7 +659,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                 guard o.a.count == 2, o.b.count == 2 else { return nil }
                 return AddedOpening(story: o.story, wall: o.wall.flatMap(UUID.init(uuidString:)),
                                     a: SIMD2(o.a[0], o.a[1]), b: SIMD2(o.b[0], o.b[1]),
-                                    kind: OpeningKind(rawValue: o.kind ?? "") ?? (o.door == false ? .opening : .interior))
+                                    kind: OpeningKind(rawValue: o.kind ?? "") ?? (o.door == false ? .opening : .interior),
+                                    hingeAtB: o.hingeAtB ?? false, side: o.side ?? 1,
+                                    style: DoorStyle(rawValue: o.style ?? "") ?? .swing)
             }
             hiddenOpenings = Set((saved?.hiddenOpenings ?? []).compactMap(UUID.init(uuidString:)))
             editHistory = []
@@ -741,7 +743,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         struct GapDepthIn: Decodable { let gap: [[Double]]; let from: String; let inches: Int }
         struct RoomLabelIn: Decodable { let story: Int; let point: [Double]; let name: String; let replaces: Int? }
         struct OpeningIn: Decodable { let story: Int; let wall: String?; let a: [Double]; let b: [Double]
-            let kind: String?; let door: Bool? }
+            let kind: String?; let door: Bool?; let hingeAtB: Bool?; let side: Int?; let style: String? }
         struct WallEditIn: Decodable { let wall: String; let hidden: Bool; let a: [Double]?; let b: [Double]? }
         struct SpanIn: Decodable {
             let a: [Double]; let b: [Double]; let story: Int; let inches: Int; let face: String; let entered: String?

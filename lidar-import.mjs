@@ -274,7 +274,8 @@ function interiorDetail(d, story, plan, before, after) {
   const map = w => { const p = plan(w); return { x: +mx(p.x).toFixed(3), y: +my(p.y).toFixed(3) }; };
   const lines = [];
   for (const [list, kind] of [[d.walls, 'wall'], [d.doors, 'door'], [d.windows, 'window'], [d.openings, 'opening']]) {
-    for (const s of (list || []).filter(s => s.story === story)) lines.push({ a: map(s.a), b: map(s.b), kind: s.type === 'entrance' ? 'entrance' : kind });
+    for (const s of (list || []).filter(s => s.story === story)) lines.push({ a: map(s.a), b: map(s.b), kind: s.type === 'entrance' ? 'entrance' : kind,
+                                                                   ...(s.hinge ? { hinge: s.hinge, side: s.side || 1, style: s.style || 'swing' } : {}) });
   }
   // Room names as the user left them (format 7), else the scan's own.
   const rooms = d.rooms

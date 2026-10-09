@@ -1239,7 +1239,7 @@ const DETAIL_STYLE = {
   door:    { stroke: '#b45309', 'stroke-width': 3 },
   entrance:{ stroke: '#991b1b', 'stroke-width': 4.5 },
   window:  { stroke: '#2b7bb9', 'stroke-width': 4 },
-  opening: { stroke: '#9ca3af', 'stroke-width': 2, 'stroke-dasharray': '4,3' },
+  opening: { stroke: '#7c3aed', 'stroke-width': 2.5, 'stroke-dasharray': '5,3' },
 };
 function renderDetail(sh, W) {
   const o = sh.points[0];
@@ -1248,6 +1248,32 @@ function renderDetail(sh, W) {
     const a = at(l.a), b = at(l.b);
     const el = addEl('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, 'stroke-linecap': 'round', ...(DETAIL_STYLE[l.kind] || DETAIL_STYLE.wall) });
     el.style.pointerEvents = 'none';
+    // A door's symbol (side +1 = the (−dy, dx) side of a→b). Swing: the open
+    // leaf at the hinge and the quarter circle its edge sweeps. Pocket: the
+    // leaf dashed inside the wall beyond the hinge end. Bifold: leaves folded
+    // out from each jamb. Sliding: two overlapping panels.
+    if (l.hinge && (l.kind === 'door' || l.kind === 'entrance')) {
+      const L = Math.hypot(b.x - a.x, b.y - a.y) || 1, ux = (b.x - a.x) / L, uy = (b.y - a.y) / L;
+      const nx = -uy * l.side, ny = ux * l.side;
+      const P = (t, o) => `${a.x + ux * t + nx * o} ${a.y + uy * t + ny * o}`;
+      let d = '', dash = null;
+      if (l.style === 'pocket') {
+        d = l.hinge === 'b' ? `M${P(L * 0.15, 2)} L${P(L * 2, 2)}` : `M${P(-L, 2)} L${P(L * 0.85, 2)}`; dash = '4,3';
+      } else if (l.style === 'bifold') {
+        const k = L * 0.18;
+        d = `M${P(0, 0)} L${P(L * 0.125, k)} L${P(L * 0.25, 0)} M${P(L, 0)} L${P(L * 0.875, k)} L${P(L * 0.75, 0)}`;
+      } else if (l.style === 'sliding') {
+        d = `M${P(0, 2.5)} L${P(L * 0.55, 2.5)} M${P(L * 0.45, -2.5)} L${P(L, -2.5)}`;
+      } else {
+        const h = l.hinge === 'b' ? b : a, e = l.hinge === 'b' ? a : b;
+        const leaf = { x: h.x + nx * L, y: h.y + ny * L };
+        const sweep = ((e.x - h.x) * ny - (e.y - h.y) * nx) > 0 ? 1 : 0;
+        d = `M${h.x} ${h.y} L${leaf.x} ${leaf.y} M${e.x} ${e.y} A${L} ${L} 0 0 ${sweep} ${leaf.x} ${leaf.y}`;
+      }
+      const sw = addEl('path', { d, fill: 'none', stroke: DETAIL_STYLE[l.kind].stroke, 'stroke-width': 1, opacity: 0.85,
+        ...(dash ? { 'stroke-dasharray': dash } : {}) });
+      sw.style.pointerEvents = 'none';
+    }
   }
   for (const r of sh.detail.rooms || []) {
     const p = at(r);
@@ -5997,7 +6023,7 @@ document.getElementById('import-pdf').addEventListener('change', async (e) => {
 // ===== LIDAR SCAN IMPORT =====
 // A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
 // lidar-import.mjs loads only when a scan is picked.
-const LIDAR_IMPORT_VERSION = '0.6.0';
+const LIDAR_IMPORT_VERSION = '0.6.2';
 async function importScan(file) {
   let d;
   try { d = JSON.parse(await file.text()); }
@@ -6156,7 +6182,7 @@ function pdfImportToSketch(res, picked) {
       // moves with the area; it is drawn for a detailed plan and never counted.
       if (r.f.detail) {
         const rel = p => ({ x: +(p.x - ox + nextX - pts[0].x).toFixed(4), y: +(p.y - oy - pts[0].y).toFixed(4) });
-        sh.detail = { lines: r.f.detail.lines.map(l => ({ a: rel(l.a), b: rel(l.b), kind: l.kind })),
+        sh.detail = { lines: r.f.detail.lines.map(l => ({ a: rel(l.a), b: rel(l.b), kind: l.kind, ...(l.hinge ? { hinge: l.hinge, side: l.side, style: l.style } : {}) })),
                       rooms: r.f.detail.rooms.map(rm => ({ ...rel(rm), name: rm.name })) };
       }
       // Walls a scan's fit calculated rather than measured.

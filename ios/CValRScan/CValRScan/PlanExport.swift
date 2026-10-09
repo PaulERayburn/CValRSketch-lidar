@@ -54,6 +54,28 @@ enum PlanExport {
         let wall: String?         // parent wall id for doors, windows, openings
         let curved: Bool
         var type: String? = nil   // added doors: "entrance" or "interior"
+        var hinge: String? = nil  // doors: "a" or "b", the end the leaf turns on
+        var side: Int? = nil      // doors: +1 opens to the normal (−dy, dx) side of a→b, −1 the other
+        var style: String? = nil  // doors: swing, pocket, bifold or sliding
+    }
+
+    // The side a door opens to by default: into the floor (a room), from the
+    // middle of the door a foot each way; +1 when both sides are floor.
+    static func defaultSide(a: [Double], b: [Double], story: Int, floors: [Floor]) -> Int {
+        let dx = b[0] - a[0], dy = b[1] - a[1], L = max(hypot(dx, dy), 1e-6)
+        let nx = -dy / L, ny = dx / L, mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2
+        func inFloor(_ x: Double, _ y: Double) -> Bool {
+            floors.filter { $0.story == story }.contains { f in
+                var r = false, j = f.polygon.count - 1
+                for i in f.polygon.indices {
+                    let p = f.polygon[i], q = f.polygon[j]
+                    if (p[1] > y) != (q[1] > y), x < (q[0] - p[0]) * (y - p[1]) / (q[1] - p[1]) + p[0] { r.toggle() }
+                    j = i
+                }
+                return r
+            }
+        }
+        return inFloor(mx + nx * 0.3, my + ny * 0.3) || !inFloor(mx - nx * 0.3, my - ny * 0.3) ? 1 : -1
     }
 
     struct Floor: Encodable {
@@ -111,7 +133,10 @@ enum PlanExport {
     // Room names the user gave, renamed, or (empty name) removed.
     struct RoomLabelOut: Encodable { let story: Int; let point: [Double]; let name: String; let replaces: Int? }
     // Doors and openings the user added on a wall; also in doors / openings.
-    struct OpeningOut: Encodable { let story: Int; let wall: String?; let a: [Double]; let b: [Double]; let kind: String }
+    struct OpeningOut: Encodable {
+        let story: Int; let wall: String?; let a: [Double]; let b: [Double]; let kind: String; let hingeAtB: Bool; let side: Int
+        let style: String
+    }
     // Every room name as it stands, scanned or the user's, for the importer.
     struct RoomOut: Encodable { let story: Int; let center: [Double]; let name: String }
 
@@ -146,13 +171,20 @@ enum PlanExport {
                 let w = o.wall.flatMap { id in walls.first { $0.id == id.uuidString } }
                 return Segment(id: "added-\(o.kind.rawValue)-\(i)", story: o.story, a: [o.a.x, o.a.y], b: [o.b.x, o.b.y],
                                height: 2.03, bottom: w?.bottom ?? 0, wall: o.wall?.uuidString, curved: false,
-                               type: door ? o.kind.rawValue : nil)
+                               type: door ? o.kind.rawValue : nil,
+                               hinge: door ? (o.hingeAtB ? "b" : "a") : nil, side: door ? o.side : nil,
+                               style: door ? o.style.rawValue : nil)
             }
         }
         let kept = { (l: [CapturedRoom.Surface]) in l.filter { !hiddenOpenings.contains($0.identifier) }.map(segment) }
-        let doors = kept(s.doors) + added(true)
-        let windows = s.windows.map(segment), openings = kept(s.openings) + added(false)
         let floors = s.floors.map(floor)
+        let doors = kept(s.doors).map { d in
+            var d = d
+            d.hinge = "a"
+            d.side = defaultSide(a: d.a, b: d.b, story: d.story, floors: floors)
+            return d
+        } + added(true)
+        let windows = s.windows.map(segment), openings = kept(s.openings) + added(false)
         let plan = Plan(
             createdAt: ISO8601DateFormatter().string(from: Date()),
             walls: walls,
@@ -183,7 +215,8 @@ enum PlanExport {
             },
             hiddenOpenings: hiddenOpenings.map(\.uuidString).sorted(),
             roomLabels: roomLabels.map { RoomLabelOut(story: $0.story, point: [$0.point.x, $0.point.y], name: $0.name, replaces: $0.replaces) },
-            addedOpenings: addedOpenings.map { OpeningOut(story: $0.story, wall: $0.wall?.uuidString, a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y], kind: $0.kind.rawValue) },
+            addedOpenings: addedOpenings.map { OpeningOut(story: $0.story, wall: $0.wall?.uuidString, a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y], kind: $0.kind.rawValue,
+                                                             hingeAtB: $0.hingeAtB, side: $0.side, style: $0.style.rawValue) },
             rooms: rooms.map { RoomOut(story: $0.story, center: [$0.center.x, $0.center.y], name: $0.name) },
             measurements: measurements
                 .sorted { $0.key.uuidString < $1.key.uuidString }
@@ -268,7 +301,16 @@ struct AddedOpening: Equatable {
     var a: SIMD2<Double>
     var b: SIMD2<Double>
     var kind: OpeningKind
+    // Door swing: the hinge at end b instead of a, and the side it opens to:
+    // +1 the side the normal (−dy, dx) of a→b points to, −1 the other.
+    var hingeAtB = false
+    var side = 1
+    var style = DoorStyle.swing
 }
+
+// How a door opens. Pocket slides into the wall at the hinge end; bifold
+// folds toward its side; sliding (bypass) panels overlap.
+enum DoorStyle: String, CaseIterable { case swing, pocket, bifold, sliding }
 
 // An added door's type: an exterior (entrance) door, an interior (privacy)
 // door, or an opening with no door.

@@ -95,23 +95,37 @@ struct PlanView: View {
                                     ?? view.nearest(to: view.map(CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)), in: walls)
                             }
                             func inches(_ a: CGPoint, _ b: CGPoint) -> Int { Int((hypot(b.x - a.x, b.y - a.y) * 12).rounded()) }
+                            // A door's swing as drawn (a→b) restated along its wall's a→b, which
+                            // is how the saved opening runs.
+                            func swing(_ a: CGPoint, _ b: CGPoint, on w: PlanWall, hingeAtB: Bool, side: Int) -> (Bool, Int) {
+                                let same = (b.x - a.x) * w.direction.dx + (b.y - a.y) * w.direction.dy >= 0
+                                return same ? (hingeAtB, side) : (!hingeAtB, -side)
+                            }
                             if let o = geo.addedOpenings.filter({ $0.story == shown })
                                 .first(where: { view.distance(tap.location, $0.a, $0.b) < 20 }),
                                let w = wallUnder(o.a, o.b, scan.addedOpenings[o.index].wall) {
+                                let src = scan.addedOpenings[o.index]
+                                let (h, s) = swing(o.a, o.b, on: w, hingeAtB: src.hingeAtB, side: src.side)
                                 doorDraft = DoorDraft(wall: w, at: CGPoint(x: (o.a.x + o.b.x) / 2, y: (o.a.y + o.b.y) / 2),
-                                                      ref: .added(o.index), kind: scan.addedOpenings[o.index].kind, inches: inches(o.a, o.b))
+                                                      ref: .added(o.index), kind: src.kind, inches: inches(o.a, o.b),
+                                                      hingeAtB: h, side: s, style: src.style)
                                 return
                             }
                             if let f = geo.features.filter({ $0.story == shown && $0.id != nil && $0.kind != .window })
                                 .first(where: { view.distance(tap.location, $0.a, $0.b) < 20 }),
                                let id = f.id, let w = wallUnder(f.a, f.b, f.wall) {
+                                let (h, s) = swing(f.a, f.b, on: w, hingeAtB: f.hingeAtB, side: f.side)
                                 doorDraft = DoorDraft(wall: w, at: CGPoint(x: (f.a.x + f.b.x) / 2, y: (f.a.y + f.b.y) / 2),
                                                       ref: .scanned(id), kind: f.kind == .opening ? .opening : .interior,
-                                                      inches: inches(f.a, f.b))
+                                                      inches: inches(f.a, f.b), hingeAtB: h, side: s)
                                 return
                             }
                             if let w = view.nearest(to: tap.location, in: walls) {
-                                doorDraft = DoorDraft(wall: w, at: view.unmap(tap.location), ref: .new, kind: .interior, inches: 32)
+                                // A new door opens into the floor by default.
+                                let at = view.unmap(tap.location), n = w.normal
+                                let into = geo.floors.filter { $0.story == shown }
+                                    .contains { ScanController.inside(CGPoint(x: at.x + n.dx, y: at.y + n.dy), $0.points) }
+                                doorDraft = DoorDraft(wall: w, at: at, ref: .new, kind: .interior, inches: 32, side: into ? 1 : -1)
                             }
                             return
                         }
@@ -213,8 +227,14 @@ struct PlanView: View {
         }
         .sheet(item: $doorDraft) { d in
             DoorSheet(draft: d) { choice in
-                guard let (kind, inches) = choice else { scan.setOpening(nil, replacing: d.ref); return }
-                scan.setOpening(opening(on: d.wall, at: d.at, inches: inches, kind: kind, geo: geo), replacing: d.ref)
+                guard let c = choice else { scan.setOpening(nil, replacing: d.ref); return }
+                var o = opening(on: d.wall, at: d.at, inches: c.inches, kind: c.kind, geo: geo)
+                // The new opening runs along the wall a→b; swing sides are kept
+                // relative to the door as it was drawn in the sheet.
+                o.hingeAtB = c.hingeAtB
+                o.side = c.side
+                o.style = c.style
+                scan.setOpening(o, replacing: d.ref)
             }
             .presentationDetents([.medium, .large])
         }
@@ -431,8 +451,15 @@ struct PlanView: View {
                 var p = Path()
                 p.move(to: view.map(f.a))
                 p.addLine(to: view.map(f.b))
-                let colour: Color = f.kind == .door ? .orange : f.kind == .entrance ? .red : (f.kind == .window ? .cyan : .gray)
-                ctx.stroke(p, with: .color(colour.opacity(0.85)), lineWidth: f.kind == .entrance ? 7 : 5)
+                let colour: Color = f.kind == .door ? .orange : f.kind == .entrance ? .red : (f.kind == .window ? .cyan : .purple)
+                ctx.stroke(p, with: .color(colour.opacity(0.85)),
+                           style: StrokeStyle(lineWidth: f.kind == .entrance ? 7 : 5, lineCap: .butt,
+                                              dash: f.kind == .opening ? [6, 4] : []))
+                if f.kind == .door || f.kind == .entrance {
+                    let sym = Self.doorSymbol(a: view.map(f.a), b: view.map(f.b), hingeAtB: f.hingeAtB, side: f.side, style: f.style)
+                    ctx.stroke(sym.path, with: .color(colour.opacity(0.75)),
+                               style: StrokeStyle(lineWidth: 1.4, dash: sym.dashed ? [4, 3] : []))
+                }
             }
             for gap in geo.gaps where gap.story == story {
                 var p = Path()
@@ -527,6 +554,62 @@ struct PlanView: View {
                               force: w.id == selectedID, placed: &placed)
             }
         }
+    }
+
+    // A door's plan symbol for its style. Pocket: the leaf drawn dashed inside
+    // the wall beyond the hinge end, where it slides away. Bifold: leaves
+    // folded out to the door's side, a pair from each jamb. Sliding: two
+    // overlapping panels, one each side of the wall line.
+    static func doorSymbol(a: CGPoint, b: CGPoint, hingeAtB: Bool, side: Int, style: DoorStyle) -> (path: Path, dashed: Bool) {
+        let L = hypot(b.x - a.x, b.y - a.y)
+        guard L > 1 else { return (Path(), false) }
+        let ux = (b.x - a.x) / L, uy = (b.y - a.y) / L
+        let nx = -uy * CGFloat(side), ny = ux * CGFloat(side)
+        func at(_ t: CGFloat, _ o: CGFloat) -> CGPoint { CGPoint(x: a.x + ux * t + nx * o, y: a.y + uy * t + ny * o) }
+        var p = Path()
+        switch style {
+        case .swing:
+            return (swingPath(a: a, b: b, hingeAtB: hingeAtB, side: side), false)
+        case .pocket:
+            let off: CGFloat = 2.5
+            if hingeAtB { p.move(to: at(L * 0.15, off)); p.addLine(to: at(L * 2, off)) }
+            else { p.move(to: at(-L, off)); p.addLine(to: at(L * 0.85, off)) }
+            return (p, true)
+        case .bifold:
+            let d = L * 0.18
+            p.move(to: at(0, 0)); p.addLine(to: at(L * 0.125, d)); p.addLine(to: at(L * 0.25, 0))
+            p.move(to: at(L, 0)); p.addLine(to: at(L * 0.875, d)); p.addLine(to: at(L * 0.75, 0))
+            return (p, false)
+        case .sliding:
+            let off: CGFloat = 3
+            p.move(to: at(0, off)); p.addLine(to: at(L * 0.55, off))
+            p.move(to: at(L * 0.45, -off)); p.addLine(to: at(L, -off))
+            return (p, false)
+        }
+    }
+
+    // A door's swing: the open leaf square to the wall at the hinge, and the
+    // quarter circle its free edge sweeps. Screen points; side as in the data.
+    static func swingPath(a: CGPoint, b: CGPoint, hingeAtB: Bool, side: Int) -> Path {
+        let h = hingeAtB ? b : a, e = hingeAtB ? a : b
+        let vx = e.x - h.x, vy = e.y - h.y, w = hypot(vx, vy)
+        var p = Path()
+        guard w > 1 else { return p }
+        // The side's normal, (−dy, dx) of a→b, in screen points.
+        let L = hypot(b.x - a.x, b.y - a.y)
+        let nx = -(b.y - a.y) / L * CGFloat(side), ny = (b.x - a.x) / L * CGFloat(side)
+        let leaf = CGPoint(x: h.x + nx * w, y: h.y + ny * w)
+        p.move(to: h)
+        p.addLine(to: leaf)
+        // Turn from the closed position (along the wall) to the open leaf.
+        let turn: CGFloat = (vx * ny - vy * nx) > 0 ? 1 : -1
+        let start = atan2(vy, vx)
+        p.move(to: e)
+        for k in 1...16 {
+            let t = start + turn * (.pi / 2) * CGFloat(k) / 16
+            p.addLine(to: CGPoint(x: h.x + cos(t) * w, y: h.y + sin(t) * w))
+        }
+        return p
     }
 
     // A corner-to-corner reading drawn along the house's main direction,
@@ -925,16 +1008,22 @@ struct DoorDraft: Identifiable {
     let ref: OpeningRef
     let kind: OpeningKind
     let inches: Int
+    var hingeAtB = false
+    var side = 1
+    var style = DoorStyle.swing
 }
 
 // A door or opening: its type, then a common width or any typed one.
 struct DoorSheet: View {
     let draft: DoorDraft
-    let onSave: ((OpeningKind, Int)?) -> Void
+    let onSave: ((kind: OpeningKind, inches: Int, hingeAtB: Bool, side: Int, style: DoorStyle)?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var kind = OpeningKind.interior
     @State private var inches = 32
     @State private var custom = ""
+    @State private var hingeAtB = false
+    @State private var side = 1
+    @State private var style = DoorStyle.swing
     static let widths: [OpeningKind: [Int]] = [
         .entrance: [32, 34, 36, 42, 60, 72], .interior: [24, 28, 30, 32, 34, 36], .opening: [30, 36, 48, 60, 72, 96],
     ]
@@ -964,6 +1053,52 @@ struct DoorSheet: View {
                         if let typed { Text("= \(Feet.text(typed))").bold() }
                     }
                 }
+                if kind != .opening {
+                    Picker("Style", selection: $style) {
+                        Text("Swing").tag(DoorStyle.swing)
+                        Text("Pocket").tag(DoorStyle.pocket)
+                        Text("Bifold").tag(DoorStyle.bifold)
+                        Text("Sliding").tag(DoorStyle.sliding)
+                    }
+                    .pickerStyle(.segmented)
+                    Section(style == .swing ? "Swing" : "Which way") {
+                        HStack(spacing: 16) {
+                            Canvas { ctx, size in
+                                // Turned to lie like the wall on the plan, so the buttons read the same way.
+                                ctx.translateBy(x: size.width / 2, y: size.height / 2)
+                                ctx.rotate(by: .radians(atan2(draft.wall.direction.dy, draft.wall.direction.dx)))
+                                ctx.translateBy(x: -size.width / 2, y: -size.height / 2)
+                                let a = CGPoint(x: 12, y: size.height / 2), b = CGPoint(x: size.width - 12, y: size.height / 2)
+                                var wall = Path()
+                                wall.move(to: CGPoint(x: 0, y: a.y)); wall.addLine(to: CGPoint(x: size.width, y: a.y))
+                                ctx.stroke(wall, with: .color(.gray), lineWidth: 3)
+                                var d = Path(); d.move(to: a); d.addLine(to: b)
+                                ctx.stroke(d, with: .color(kind == .entrance ? .red : .orange), lineWidth: 4)
+                                // Shrink the leaf to fit the preview box.
+                                let s = min(1, (size.height / 2 - 4) / (b.x - a.x))
+                                let mid = CGPoint(x: (a.x + b.x) / 2, y: a.y)
+                                let sa = CGPoint(x: mid.x - (mid.x - a.x) * s, y: a.y), sb = CGPoint(x: mid.x + (b.x - mid.x) * s, y: a.y)
+                                let sym = style == .swing ? (sa, sb) : (a, b)
+                                let symbol = PlanView.doorSymbol(a: sym.0, b: sym.1, hingeAtB: hingeAtB, side: side, style: style)
+                                ctx.stroke(symbol.path, with: .color(.primary), style: StrokeStyle(lineWidth: 1.5, dash: symbol.dashed ? [4, 3] : []))
+                            }
+                            .frame(width: 110, height: 110)
+                            .id("\(hingeAtB)-\(side)-\(kind)-\(style)")   // redraw when the swing changes
+                            // Borderless, so a tap in this form row only fires the button under it.
+                            VStack(alignment: .leading, spacing: 14) {
+                                if style == .swing || style == .pocket {
+                                    Button(style == .pocket ? "Pocket at other end" : "Hinge at other end",
+                                           systemImage: "arrow.left.and.right") { hingeAtB.toggle() }
+                                        .buttonStyle(.borderless)
+                                }
+                                if style != .pocket {
+                                    Button(style == .swing ? "Swing other way" : "Other side", systemImage: "arrow.up.and.down") { side = -side }
+                                        .buttonStyle(.borderless)
+                                }
+                            }
+                        }
+                    }
+                }
                 if draft.ref != .new {
                     Button("Remove", role: .destructive) { onSave(nil); dismiss() }
                 }
@@ -973,11 +1108,11 @@ struct DoorSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { onSave((kind, typed ?? inches)); dismiss() }
+                    Button("Save") { onSave((kind, typed ?? inches, hingeAtB, side, style)); dismiss() }
                         .disabled(!custom.isEmpty && typed == nil)
                 }
             }
-            .onAppear { kind = draft.kind; inches = draft.inches }
+            .onAppear { kind = draft.kind; inches = draft.inches; hingeAtB = draft.hingeAtB; side = draft.side; style = draft.style }
         }
     }
 }
