@@ -24,8 +24,8 @@ export function readCvalrScan(d, opts = {}) {
   if (!d || d.format !== 'cvalrscan') {
     return { ok: false, reason: 'unknown-format', message: 'This is not a CValRScan plan (cvalrscan JSON).' };
   }
-  if ((d.version || 0) > 5) {
-    return { ok: false, reason: 'newer-version', message: `This scan is format version ${d.version}; this CValRSketch reads up to version 5. Update the app.` };
+  if ((d.version || 0) > 6) {
+    return { ok: false, reason: 'newer-version', message: `This scan is format version ${d.version}; this CValRSketch reads up to version 6. Update the app.` };
   }
   const defaultIn = opts.exteriorInches ?? DEFAULT_EXTERIOR_IN;
   const turn = houseAngle(d.walls || []);

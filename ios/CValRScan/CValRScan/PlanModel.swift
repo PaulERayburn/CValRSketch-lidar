@@ -68,6 +68,8 @@ struct HiddenLine {
     let story: Int
     let a: CGPoint
     let b: CGPoint
+    var wallPoint: Int? = nil        // index into wallPoints, when a marked point placed it
+    var depth: GapDepth? = nil       // the laser depth, when one placed it
 }
 
 struct PlanGeometry {
@@ -329,7 +331,7 @@ extension ScanController {
     var planGeometry: PlanGeometry {
         guard let structure else { return PlanGeometry() }
         let ft = 3.28084
-        let segs = structure.walls.map { ($0, PlanExport.segment($0)) }
+        let segs = structure.walls.compactMap { w in edited(PlanExport.segment(w)).map { (w, $0) } }
         // Length-weighted mean of 4×angle finds the dominant wall direction
         // whatever quadrant the walls point in.
         var sx = 0.0, sy = 0.0
@@ -388,13 +390,14 @@ extension ScanController {
             return PlanGap(id: i, story: gap.story, a: g.plan(a), b: g.plan(b), worldA: a, worldB: b, depth: depth)
         }
         for i in g.gaps.indices {
-            if let d = g.gaps[i].depth, let line = g.depthLine(g.gaps[i], d) {
+            if let d = g.gaps[i].depth, var line = g.depthLine(g.gaps[i], d) {
+                line.depth = d
                 g.hiddenLines.append(line)
                 g.gaps[i].filled = true
             }
         }
         let floorLevels = structure.floors.map { ($0.story, $0.transform.columns.3.y) }
-        for wp in wallPoints {
+        for (wpIndex, wp) in wallPoints.enumerated() {
             let story = floorLevels.filter { $0.1 <= wp.point.y + 0.3 }.max { $0.1 < $1.1 }?.0
                 ?? floorLevels.first?.0 ?? 0
             let p = g.plan(SIMD2(Double(wp.point.x), Double(wp.point.z)))
@@ -419,7 +422,8 @@ extension ScanController {
             }
             g.hiddenLines.append(HiddenLine(story: story,
                                             a: CGPoint(x: p.x + dir.dx * lo, y: p.y + dir.dy * lo),
-                                            b: CGPoint(x: p.x + dir.dx * hi, y: p.y + dir.dy * hi)))
+                                            b: CGPoint(x: p.x + dir.dx * hi, y: p.y + dir.dy * hi),
+                                            wallPoint: wpIndex))
         }
     }
 

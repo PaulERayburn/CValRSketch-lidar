@@ -9,7 +9,7 @@ import simd
 // meter readings, which are whole inches as entered (ANSI Z765 precision).
 enum PlanExport {
     struct Plan: Encodable {
-        static let formatVersion = 5
+        static let formatVersion = 6
         var format = "cvalrscan"
         var version = formatVersion
         var app = "CValRScan " + ScanController.appVersion
@@ -26,6 +26,7 @@ enum PlanExport {
         let gaps: [Gap]
         let gapDepths: [GapDepthOut]
         let spans: [SpanOut]
+        let wallEdits: [WallEditOut]
         let measurements: [Measurement]
         let exterior: Exterior
     }
@@ -93,6 +94,15 @@ enum PlanExport {
         let entered: String
     }
 
+    // A scanned wall the user deleted or whose ends they moved (world x, z),
+    // already applied to `walls`; kept so the app can reopen and undo it.
+    struct WallEditOut: Encodable {
+        let wall: String
+        let hidden: Bool
+        let a: [Double]?
+        let b: [Double]?
+    }
+
     // A face-to-face reading. `side` is +1 for the side the normal (−dy, dx)
     // of the wall's a→b points to, −1 for the other; `walls` is every scanned
     // segment the reading spans; `moving` the end walls that may shift to fit it.
@@ -110,10 +120,11 @@ enum PlanExport {
 
     static func data(for s: CapturedStructure, corners: [SIMD3<Float>],
                      wallPoints: [WallPoint], gapDepths: [GapDepth],
-                     measurements: [UUID: WallMeasurement], spans: [SpanReading], exterior: [[SIMD3<Float>]],
+                     measurements: [UUID: WallMeasurement], spans: [SpanReading], wallEdits: [UUID: WallEdit],
+                     exterior: [[SIMD3<Float>]],
                      anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
-        let walls = s.walls.map(segment), doors = s.doors.map(segment)
+        let walls = s.walls.compactMap { WallEdit.apply(wallEdits, to: segment($0)) }, doors = s.doors.map(segment)
         let windows = s.windows.map(segment), openings = s.openings.map(segment)
         let floors = s.floors.map(floor)
         let plan = Plan(
@@ -140,6 +151,9 @@ enum PlanExport {
             spans: spans.map {
                 SpanOut(a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y], story: $0.story, inches: $0.inches,
                         face: $0.face.rawValue, entered: $0.entered)
+            },
+            wallEdits: wallEdits.sorted { $0.key.uuidString < $1.key.uuidString }.map { id, e in
+                WallEditOut(wall: id.uuidString, hidden: e.hidden, a: e.a.map { [$0.x, $0.y] }, b: e.b.map { [$0.x, $0.y] })
             },
             measurements: measurements
                 .sorted { $0.key.uuidString < $1.key.uuidString }
@@ -190,4 +204,20 @@ enum PlanExport {
 
     // Millimetre precision keeps the files small and readable.
     private static func r(_ v: Float) -> Double { (Double(v) * 1000).rounded() / 1000 }
+}
+
+// A user's clean-up of one scanned wall: deleted, or one or both ends moved
+// (world metres x, z). Applied wherever scanned walls are read.
+struct WallEdit: Equatable {
+    var hidden = false
+    var a: SIMD2<Double>?
+    var b: SIMD2<Double>?
+
+    static func apply(_ edits: [UUID: WallEdit], to s: PlanExport.Segment) -> PlanExport.Segment? {
+        guard let id = UUID(uuidString: s.id), let e = edits[id] else { return s }
+        if e.hidden { return nil }
+        return PlanExport.Segment(id: s.id, story: s.story, a: e.a.map { [$0.x, $0.y] } ?? s.a,
+                                  b: e.b.map { [$0.x, $0.y] } ?? s.b, height: s.height, bottom: s.bottom,
+                                  wall: s.wall, curved: s.curved)
+    }
 }

@@ -18,6 +18,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     @Published private(set) var wallPoints: [WallPoint] = []
     @Published private(set) var gapDepths: [GapDepth] = []
     @Published private(set) var spans: [SpanReading] = []
+    @Published private(set) var wallEdits: [UUID: WallEdit] = [:]
+    private var editHistory: [[UUID: WallEdit]] = []
+    var canUndoEdit: Bool { !editHistory.isEmpty }
     var hasReadings: Bool { !measurements.isEmpty || !spans.isEmpty }
     @Published private(set) var structure: CapturedStructure?
     @Published private(set) var measurements: [UUID: WallMeasurement] = [:]
@@ -154,6 +157,57 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
 
     func undoWallPoint() {
         if !wallPoints.isEmpty { wallPoints.removeLast() }
+        writeFiles()
+    }
+
+    // MARK: Cleaning up the scan
+
+    func edited(_ s: PlanExport.Segment) -> PlanExport.Segment? { WallEdit.apply(wallEdits, to: s) }
+
+    private func commitEdits(_ new: [UUID: WallEdit]) {
+        editHistory.append(wallEdits)
+        wallEdits = new
+        writeFiles()
+    }
+
+    func deleteWall(_ id: UUID) {
+        var e = wallEdits
+        e[id, default: WallEdit()].hidden = true
+        commitEdits(e)
+    }
+
+    // Moves every wall end at `from` (world x, z, within 10 cm) to `to`, so
+    // walls meeting there stay joined.
+    func moveWallEnds(from: SIMD2<Double>, to: SIMD2<Double>) {
+        guard let structure else { return }
+        var e = wallEdits
+        for w in structure.walls {
+            guard let s = edited(PlanExport.segment(w)) else { continue }
+            if simd_distance(SIMD2(s.a[0], s.a[1]), from) < 0.1 { e[w.identifier, default: WallEdit()].a = to }
+            if simd_distance(SIMD2(s.b[0], s.b[1]), from) < 0.1 { e[w.identifier, default: WallEdit()].b = to }
+        }
+        commitEdits(e)
+    }
+
+    func undoEdit() {
+        guard let last = editHistory.popLast() else { return }
+        wallEdits = last
+        writeFiles()
+    }
+
+    func restoreScan() {
+        guard !wallEdits.isEmpty else { return }
+        commitEdits([:])
+    }
+
+    func removeWallPoint(at index: Int) {
+        guard wallPoints.indices.contains(index) else { return }
+        wallPoints.remove(at: index)
+        writeFiles()
+    }
+
+    func removeGapDepth(_ depth: GapDepth) {
+        gapDepths.removeAll { $0 == depth }
         writeFiles()
     }
 
@@ -459,7 +513,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             let planURL = dir.appendingPathComponent("scan-\(stamp).cvalrscan.json")
             let rawURL = dir.appendingPathComponent("scan-\(stamp).capturedstructure.json")
             try PlanExport.data(for: structure, corners: corners, wallPoints: wallPoints, gapDepths: gapDepths,
-                                measurements: measurements, spans: spans,
+                                measurements: measurements, spans: spans, wallEdits: wallEdits,
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
@@ -494,6 +548,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         wallPoints = []
         gapDepths = []
         spans = []
+        wallEdits = [:]
+        editHistory = []
         measurements = [:]
         exteriorWalls = []
         anchorStart = nil
@@ -535,6 +591,12 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                 WallPoint(point: SIMD3(Float($0.point[0]), Float($0.elevation), Float($0.point[1])),
                           normal: SIMD3(Float($0.normal[0]), 0, Float($0.normal[1])))
             }
+            wallEdits = Dictionary(uniqueKeysWithValues: (saved?.wallEdits ?? []).compactMap { e in
+                UUID(uuidString: e.wall).map { ($0, WallEdit(hidden: e.hidden,
+                    a: e.a.flatMap { $0.count == 2 ? SIMD2($0[0], $0[1]) : nil },
+                    b: e.b.flatMap { $0.count == 2 ? SIMD2($0[0], $0[1]) : nil })) }
+            })
+            editHistory = []
             spans = (saved?.spans ?? []).compactMap { r in
                 guard r.a.count == 2, r.b.count == 2 else { return nil }
                 return SpanReading(a: SIMD2(r.a[0], r.a[1]), b: SIMD2(r.b[0], r.b[1]), story: r.story,
@@ -611,6 +673,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         struct Exterior: Decodable { let walls: [[Point]]; let anchorStart: Point?; let anchorEnd: Point? }
         struct WallPointIn: Decodable { let point: [Double]; let elevation: Double; let normal: [Double] }
         struct GapDepthIn: Decodable { let gap: [[Double]]; let from: String; let inches: Int }
+        struct WallEditIn: Decodable { let wall: String; let hidden: Bool; let a: [Double]?; let b: [Double]? }
         struct SpanIn: Decodable {
             let a: [Double]; let b: [Double]; let story: Int; let inches: Int; let face: String; let entered: String?
         }
@@ -618,6 +681,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         let wallPoints: [WallPointIn]?
         let gapDepths: [GapDepthIn]?
         let spans: [SpanIn]?
+        let wallEdits: [WallEditIn]?
         let measurements: [Reading]?
         let exterior: Exterior?
     }
