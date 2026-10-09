@@ -1166,32 +1166,78 @@ struct DoorSheet: View {
     }
 }
 
-// Naming a room: the usual appraisal names, or anything typed.
+// Naming a room: type a few letters and pick from the list. Matches allow
+// for typos and other names for the same room (master, powder room, den),
+// and the names used most rise to the top. Anything else typed is kept.
 struct RoomSheet: View {
     let draft: RoomDraft
     let onSave: (String?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
-    static let names = ["Bedroom", "Primary bedroom", "Bath", "2-pc bath", "3-pc bath", "4-pc bath", "Kitchen", "Living",
-                        "Dining", "Family", "Laundry", "Closet", "Entry", "Hall", "Mudroom", "Office", "Utility", "Storage"]
+    @FocusState private var typing: Bool
+    @State private var own = RoomNames.own
+
+    private var query: String { text.trimmingCharacters(in: .whitespaces) }
+    private var matches: [RoomNames.Match] { RoomNames.search(query) }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     HStack {
-                        TextField("Room name", text: $text)
-                            .textInputAutocapitalization(.sentences)
-                        Button("Save") { onSave(text.trimmingCharacters(in: .whitespaces)); dismiss() }
-                            .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+                        TextField("Type to search, e.g. bed, master, powder", text: $text)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled()
+                            .focused($typing)
+                            .submitLabel(.done)
+                            .onSubmit { if !query.isEmpty { save(matches.first?.name ?? query) } }
+                        if !text.isEmpty {
+                            Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                                .buttonStyle(.borderless)
+                        }
                     }
                 }
-                Section("Common") {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
-                        ForEach(Self.names, id: \.self) { n in
-                            Button(n) { onSave(n); dismiss() }
-                                .buttonStyle(.bordered)
+                if query.isEmpty {
+                    let used = RoomNames.mostUsed()
+                    if !used.isEmpty {
+                        Section("Used most") {
+                            ForEach(used, id: \.self) { n in row(n, note: nil) }
                         }
+                    }
+                    let mine = RoomNames.byUse(own)
+                    if !mine.isEmpty {
+                        Section {
+                            ForEach(mine, id: \.self) { n in row(n, note: nil) }
+                                .onDelete { offsets in
+                                    for i in offsets { RoomNames.removeOwn(mine[i]) }
+                                    own = RoomNames.own
+                                }
+                        } header: {
+                            Text("Your rooms")
+                        } footer: {
+                            Text("Swipe left on one of your rooms to take it off the list.")
+                        }
+                    }
+                    Section("All rooms") {
+                        ForEach(RoomNames.catalogue.map(\.name).filter { !used.contains($0) }, id: \.self) { n in row(n, note: nil) }
+                    }
+                } else {
+                    Section {
+                        ForEach(matches, id: \.name) { m in row(m.name, note: m.note) }
+                        if !matches.contains(where: { $0.name.caseInsensitiveCompare(query) == .orderedSame }) {
+                            Button { save(query) } label: {
+                                Label("Add \u{201C}\(RoomNames.canonical(query))\u{201D} to the list", systemImage: "plus")
+                            }
+                        }
+                    } header: {
+                        Text(matches.isEmpty ? "No match" : "Matches")
+                    }
+                }
+                if query.isEmpty {
+                    Section {
+                        Button("Add a room name", systemImage: "plus") { typing = true }
+                    } footer: {
+                        Text("Type a name that isn't listed, then tap Add. It's kept on this phone for every scan.")
                     }
                 }
                 if draft.name != nil {
@@ -1201,7 +1247,189 @@ struct RoomSheet: View {
             .navigationTitle(draft.name == nil ? "Name this room" : "Rename \(draft.name!)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-            .onAppear { text = draft.name ?? "" }
+            .onAppear { typing = draft.name == nil }
         }
+    }
+
+    private func row(_ name: String, note: String?) -> some View {
+        Button { save(name) } label: {
+            HStack {
+                Text(name).foregroundStyle(.primary)
+                if let note { Text(note).font(.footnote).foregroundStyle(.secondary) }
+                Spacer()
+                if name == draft.name { Image(systemName: "checkmark") }
+            }
+        }
+    }
+
+    private func save(_ name: String) {
+        let n = RoomNames.canonical(name)
+        RoomNames.addOwn(n)
+        RoomNames.recordUse(n)
+        onSave(n)
+        dismiss()
+    }
+}
+
+// Room names an appraiser uses, each with the other words people use for it.
+enum RoomNames {
+    struct Entry { let name: String; let aliases: [String] }
+    struct Match { let name: String; let note: String? }
+
+    static let catalogue: [Entry] = [
+        Entry(name: "Bedroom", aliases: ["bed", "br", "bdrm", "bdr", "guest room", "spare room", "kids room", "nursery"]),
+        Entry(name: "Primary bedroom", aliases: ["master", "master bedroom", "main bedroom", "mbr", "owner's suite", "owners suite", "principal bedroom"]),
+        Entry(name: "Bath", aliases: ["bathroom", "washroom"]),
+        Entry(name: "2-pc bath", aliases: ["2pc", "2 piece", "two piece", "half bath", "powder room", "powder", "wc", "toilet", "lav", "lavatory"]),
+        Entry(name: "3-pc bath", aliases: ["3pc", "3 piece", "three piece", "shower room", "3/4 bath", "three quarter bath"]),
+        Entry(name: "4-pc bath", aliases: ["4pc", "4 piece", "four piece", "full bath", "main bath", "tub"]),
+        Entry(name: "5-pc bath", aliases: ["5pc", "5 piece", "five piece"]),
+        Entry(name: "Ensuite", aliases: ["en suite", "en-suite", "primary bath", "master bath", "master ensuite"]),
+        Entry(name: "Kitchen", aliases: ["kit", "kitchenette", "galley"]),
+        Entry(name: "Living", aliases: ["living room", "lounge", "front room", "sitting room", "parlour", "parlor", "lr"]),
+        Entry(name: "Dining", aliases: ["dining room", "dinette", "dr"]),
+        Entry(name: "Nook", aliases: ["breakfast nook", "eating area", "breakfast"]),
+        Entry(name: "Family", aliases: ["family room", "fr"]),
+        Entry(name: "Great room", aliases: ["great"]),
+        Entry(name: "Den", aliases: ["tv room"]),
+        Entry(name: "Rec room", aliases: ["recreation room", "rec", "games room", "rumpus room", "basement"]),
+        Entry(name: "Media room", aliases: ["theatre", "theater", "home theatre", "home theater"]),
+        Entry(name: "Office", aliases: ["study", "library", "home office", "work room"]),
+        Entry(name: "Laundry", aliases: ["laundry room", "washer", "dryer", "wash room"]),
+        Entry(name: "Closet", aliases: ["cl", "clo", "cupboard", "wardrobe", "coat closet", "linen", "linen closet"]),
+        Entry(name: "Walk-in closet", aliases: ["wic", "walk in", "walkin", "walk-in", "dressing room"]),
+        Entry(name: "Pantry", aliases: ["larder"]),
+        Entry(name: "Entry", aliases: ["foyer", "vestibule", "front entry", "entrance", "porch"]),
+        Entry(name: "Hall", aliases: ["hallway", "corridor", "passage", "landing"]),
+        Entry(name: "Stairs", aliases: ["stairway", "staircase", "stairwell"]),
+        Entry(name: "Mudroom", aliases: ["mud room", "boot room", "back entry", "rear entry"]),
+        Entry(name: "Utility", aliases: ["utility room", "mechanical", "furnace room", "boiler room", "mech"]),
+        Entry(name: "Storage", aliases: ["store room", "storeroom", "cold room", "cold cellar", "root cellar"]),
+        Entry(name: "Sunroom", aliases: ["sun room", "solarium", "3 season", "three season", "florida room", "conservatory"]),
+        Entry(name: "Bonus room", aliases: ["bonus", "flex room", "flex"]),
+        Entry(name: "Loft", aliases: ["attic room"]),
+        Entry(name: "Gym", aliases: ["exercise room", "fitness"]),
+        Entry(name: "Workshop", aliases: ["shop", "hobby room", "craft room"]),
+        Entry(name: "Garage", aliases: ["carport", "gar"]),
+    ]
+
+    // A name in the catalogue's own spelling when typed in any case.
+    static func canonical(_ name: String) -> String {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        if let e = catalogue.first(where: { $0.name.caseInsensitiveCompare(n) == .orderedSame }) { return e.name }
+        if let u = own.first(where: { $0.caseInsensitiveCompare(n) == .orderedSame }) { return u }
+        return n.prefix(1).uppercased() + n.dropFirst()
+    }
+
+    // MARK: How often each name is used, kept on this phone
+
+    private static let usageKey = "roomNameUsage"
+    private static var usage: [String: Int] { UserDefaults.standard.dictionary(forKey: usageKey) as? [String: Int] ?? [:] }
+
+    static func recordUse(_ name: String) {
+        var u = usage
+        u[name, default: 0] += 1
+        UserDefaults.standard.set(u, forKey: usageKey)
+    }
+
+    // Names added by the user: anything typed that isn't in the catalogue.
+    private static let ownKey = "roomNamesOwn"
+    static var own: [String] { UserDefaults.standard.stringArray(forKey: ownKey) ?? [] }
+
+    static func addOwn(_ name: String) {
+        guard !name.isEmpty, !catalogue.contains(where: { $0.name == name }), !own.contains(name) else { return }
+        UserDefaults.standard.set((own + [name]).sorted(), forKey: ownKey)
+    }
+
+    static func removeOwn(_ name: String) {
+        UserDefaults.standard.set(own.filter { $0 != name }, forKey: ownKey)
+        var u = usage
+        u[name] = nil
+        UserDefaults.standard.set(u, forKey: usageKey)
+    }
+
+    // The user's own names, most used first.
+    static func byUse(_ names: [String]) -> [String] {
+        let u = usage
+        return names.sorted { (u[$0] ?? 0) != (u[$1] ?? 0) ? (u[$0] ?? 0) > (u[$1] ?? 0) : $0 < $1 }
+    }
+
+    // The catalogue names used most; the user's own names have their own list.
+    static func mostUsed(_ limit: Int = 6) -> [String] {
+        let known = Set(catalogue.map(\.name))
+        return usage.filter { known.contains($0.key) }.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.prefix(limit).map(\.key)
+    }
+
+    // MARK: Search
+
+    // Lower case, letters and digits only, words separated by single spaces.
+    private static func plain(_ s: String) -> String {
+        String(s.lowercased().map { $0.isLetter || $0.isNumber ? $0 : " " })
+            .split(separator: " ").joined(separator: " ")
+    }
+
+    // How well a query fits one term: 0 best; nil for no fit.
+    private static func score(_ q: String, _ term: String) -> Int? {
+        let t = plain(term)
+        if t == q { return 0 }
+        if t.hasPrefix(q) { return 1 }
+        if t.split(separator: " ").contains(where: { $0.hasPrefix(q) }) { return 2 }
+        if q.count >= 3 && t.contains(q) { return 3 }
+        // Typos: allow one slip in short words, two in longer ones.
+        guard q.count >= 3 else { return nil }
+        let allowed = q.count >= 6 ? 2 : 1
+        var best = typoDistance(q, t)
+        if t.count > q.count { best = min(best, typoDistance(q, String(t.prefix(q.count)))) }
+        for w in t.split(separator: " ") where w.count >= 3 {
+            best = min(best, typoDistance(q, String(w)))
+            if w.count > q.count { best = min(best, typoDistance(q, String(w.prefix(q.count)))) }
+        }
+        return best <= allowed ? 4 + best : nil
+    }
+
+    static func search(_ query: String) -> [Match] {
+        let q = plain(query)
+        guard !q.isEmpty else { return [] }
+        let used = usage
+        var found: [(match: Match, score: Int, used: Int, order: Int)] = []
+        for (i, e) in catalogue.enumerated() {
+            var best: (Int, String?)?
+            if let s = score(q, e.name) { best = (s, nil) }
+            for a in e.aliases {
+                if let s = score(q, a), s < (best?.0 ?? .max) { best = (s, a) }
+            }
+            if let (s, alias) = best {
+                found.append((Match(name: e.name, note: alias), s, used[e.name] ?? 0, i))
+            }
+        }
+        // Names the user added.
+        for name in own {
+            if let s = score(q, name) { found.append((Match(name: name, note: nil), s, used[name] ?? 0, catalogue.count)) }
+        }
+        return found.sorted {
+            if $0.score != $1.score { return $0.score < $1.score }
+            if $0.used != $1.used { return $0.used > $1.used }
+            return $0.order < $1.order
+        }.prefix(8).map(\.match)
+    }
+
+    // Edits (insert, delete, change, swap two letters) to turn a into b.
+    private static func typoDistance(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        if a.isEmpty { return b.count }
+        if b.isEmpty { return a.count }
+        var d = Array(repeating: Array(repeating: 0, count: b.count + 1), count: a.count + 1)
+        for i in 0...a.count { d[i][0] = i }
+        for j in 0...b.count { d[0][j] = j }
+        for i in 1...a.count {
+            for j in 1...b.count {
+                let cost = a[i - 1] == b[j - 1] ? 0 : 1
+                d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+                if i > 1, j > 1, a[i - 1] == b[j - 2], a[i - 2] == b[j - 1] {
+                    d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+                }
+            }
+        }
+        return d[a.count][b.count]
     }
 }
