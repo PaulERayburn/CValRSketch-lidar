@@ -237,6 +237,26 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         commitEdits(e)
     }
 
+    func deleteWalls(_ ids: Set<UUID>) {
+        var e = wallEdits
+        for id in ids { e[id, default: WallEdit()].hidden = true }
+        commitEdits(e)
+    }
+
+    // Moves several wall ends at once (world x, z), each from where it is now;
+    // walls joined at a moved end follow it. One step in the edit history.
+    func moveWallEnds(_ moves: [(from: SIMD2<Double>, to: SIMD2<Double>)]) {
+        guard let structure, !moves.isEmpty else { return }
+        var e = wallEdits
+        for w in structure.walls {
+            guard let s = edited(PlanExport.segment(w)) else { continue }
+            let a = SIMD2(s.a[0], s.a[1]), b = SIMD2(s.b[0], s.b[1])
+            if let m = moves.first(where: { simd_distance(a, $0.from) < 0.1 }) { e[w.identifier, default: WallEdit()].a = m.to }
+            if let m = moves.first(where: { simd_distance(b, $0.from) < 0.1 }) { e[w.identifier, default: WallEdit()].b = m.to }
+        }
+        commitEdits(e)
+    }
+
     func undoEdit() {
         guard let last = editHistory.popLast() else { return }
         wallEdits = last.walls

@@ -1,3 +1,4 @@
+import simd
 import SwiftUI
 import UIKit
 
@@ -24,6 +25,7 @@ struct PlanView: View {
     @State private var panBase: CGSize?
     @State private var deleting: EditTarget?
     @State private var tool = EditTool.walls
+    @State private var selectedWalls: Set<UUID> = []
     @State private var roomDraft: RoomDraft?
     @State private var doorDraft: DoorDraft?
     @State private var preview = ReadingPreview()
@@ -138,7 +140,8 @@ struct PlanView: View {
                                wall.map({ view.distance(tap.location, $0.a, $0.b) > view.distance(tap.location, h.a, h.b) }) ?? true {
                                 deleting = .hidden(h)
                             } else if let wall {
-                                deleting = .wall(wall)
+                                if selectedWalls.contains(wall.id) { selectedWalls.remove(wall.id) } else { selectedWalls.insert(wall.id) }
+                                UISelectionFeedbackGenerator().selectionChanged()
                             }
                             return
                         }
@@ -207,17 +210,31 @@ struct PlanView: View {
                     }
                 }
                 if !cornerMode {
-                    Button(editMode ? "Done" : "Edit") { editMode.toggle(); tool = .walls }
+                    Button(editMode ? "Done" : "Edit") { editMode.toggle(); tool = .walls; selectedWalls = [] }
                 }
                 Button("Fit") { withAnimation { zoom = 1; pan = .zero } }
             }
             if editMode {
                 ToolbarItemGroup(placement: .bottomBar) {
-                    Button("Undo", systemImage: "arrow.uturn.backward") { scan.undoEdit() }
-                        .disabled(!scan.canUndoEdit)
-                    Spacer()
-                    Button("Restore scan") { scan.restoreScan() }
-                        .disabled(!scan.hasEdits)
+                    if !selectedWalls.isEmpty && tool == .walls {
+                        Button("Align \(selectedWalls.count)") {
+                            align(selectedWalls, geo: geo)
+                            selectedWalls = []
+                        }
+                        Spacer()
+                        Button("Delete \(selectedWalls.count)", role: .destructive) {
+                            scan.deleteWalls(selectedWalls)
+                            selectedWalls = []
+                        }
+                        Spacer()
+                        Button("Clear") { selectedWalls = [] }
+                    } else {
+                        Button("Undo", systemImage: "arrow.uturn.backward") { scan.undoEdit() }
+                            .disabled(!scan.canUndoEdit)
+                        Spacer()
+                        Button("Restore scan") { scan.restoreScan() }
+                            .disabled(!scan.hasEdits)
+                    }
                 }
             }
         }
@@ -259,6 +276,36 @@ struct PlanView: View {
             .presentationDetents([.fraction(0.55), .large])
             .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.55)))
         }
+    }
+
+    // Lines the selected walls up on one straight line: the length-weighted
+    // average of their directions (squared to the house within 10°), through
+    // their length-weighted middle. Every end moves square onto it; walls
+    // joined at those ends follow.
+    private func align(_ ids: Set<UUID>, geo: PlanGeometry) {
+        let ws = geo.walls.filter { ids.contains($0.id) }
+        guard !ws.isEmpty else { return }
+        var sx = 0.0, sy = 0.0, cx = 0.0, cy = 0.0, total = 0.0
+        for w in ws {
+            let L = Double(w.length), t = 2 * atan2(Double(w.b.y - w.a.y), Double(w.b.x - w.a.x))
+            sx += L * cos(t); sy += L * sin(t)
+            cx += L * Double(w.a.x + w.b.x) / 2; cy += L * Double(w.a.y + w.b.y) / 2; total += L
+        }
+        guard total > 0 else { return }
+        var ang = atan2(sy, sx) / 2
+        for axis in [0.0, .pi / 2, .pi, -.pi / 2] where abs(remainder(ang - axis, 2 * .pi)) < 10 * .pi / 180 { ang = axis }
+        let ux = cos(ang), uy = sin(ang), mx = cx / total, my = cy / total
+        func onLine(_ p: CGPoint) -> CGPoint {
+            let t = (Double(p.x) - mx) * ux + (Double(p.y) - my) * uy
+            return CGPoint(x: mx + ux * t, y: my + uy * t)
+        }
+        var moves: [(from: SIMD2<Double>, to: SIMD2<Double>)] = []
+        for w in ws {
+            for e in [w.a, w.b] where !moves.contains(where: { simd_distance($0.from, geo.world(e)) < 0.01 }) {
+                moves.append((geo.world(e), geo.world(onLine(e))))
+            }
+        }
+        scan.moveWallEnds(moves)
     }
 
     // An added door or opening, centred where the wall was tapped and kept
@@ -422,7 +469,7 @@ struct PlanView: View {
         // While a gap's sheet is open, the wall its laser depth starts from.
         let reference = selectedGap.flatMap { geo.referenceWall(for: $0)?.wall.id }
         let cornerMode = self.cornerMode, spanStart = self.spanStart, draft = self.spanDraft
-        let editMode = self.editMode, endDrag = self.endDrag
+        let editMode = self.editMode, endDrag = self.endDrag, picked = self.selectedWalls
         return Canvas { ctx, _ in
             for f in geo.floors where f.story == story {
                 var p = Path()
@@ -437,13 +484,14 @@ struct PlanView: View {
                 var p = Path()
                 p.move(to: view.map(w.a))
                 p.addLine(to: view.map(w.b))
-                let colour: Color = preview.moving.contains(w.id) ? .orange
+                let colour: Color = picked.contains(w.id) ? .teal
+                    : preview.moving.contains(w.id) ? .orange
                     : (preview.run.contains(w.id) || w.id == selectedID || w.id == reference) ? .blue
                     : measured.contains(w.id) ? .green
                     : w.id == suggested ? .purple
                     : (w.exterior ? .primary : .gray)
                 let width: CGFloat = preview.run.contains(w.id) || preview.moving.contains(w.id)
-                    || w.id == selectedID || w.id == suggested
+                    || w.id == selectedID || w.id == suggested || picked.contains(w.id)
                     ? 6 : (w.exterior ? 4.5 : 2.5)
                 ctx.stroke(p, with: .color(colour), style: StrokeStyle(lineWidth: width, lineCap: .round))
             }
@@ -986,7 +1034,7 @@ enum EditTool: String, CaseIterable {
     case walls = "Walls", rooms = "Rooms", doors = "Doors"
     var hint: String {
         switch self {
-        case .walls: return "Tap a wall to delete it, drag a wall's end (square) to move it."
+        case .walls: return "Tap walls to select them, then Align or Delete. Drag a wall's end (square) to move it."
         case .rooms: return "Tap a room to name it, or tap a name to change or remove it."
         case .doors: return "Tap a wall to add a door or opening; tap any door or opening to change its type or width, or remove it."
         }
