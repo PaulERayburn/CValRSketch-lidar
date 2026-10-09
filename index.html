@@ -1388,9 +1388,15 @@ function renderShape(sh, W, isGhost) {
   // Centroid label (shown for ghosts too, just faded). White halo keeps it legible
   // over walls/dimension labels; draggable in Edit mode via per-shape labelOffset.
   if (state.settings.showCentroidLabels) {
-    const base = polygonCentroid(sh.points);
+    // With interior detail showing, the middle of the plan is full of rooms and
+    // doors, so the name and area go under the outline, clear of its dimensions.
+    const below = !isGhost && sh.detail && state.settings.showDetail;
+    const xs = sh.points.map(p => p.x);
+    const base = below ? { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: Math.max(...sh.points.map(p => p.y)) }
+                       : polygonCentroid(sh.points);
     const off = sh.labelOffset || { dx: 0, dy: 0 };
     const c = W({ x: base.x + off.dx, y: base.y + off.dy });
+    if (below) c.y += skFont(11) + 34;
     const box = () => ({ x0: c.x - Math.max(44, sh.label.length * 8) / 2, x1: c.x + Math.max(44, sh.label.length * 8) / 2, y0: c.y - 20, y1: c.y + 14 });
     const hits = b => drawnLabelBoxes.some(o => b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0);
     if (isGhost) for (let k = 0; k < 4 && hits(box()); k++) c.y += 36;
