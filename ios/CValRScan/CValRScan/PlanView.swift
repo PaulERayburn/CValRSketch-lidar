@@ -22,6 +22,8 @@ struct PlanView: View {
     // feet, from → to), where a pan started, and what a tap asked to delete.
     @State private var editMode = false
     @State private var endDrag: (from: CGPoint, to: CGPoint)?
+    @State private var dragMoves: [(from: CGPoint, to: CGPoint)] = []
+    @State private var dragEnded = Date.distantPast   // a tap right after a drag is the drag's end
     @State private var panBase: CGSize?
     @State private var deleting: EditTarget?
     @State private var tool = EditTool.walls
@@ -132,6 +134,7 @@ struct PlanView: View {
                             return
                         }
                         if editMode {
+                            if endDrag != nil || Date().timeIntervalSince(dragEnded) < 0.5 { return }
                             let walls = geo.walls.filter { $0.story == shown }
                             let wall = view.nearest(to: tap.location, in: walls)
                             let hidden = geo.hiddenLines.filter { $0.story == shown }
@@ -210,12 +213,18 @@ struct PlanView: View {
                     }
                 }
                 if !cornerMode {
-                    Button(editMode ? "Done" : "Edit") { editMode.toggle(); tool = .walls; selectedWalls = [] }
+                    Button(editMode ? "Done" : "Edit") {
+                        editMode.toggle(); tool = .walls; selectedWalls = []
+                        selected = nil; selectedGap = nil   // a reading sheet would hide Undo
+                    }
                 }
                 Button("Fit") { withAnimation { zoom = 1; pan = .zero } }
             }
             if editMode {
                 ToolbarItemGroup(placement: .bottomBar) {
+                    Button("Undo", systemImage: "arrow.uturn.backward") { scan.undoEdit() }
+                        .disabled(!scan.canUndoEdit)
+                    Spacer()
                     if !selectedWalls.isEmpty && tool == .walls {
                         Button("Align \(selectedWalls.count)") {
                             align(selectedWalls, geo: geo)
@@ -229,9 +238,6 @@ struct PlanView: View {
                         Spacer()
                         Button("Clear") { selectedWalls = [] }
                     } else {
-                        Button("Undo", systemImage: "arrow.uturn.backward") { scan.undoEdit() }
-                            .disabled(!scan.canUndoEdit)
-                        Spacer()
                         Button("Restore scan") { scan.restoreScan() }
                             .disabled(!scan.hasEdits)
                     }
@@ -373,7 +379,9 @@ struct PlanView: View {
                     }
                 }
                 if let d = endDrag {
-                    endDrag = (d.from, snap(view.unmap(v.location), from: d.from, geo: geo, story: story, view: view))
+                    let to = squareDrag(view.unmap(v.location), from: d.from, geo: geo, story: story, view: view)
+                    endDrag = (d.from, to)
+                    dragMoves = squareMoves(from: d.from, to: to, geo: geo, story: story)
                 } else if let b = panBase {
                     pan = clamp(CGSize(width: b.width + v.translation.width, height: b.height + v.translation.height),
                                 geo: geo, story: story, size: size, zoom: zoom)
@@ -381,11 +389,43 @@ struct PlanView: View {
             }
             .onEnded { _ in
                 if let d = endDrag, hypot(d.to.x - d.from.x, d.to.y - d.from.y) > 0.02 {
-                    scan.moveWallEnds(from: geo.world(d.from), to: geo.world(d.to))
+                    scan.moveWallEnds(dragMoves.map { (geo.world($0.from), geo.world($0.to)) })
                 }
+                if endDrag != nil { dragEnded = Date() }
                 endDrag = nil
+                dragMoves = []
                 panBase = nil
             }
+    }
+
+    // A dragged end moves straight across or straight along the house, never
+    // at a slant: whichever way the finger has gone further. It still snaps to
+    // a corner or square with a far end on that line.
+    private func squareDrag(_ p: CGPoint, from: CGPoint, geo: PlanGeometry, story: Int, view: Viewport) -> CGPoint {
+        let across = abs(p.x - from.x) >= abs(p.y - from.y)
+        var q = snap(across ? CGPoint(x: p.x, y: from.y) : CGPoint(x: from.x, y: p.y), from: from, geo: geo, story: story, view: view)
+        if across { q.y = from.y } else { q.x = from.x }
+        return q
+    }
+
+    // The ends a drag moves. Walls joined at the dragged end that run the way
+    // it moves get longer or shorter; walls that run across it slide over
+    // whole, so every wall stays square. (Walls joined at a slid wall's far
+    // end follow that end as usual.)
+    private func squareMoves(from: CGPoint, to: CGPoint, geo: PlanGeometry, story: Int) -> [(from: CGPoint, to: CGPoint)] {
+        let dx = to.x - from.x, dy = to.y - from.y, len = hypot(dx, dy)
+        guard len > 0.001 else { return [] }
+        var moves = [(from: from, to: to)]
+        for w in geo.walls where w.story == story {
+            let far: CGPoint? = hypot(w.a.x - from.x, w.a.y - from.y) < 0.1 ? w.b
+                : hypot(w.b.x - from.x, w.b.y - from.y) < 0.1 ? w.a : nil
+            guard let o = far, w.length > 0.01 else { continue }
+            let along = abs(((o.x - from.x) * dx + (o.y - from.y) * dy) / (w.length * len))
+            if along < 0.35, !moves.contains(where: { hypot($0.from.x - o.x, $0.from.y - o.y) < 0.1 }) {
+                moves.append((o, CGPoint(x: o.x + dx, y: o.y + dy)))
+            }
+        }
+        return moves
     }
 
     // A dragged end lands on a corner near it, or lines up square with the
@@ -482,7 +522,7 @@ struct PlanView: View {
         // While a gap's sheet is open, the wall its laser depth starts from.
         let reference = selectedGap.flatMap { geo.referenceWall(for: $0)?.wall.id }
         let cornerMode = self.cornerMode, spanStart = self.spanStart, draft = self.spanDraft
-        let editMode = self.editMode, endDrag = self.endDrag, picked = self.selectedWalls
+        let editMode = self.editMode, endDrag = self.endDrag, picked = self.selectedWalls, moves = self.dragMoves
         return Canvas { ctx, _ in
             for f in geo.floors where f.story == story {
                 var p = Path()
@@ -582,13 +622,13 @@ struct PlanView: View {
                     }
                 }
                 if let d = endDrag {
+                    func moved(_ e: CGPoint) -> CGPoint? { moves.first { hypot($0.from.x - e.x, $0.from.y - e.y) < 0.1 }?.to }
                     for w in walls {
-                        let far: CGPoint? = hypot(w.a.x - d.from.x, w.a.y - d.from.y) < 0.3 ? w.b
-                            : hypot(w.b.x - d.from.x, w.b.y - d.from.y) < 0.3 ? w.a : nil
-                        guard let o = far else { continue }
+                        let a = moved(w.a), b = moved(w.b)
+                        guard a != nil || b != nil else { continue }
                         var p = Path()
-                        p.move(to: view.map(o))
-                        p.addLine(to: view.map(d.to))
+                        p.move(to: view.map(a ?? w.a))
+                        p.addLine(to: view.map(b ?? w.b))
                         ctx.stroke(p, with: .color(.teal), style: StrokeStyle(lineWidth: 5, lineCap: .round))
                     }
                     let t = view.map(d.to)
@@ -809,6 +849,7 @@ struct MeasureSheet: View {
     @State private var text = ""
     @State private var choice = 0
     @State private var move = WallMeasurement.Move.auto
+    @State private var onlyThis = false
 
     // Where the reading was taken: a room on one side, or outside.
     private struct Place { let sign: Int; let outside: Bool; let title: String; let room: String }
@@ -824,7 +865,9 @@ struct MeasureSheet: View {
 
     var body: some View {
         let place = places[min(choice, places.count - 1)]
-        let run = geo.run(from: wall, sign: place.sign, outside: place.outside)
+        let joined = geo.run(from: wall, sign: place.sign, outside: place.outside)
+        let run = onlyThis ? WallRun(walls: [wall], start: wall.a, end: wall.b, startWall: nil, endWall: nil,
+                                     sign: place.sign, outside: place.outside) : joined
         let estimate = geo.estimateInches(run)
         let parsed = LengthParser.inches(from: text)
         let sum = LengthParser.reading(from: text).flatMap { LengthParser.describe($0.parts) }
@@ -837,11 +880,15 @@ struct MeasureSheet: View {
                     }
                     .pickerStyle(.segmented)
                     LabeledContent("Scan estimate, face to face", value: Feet.text(estimate))
+                    if joined.walls.count > 1 || onlyThis {
+                        Toggle("Only the piece I tapped", isOn: $onlyThis)
+                    }
                 } header: {
                     Text("Where were you standing?")
                 } footer: {
                     Text(run.walls.count > 1
-                         ? "This face spans \(run.walls.count) scanned pieces, shown in blue. Laser from one end of the blue stretch to the other."
+                         ? "This face spans \(run.walls.count) scanned pieces in a line, shown in blue. Laser from one end of the blue stretch to the other, or turn on Only the piece I tapped."
+                         : onlyThis ? "Laser the blue piece only, end to end."
                          : "Laser along the blue wall, face to face, from one end to the other.")
                 }
                 Section("Your reading") {
@@ -912,6 +959,7 @@ struct MeasureSheet: View {
                     text = existing.entered.isEmpty ? "\(existing.inches / 12) \(existing.inches % 12)" : existing.entered
                     choice = places.firstIndex { $0.sign == existing.sideSign && $0.outside == (existing.face == .outside) } ?? 0
                     move = existing.move
+                    onlyThis = existing.walls == [wall.id] && geo.run(from: wall, sign: existing.sideSign, outside: existing.face == .outside).walls.count > 1
                 }
             }
             .onChange(of: ReadingPreview(run: run.walls.map(\.id), moving: moving), initial: true) { _, new in
@@ -1068,7 +1116,7 @@ enum EditTool: String, CaseIterable {
     case walls = "Walls", rooms = "Rooms", doors = "Doors"
     var hint: String {
         switch self {
-        case .walls: return "Tap walls to select them, then Align or Delete. Drag a wall's end (square) to move it."
+        case .walls: return "Tap walls to select them, then Align or Delete. Drag a wall's end (square) along the wall to lengthen it, or across to slide the wall."
         case .rooms: return "Tap a room to name it, or tap a name to change or remove it."
         case .doors: return "Tap a wall to add a door or opening; tap any door or opening to change its type or width, or remove it."
         }
