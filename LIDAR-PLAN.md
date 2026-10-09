@@ -59,7 +59,8 @@ The order to work in: take one real export from Paul's phone, see which of these
 
 1. ~~Scan a room or two of a house you own and inspect the export.~~ Done: CValRScan's own `cvalrscan` format (now version 4).
 2. ~~Write `lidar-import.mjs` to read a `cvalrscan` file into CValRSketch shapes, one area per floor.~~ Done: **Import PDF or scan…** reads it through the PDF import window. On the 2026-10-04 scan of Paul's house: 894 sf inside the walls, 989 sf outside, with thickness measured on 14 of 16 sides from the outside walk. Still to check against a tape measurement.
-3. **Overlay on an existing sketch:** fit the scan's outline to the lasered exterior sides, measure wall thickness from sides measured both ways, and fill sides measured only from inside.
+3. ~~Fit the scan to laser readings~~ Done in the import: least squares over every outside reading (wall or corner to corner), held loosely to the scan; walls no reading fixes are calculated to close the house and checked against the scan. Test house, 12 readings: all met exactly, 2 walls calculated, 1011 sf (scan alone 989 sf).
+3a. **Overlay on an existing sketch:** fit the scan's outline to the lasered exterior sides, measure wall thickness from sides measured both ways, and fill sides measured only from inside.
 4. Produce the **"before you leave" list** on the phone (unreached sides, scan gaps, upper floors).
 5. ~~With no exterior sketch, fall back to the scan alone.~~ Done in step 2: this is the inside-first path.
 6. ~~In the importer, split any outside-walk wall~~ Done in step 2: split any outside-walk wall whose points turn a corner (a missed **Next wall**), as the app now offers to on site: split where two fitted lines give the least total squared error, repeat while any part is more than 6″ off its line.

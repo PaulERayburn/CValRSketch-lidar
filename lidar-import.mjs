@@ -51,7 +51,9 @@ export function readCvalrScan(d, opts = {}) {
       const inside = outline(sides);
       const thick = thicknesses(sides, walk.lines, defaultIn);
       const measured = thick.filter(t => t.measured);
-      const outer = tidy(outline(sides.map((s, i) => offsetSide(s, outwardSign(inside), thick[i].inches / 12))));
+      const scanned = sides.map((s, i) => offsetSide(s, outwardSign(inside), thick[i].inches / 12));
+      const fit = applyReadings(d, story, plan, scanned, warnings);
+      const outer = tidy(outline(fit.sides));
       if (measured.length) {
         const list = [...new Set(measured.map(t => Math.round(t.inches)))].sort((a, b) => a - b).join('″, ') + '″';
         warnings.push(`${floorTitle(story)}: wall thickness measured on ${measured.length} of ${sides.length} sides from the outside walk (${list}); the rest use ${defaultIn}″.`);
@@ -66,6 +68,7 @@ export function readCvalrScan(d, opts = {}) {
         points: outer, traced: Math.abs(signedArea(outer)),
         interior: Math.abs(signedArea(inside)), interiorPoints: tidy(inside),
         sides: thick.map(t => ({ inches: +t.inches.toFixed(1), measured: t.measured })),
+        scanTraced: Math.abs(signedArea(tidy(outline(scanned)))), walls: fit.walls,
         areas: {}, stated: null, excludedTraced: null, placement: 'reference', turned: 0,
       });
     }
@@ -73,6 +76,134 @@ export function readCvalrScan(d, opts = {}) {
   if (!floors.length) return { ok: false, reason: 'no-floors', message: 'The scan has no floor outline to import.', warnings };
   if (!(d.measurements || []).length && !(d.spans || []).length) warnings.push('No laser readings in the scan, so nothing checks its overall size. Enter one in CValRScan (Measure walls).');
   return { ok: true, format: 'CValRScan', profileId: 'cvalrscan', address: '', floors, warnings, buildings: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Laser readings: the outline is fitted to them. On a squared outline every
+// side is a constant x or y, and a side's length is the gap between its two
+// neighbours, so an outside reading fixes the gap between two parallel sides.
+// Least squares over all readings, held loosely to the scan, then: sides a
+// reading set are "measured", the rest "calculated" (they are whatever closes
+// the house), each calculated side checked against the scan.
+// ---------------------------------------------------------------------------
+const SCAN_WEIGHT = 0.01;          // a reading outweighs the scan 100 to 1
+const FLAG_IN = 2;                 // readings that can't both hold
+const CALC_FLAG_IN = 6;            // calculated side this far from the scan
+
+function applyReadings(d, story, plan, sides, warnings) {
+  const n = sides.length;
+  const lengthOf = (ss, i) => {
+    const p = ss[(i + n - 1) % n], q = ss[(i + 1) % n];
+    return ss[i].kind === 'free' || p.kind === 'free' || q.kind === 'free' ? null : Math.abs(q.c - p.c);
+  };
+  // Corners: where side i meets side i+1.
+  const corner = i => {
+    const s = sides[i], t = sides[(i + 1) % n];
+    if (s.kind === 'h' && t.kind === 'v') return { x: t.c, y: s.c };
+    if (s.kind === 'v' && t.kind === 'h') return { x: s.c, y: t.c };
+    return null;
+  };
+  const corners = sides.map((_, i) => corner(i));
+  const nearestCorner = p => {
+    let best = -1, bd = Infinity;
+    corners.forEach((c, i) => { if (c) { const dd = Math.hypot(c.x - p.x, c.y - p.y); if (dd < bd) { bd = dd; best = i; } } });
+    return bd < 3 ? best : -1;
+  };
+  // Constraints c[j] - c[i] = sign * L, keeping the order the scan has.
+  const cons = [];
+  const add = (i, j, inches, label) => {
+    if (i < 0 || j < 0 || i === j || sides[i].kind !== sides[j].kind || sides[i].kind === 'free') return false;
+    const sign = Math.sign(sides[j].c - sides[i].c) || 1;
+    cons.push({ i, j, L: sign * inches / 12, label, inches });
+    return true;
+  };
+  const fmt = inches => { const v = Math.round(inches); return `${Math.floor(v / 12)}′ ${v % 12}″`; };
+  let skipped = 0;
+  for (const sp of (d.spans || []).filter(s => s.story === story)) {
+    if (sp.face !== 'outside') { skipped++; continue; }
+    const ka = nearestCorner(plan(sp.a)), kb = nearestCorner(plan(sp.b));
+    if (ka < 0 || kb < 0) { skipped++; continue; }
+    const pa = corners[ka], pb = corners[kb];
+    const horizontal = Math.abs(pb.x - pa.x) >= Math.abs(pb.y - pa.y);
+    const sideAt = k => [k, (k + 1) % n].find(i => sides[i].kind === (horizontal ? 'v' : 'h'));
+    if (!add(sideAt(ka), sideAt(kb), sp.inches, `${fmt(sp.inches)} corner to corner`)) skipped++;
+  }
+  const walls = new Map((d.walls || []).map(w => [w.id, w]));
+  for (const m of d.measurements || []) {
+    const w = walls.get(m.wall);
+    if (!w || w.story !== story) continue;
+    if (m.face !== 'outside') { skipped++; continue; }
+    const a = plan(w.a), b = plan(w.b);
+    const horizontal = Math.abs(b.x - a.x) >= Math.abs(b.y - a.y);
+    const along = horizontal ? (a.x + b.x) / 2 : (a.y + b.y) / 2, at = horizontal ? (a.y + b.y) / 2 : (a.x + b.x) / 2;
+    // The outer side parallel to the wall, a wall thickness out, beside it.
+    let best = -1, bd = 2;
+    sides.forEach((s, i) => {
+      if (s.kind !== (horizontal ? 'h' : 'v')) return;
+      const lo = Math.min(s.a[horizontal ? 'x' : 'y'], s.b[horizontal ? 'x' : 'y']) - 1;
+      const hi = Math.max(s.a[horizontal ? 'x' : 'y'], s.b[horizontal ? 'x' : 'y']) + 1;
+      const dd = Math.abs(s.c - at);
+      if (along > lo && along < hi && dd < bd) { bd = dd; best = i; }
+    });
+    if (best < 0 || !add((best + n - 1) % n, (best + 1) % n, m.inches, `${fmt(m.inches)} wall`)) skipped++;
+  }
+  if (!cons.length) return { sides, walls: [] };
+
+  // Normal equations, one unknown per squared side.
+  const idx = [], col = new Map();
+  sides.forEach((s, i) => { if (s.kind !== 'free') { col.set(i, idx.length); idx.push(i); } });
+  const m = idx.length, A = Array.from({ length: m }, () => new Float64Array(m)), r = new Float64Array(m);
+  idx.forEach((i, k) => { A[k][k] += SCAN_WEIGHT; r[k] += SCAN_WEIGHT * sides[i].c; });
+  for (const c of cons) {
+    const p = col.get(c.i), q = col.get(c.j);
+    A[p][p] += 1; A[q][q] += 1; A[p][q] -= 1; A[q][p] -= 1;
+    r[q] += c.L; r[p] -= c.L;
+  }
+  for (let k = 0; k < m; k++) {                      // Gauss-Jordan; A is positive definite
+    let piv = k;
+    for (let t = k + 1; t < m; t++) if (Math.abs(A[t][k]) > Math.abs(A[piv][k])) piv = t;
+    [A[k], A[piv]] = [A[piv], A[k]]; [r[k], r[piv]] = [r[piv], r[k]];
+    for (let t = 0; t < m; t++) {
+      if (t === k) continue;
+      const f = A[t][k] / A[k][k];
+      if (!f) continue;
+      for (let u = k; u < m; u++) A[t][u] -= f * A[k][u];
+      r[t] -= f * r[k];
+    }
+  }
+  const fitted = sides.map((s, i) => col.has(i) ? { ...s, c: r[col.get(i)] / A[col.get(i)][col.get(i)] } : s);
+
+  // Readings that couldn't both be met.
+  for (const c of cons) {
+    const got = (fitted[c.j].c - fitted[c.i].c) * Math.sign(c.L) * 12;
+    if (Math.abs(got - c.inches) > FLAG_IN) warnings.push(`${floorTitle(story)}: reading ${c.label} fits as ${fmt(got)}; another reading disagrees with it by ${Math.round(Math.abs(got - c.inches))}″. Check both.`);
+  }
+  // Which walls a reading fixed, and which close the house. A wall is a run
+  // of sides on one line (a jog the fit closed to nothing joins two sides);
+  // it is measured when a reading spans exactly its two end neighbours.
+  const len = i => lengthOf(fitted, i);
+  const seen = new Set(), out = [];
+  let calc = 0;
+  for (let i = 0; i < n; i++) {
+    if (seen.has(i) || len(i) == null || len(i) < 0.05) continue;
+    const run = [i];
+    let k = i;
+    while (len((k + 1) % n) != null && len((k + 1) % n) < 0.05 && (k + 2) % n !== i && fitted[(k + 2) % n].kind === fitted[i].kind) {
+      run.push((k + 2) % n); k = (k + 2) % n;
+    }
+    run.forEach(r => seen.add(r));
+    const p = (run[0] + n - 1) % n, q = (run[run.length - 1] + 1) % n;
+    const measured = cons.some(c => (c.i === p && c.j === q) || (c.i === q && c.j === p));
+    const after = Math.abs(fitted[q].c - fitted[p].c), before = Math.abs(sides[q].c - sides[p].c);
+    out.push({ sides: run, kind: measured ? 'measured' : 'calculated', inches: Math.round(after * 12), scanInches: Math.round(before * 12) });
+    if (!measured) {
+      calc++;
+      const diff = Math.round((after - before) * 12);
+      if (Math.abs(diff) > CALC_FLAG_IN) warnings.push(`${floorTitle(story)}: a wall no reading covers works out at ${fmt(after * 12)} to close the house; the scan has ${fmt(before * 12)} (${diff > 0 ? '+' : '−'}${Math.abs(diff)}″). Check it.`);
+    }
+  }
+  warnings.push(`${floorTitle(story)}: fitted to ${cons.length} laser reading${cons.length > 1 ? 's' : ''}${skipped ? ` (${skipped} not used: inside, or not at an outside corner)` : ''}; ${calc} wall${calc === 1 ? '' : 's'} calculated to close the house (${out.filter(w => w.kind === 'calculated').map(w => fmt(w.inches)).join(', ') || 'none'}).`);
+  return { sides: fitted, walls: out };
 }
 
 // Corner-to-corner readings against the imported outline: an outside reading
