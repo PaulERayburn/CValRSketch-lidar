@@ -457,6 +457,18 @@ struct PlanView: View {
         }
     }
 
+    // How wide a room name can be, in screen points: twice the distance to
+    // the nearer wall across from it, less a margin, never under 50.
+    static func labelWidth(at c: CGPoint, walls: [(CGPoint, CGPoint)]) -> CGFloat {
+        var left = CGFloat.infinity, right = CGFloat.infinity
+        for (a, b) in walls where (a.y - c.y) * (b.y - c.y) <= 0 && abs(b.y - a.y) > 0.5 {
+            let x = a.x + (b.x - a.x) * (c.y - a.y) / (b.y - a.y)
+            if x < c.x { left = min(left, c.x - x) } else { right = min(right, x - c.x) }
+        }
+        let half = min(left, right, 120)
+        return max(2 * half - 8, 50)
+    }
+
     private func canvas(geo: PlanGeometry, story: Int, view: Viewport) -> some View {
         let walls = geo.walls.filter { $0.story == story }
         let measurements = scan.measurements
@@ -478,8 +490,29 @@ struct PlanView: View {
                 p.closeSubpath()
                 ctx.fill(p, with: .color(.gray.opacity(0.22)))
             }
+            // Room names wrap to fit between the walls either side of them.
+            let wallLines = walls.map { (view.map($0.a), view.map($0.b)) }
             for s in geo.sections where s.story == story && !s.label.isEmpty {
-                ctx.draw(Text(s.label).font(.caption.bold()).foregroundStyle(.secondary), at: view.map(s.center))
+                let c = view.map(s.center)
+                let room = Self.labelWidth(at: c, walls: wallLines)
+                func line(_ t: String) -> GraphicsContext.ResolvedText {
+                    ctx.resolve(Text(t).font(.caption.bold()).foregroundStyle(.secondary))
+                }
+                // Word by word, a new line whenever the next word won't fit.
+                var lines: [String] = []
+                for word in s.label.split(separator: " ").map(String.init) {
+                    if let last = lines.last,
+                       line(last + " " + word).measure(in: CGSize(width: 1000, height: 100)).width <= room {
+                        lines[lines.count - 1] = last + " " + word
+                    } else {
+                        lines.append(word)
+                    }
+                }
+                let height = line("Ag").measure(in: CGSize(width: 1000, height: 100)).height
+                for (i, l) in lines.enumerated() {
+                    let y = c.y + (CGFloat(i) - CGFloat(lines.count - 1) / 2) * height
+                    ctx.draw(line(l), at: CGPoint(x: c.x, y: y))
+                }
             }
             for w in walls {
                 var p = Path()
