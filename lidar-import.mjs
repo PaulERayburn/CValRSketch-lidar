@@ -54,6 +54,21 @@ export function readCvalrScan(d, opts = {}) {
       const scanned = sides.map((s, i) => offsetSide(s, outwardSign(inside), thick[i].inches / 12));
       const fit = applyReadings(d, story, plan, scanned, warnings);
       const outer = tidy(outline(fit.sides));
+      // A label inside the house beside each wall that was calculated, not measured.
+      const cx = outer.reduce((s, p) => s + p.x, 0) / outer.length, cy = outer.reduce((s, p) => s + p.y, 0) / outer.length;
+      // Neighbouring calculated walls (a notch) share one label.
+      const groups = [];
+      for (const w of fit.walls.filter(w => w.kind === 'calculated')) {
+        const g = groups.find(g => g.some(o => Math.hypot(o.at.x - w.at.x, o.at.y - w.at.y) < 6));
+        if (g) g.push(w); else groups.push([w]);
+      }
+      const notes = groups.map(g => {
+        const ax = g.reduce((s, w) => s + w.at.x, 0) / g.length, ay = g.reduce((s, w) => s + w.at.y, 0) / g.length;
+        const dx = cx - ax, dy = cy - ay, k = 8 / (Math.hypot(dx, dy) || 1);
+        const fmtW = w => `${Math.floor(w.inches / 12)}′ ${w.inches % 12}″`;
+        return { x: +(ax + dx * k).toFixed(3), y: +(ay + dy * k).toFixed(3),
+                 text: `Calculated, not measured:\n${g.map(fmtW).join(' and ')}` };
+      });
       if (measured.length) {
         const list = [...new Set(measured.map(t => Math.round(t.inches)))].sort((a, b) => a - b).join('″, ') + '″';
         warnings.push(`${floorTitle(story)}: wall thickness measured on ${measured.length} of ${sides.length} sides from the outside walk (${list}); the rest use ${defaultIn}″.`);
@@ -68,7 +83,7 @@ export function readCvalrScan(d, opts = {}) {
         points: outer, traced: Math.abs(signedArea(outer)),
         interior: Math.abs(signedArea(inside)), interiorPoints: tidy(inside),
         sides: thick.map(t => ({ inches: +t.inches.toFixed(1), measured: t.measured })),
-        scanTraced: Math.abs(signedArea(tidy(outline(scanned)))), walls: fit.walls,
+        scanTraced: Math.abs(signedArea(tidy(outline(scanned)))), walls: fit.walls, notes,
         areas: {}, stated: null, excludedTraced: null, placement: 'reference', turned: 0,
       });
     }
@@ -172,6 +187,16 @@ function applyReadings(d, story, plan, sides, warnings) {
     }
   }
   const fitted = sides.map((s, i) => col.has(i) ? { ...s, c: r[col.get(i)] / A[col.get(i)][col.get(i)] } : s);
+  // A jog under an inch left between two sides on (nearly) one line is scan
+  // noise, not a wall: line the two sides up, weighted by length.
+  for (let i = 0; i < n; i++) {
+    const p = fitted[(i + n - 1) % n], q = fitted[(i + 1) % n], s = fitted[i];
+    if (s.kind === 'free' || p.kind === 'free' || p.kind !== q.kind) continue;
+    if (Math.abs(q.c - p.c) >= 1 / 12) continue;
+    const lp = lengthOf(fitted, (i + n - 1) % n) || 0, lq = lengthOf(fitted, (i + 1) % n) || 0;
+    const c = (p.c * lp + q.c * lq) / ((lp + lq) || 1);
+    p.c = c; q.c = c;
+  }
 
   // Readings that couldn't both be met.
   for (const c of cons) {
@@ -195,7 +220,9 @@ function applyReadings(d, story, plan, sides, warnings) {
     const p = (run[0] + n - 1) % n, q = (run[run.length - 1] + 1) % n;
     const measured = cons.some(c => (c.i === p && c.j === q) || (c.i === q && c.j === p));
     const after = Math.abs(fitted[q].c - fitted[p].c), before = Math.abs(sides[q].c - sides[p].c);
-    out.push({ sides: run, kind: measured ? 'measured' : 'calculated', inches: Math.round(after * 12), scanInches: Math.round(before * 12) });
+    const line = fitted[run[0]], mid = (fitted[p].c + fitted[q].c) / 2;
+    const at = line.kind === 'v' ? { x: line.c, y: mid } : { x: mid, y: line.c };
+    out.push({ sides: run, kind: measured ? 'measured' : 'calculated', inches: Math.round(after * 12), scanInches: Math.round(before * 12), at });
     if (!measured) {
       calc++;
       const diff = Math.round((after - before) * 12);

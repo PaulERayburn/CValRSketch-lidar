@@ -5914,7 +5914,7 @@ document.getElementById('import-pdf').addEventListener('change', async (e) => {
 // ===== LIDAR SCAN IMPORT =====
 // A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
 // lidar-import.mjs loads only when a scan is picked.
-const LIDAR_IMPORT_VERSION = '0.3.0';
+const LIDAR_IMPORT_VERSION = '0.3.4';
 async function importScan(file) {
   let d;
   try { d = JSON.parse(await file.text()); }
@@ -6054,7 +6054,7 @@ function openPdfImportModal(res, fname) {
 function pdfImportToSketch(res, picked) {
   const names = [...new Set(picked.map(r => r.f.building || ''))];
   const nameOf = r => names.length > 1 ? (r.f.building || DEFAULT_BUILDING) : DEFAULT_BUILDING;
-  const shapes = [];
+  const shapes = [], labels = [];
   let nextX = 0;
   names.forEach(n => {
     const group = picked.filter(r => (r.f.building || '') === n);
@@ -6068,10 +6068,12 @@ function pdfImportToSketch(res, picked) {
       rebuildSegments(sh);
       Object.defineProperty(sh, 'importKind', { value: r.f.kind, enumerable: false });   // not saved
       shapes.push(sh);
+      // A scan's notes (e.g. walls calculated, not measured) ride along as labels.
+      (r.f.notes || []).forEach(t => labels.push({ x: +(t.x - ox + nextX).toFixed(4), y: +(t.y - oy).toFixed(4), text: t.text, floor: r.floor }));
     });
     nextX += w + 20;
   });
-  const d = { shapes, floors: [...new Set(picked.map(r => r.floor))], subject: res.address || '', basements: {} };
+  const d = { shapes, labels, floors: [...new Set(picked.map(r => r.floor))], subject: res.address || '', basements: {} };
   [...new Set(shapes.map(sh => sh.building))].forEach(b => {
     const bs = shapes.filter(sh => sh.building === b && sh.floor === 'basement' && sh.importKind === 'floor');
     if (bs.length) d.basements[b] = { areaOverride: Math.round(bs.reduce((a, sh) => a + shapeArea(sh), 0)), pctFinished: 100 };
