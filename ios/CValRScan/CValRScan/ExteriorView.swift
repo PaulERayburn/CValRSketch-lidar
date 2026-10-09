@@ -12,6 +12,8 @@ struct ExteriorView: View {
     // A wall whose points turn a corner, waiting for the user to say
     // whether to split it; then Next wall goes ahead if that was tapped.
     @State private var corner: (splits: [Int], next: Bool)?
+    // A start-spot check that landed far from the start spot, waiting for the user.
+    @State private var farEnd: (point: SIMD3<Float>, feet: Double)?
 
     private var pointCount: Int { scan.exteriorWalls.reduce(0) { $0 + $1.count } }
     private var wallCount: Int { scan.exteriorWalls.filter { !$0.isEmpty }.count }
@@ -20,6 +22,10 @@ struct ExteriorView: View {
         ZStack {
             SessionView(session: scan.arSession).ignoresSafeArea()
             MarkedPointsOverlay(session: scan.arSession, points: scan.exteriorWalls.flatMap { $0 }, colour: .orange)
+                .ignoresSafeArea()
+            // The start spot, so it can be found again coming back in.
+            MarkedPointsOverlay(session: scan.arSession, points: scan.anchorEnd == nil ? [scan.anchorStart].compactMap { $0 } : [],
+                                colour: .green)
                 .ignoresSafeArea()
             Image(systemName: "plus")
                 .font(.system(size: 40, weight: .light))
@@ -54,6 +60,17 @@ struct ExteriorView: View {
         } message: { c in
             Text("Its points fit \(c.splits.count + 1) walls better than one. Did you miss Next wall at a corner?")
         }
+        .alert(String(format: "That's %.0f ft from your start spot", farEnd?.feet ?? 0),
+               isPresented: Binding(get: { farEnd != nil }, set: { if !$0 { farEnd = nil } }),
+               presenting: farEnd) { f in
+            Button("Try again", role: .cancel) {}
+            Button("Use it anyway") {
+                scan.acceptAnchorEnd(f.point)
+                checkCorner(next: false)
+            }
+        } message: { _ in
+            Text("Aim at the same spot you set before going out (the green dot): the light switch or door-frame corner. A real check lands within a few inches.")
+        }
     }
 
     // Before leaving a wall, check its points lie on one line.
@@ -81,7 +98,7 @@ struct ExteriorView: View {
         let current = scan.exteriorWalls.last?.count ?? 0
         return "Walk out slowly. For each outside wall, mark 2 or more points on the siding, then tap Next wall at the corner. "
             + "Wall \(max(wallCount, 1)): \(current) point\(current == 1 ? "" : "s"). "
-            + "Back inside, aim at the start spot and tap Check start spot."
+            + "Back inside, aim at the start spot (green dot) and tap Check start spot."
     }
 
     private var driftText: String {
@@ -121,9 +138,16 @@ struct ExteriorView: View {
                     Button("Pause") { dismiss() }.buttonStyle(.bordered)
                     Spacer()
                     Button {
-                        let ok = scan.markAnchor()
-                        feedback(ok, ok: "Start spot checked", fail: "No surface under the crosshair")
-                        if ok { checkCorner(next: false) }
+                        switch scan.checkAnchor() {
+                        case .none:
+                            feedback(false, ok: "", fail: "No surface under the crosshair")
+                        case .checked:
+                            feedback(true, ok: "Start spot checked", fail: "")
+                            checkCorner(next: false)
+                        case .far(let p, let feet):
+                            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                            farEnd = (p, feet)
+                        }
                     } label: { Label("Check start spot", systemImage: "checkmark.circle") }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)

@@ -196,6 +196,28 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         return true
     }
 
+    enum AnchorCheck { case none, checked, far(SIMD3<Float>, feet: Double) }
+
+    // Coming back in: the spot under the crosshair should be the start spot,
+    // give or take the walk's drift (inches). Further than 2 ft and it was
+    // probably aimed at something else, so it is handed back to ask about
+    // rather than saved as a drift of several feet.
+    func checkAnchor() -> AnchorCheck {
+        guard let p = aimedPoint() else { return .none }
+        if let s = anchorStart {
+            let feet = Double(simd_length(SIMD2(p.x - s.x, p.z - s.z))) * 3.28084
+            if feet > 2 { return .far(p, feet: feet) }
+        }
+        anchorEnd = p
+        writeFiles()
+        return .checked
+    }
+
+    func acceptAnchorEnd(_ p: SIMD3<Float>) {
+        anchorEnd = p
+        writeFiles()
+    }
+
     @discardableResult
     func markExteriorPoint() -> Bool {
         guard let p = aimedPoint() else { return false }
