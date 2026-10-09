@@ -19,8 +19,12 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     @Published private(set) var gapDepths: [GapDepth] = []
     @Published private(set) var spans: [SpanReading] = []
     @Published private(set) var wallEdits: [UUID: WallEdit] = [:]
-    private var editHistory: [[UUID: WallEdit]] = []
+    @Published private(set) var roomLabels: [RoomLabel] = []
+    @Published private(set) var addedOpenings: [AddedOpening] = []
+    private var editHistory: [EditSnapshot] = []
     var canUndoEdit: Bool { !editHistory.isEmpty }
+    var hasEdits: Bool { !wallEdits.isEmpty || !roomLabels.isEmpty || !addedOpenings.isEmpty }
+    private struct EditSnapshot { var walls: [UUID: WallEdit]; var rooms: [RoomLabel]; var openings: [AddedOpening] }
     var hasReadings: Bool { !measurements.isEmpty || !spans.isEmpty }
     @Published private(set) var structure: CapturedStructure?
     @Published private(set) var measurements: [UUID: WallMeasurement] = [:]
@@ -165,9 +169,42 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     func edited(_ s: PlanExport.Segment) -> PlanExport.Segment? { WallEdit.apply(wallEdits, to: s) }
 
     private func commitEdits(_ new: [UUID: WallEdit]) {
-        editHistory.append(wallEdits)
-        wallEdits = new
+        commit { $0.walls = new }
+    }
+
+    private func commit(_ change: (inout EditSnapshot) -> Void) {
+        var s = EditSnapshot(walls: wallEdits, rooms: roomLabels, openings: addedOpenings)
+        editHistory.append(s)
+        change(&s)
+        wallEdits = s.walls
+        roomLabels = s.rooms
+        addedOpenings = s.openings
         writeFiles()
+    }
+
+    // Names a room: a new name at a spot, or renaming or removing (nil) a
+    // scanned name or one given before.
+    func setRoomName(_ name: String?, source: RoomSource, at point: SIMD2<Double>, story: Int) {
+        commit { s in
+            switch source {
+            case .new:
+                if let name, !name.isEmpty { s.rooms.append(RoomLabel(story: story, point: point, name: name, replaces: nil)) }
+            case .label(let i):
+                guard s.rooms.indices.contains(i) else { return }
+                if let name, !name.isEmpty { s.rooms[i].name = name }
+                else if s.rooms[i].replaces != nil { s.rooms[i].name = "" }
+                else { s.rooms.remove(at: i) }
+            case .scanned(let i):
+                s.rooms.removeAll { $0.replaces == i }
+                s.rooms.append(RoomLabel(story: story, point: point, name: name ?? "", replaces: i))
+            }
+        }
+    }
+
+    func addOpening(_ o: AddedOpening) { commit { $0.openings.append(o) } }
+
+    func removeOpening(at index: Int) {
+        commit { s in if s.openings.indices.contains(index) { s.openings.remove(at: index) } }
     }
 
     func deleteWall(_ id: UUID) {
@@ -191,13 +228,15 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
 
     func undoEdit() {
         guard let last = editHistory.popLast() else { return }
-        wallEdits = last
+        wallEdits = last.walls
+        roomLabels = last.rooms
+        addedOpenings = last.openings
         writeFiles()
     }
 
     func restoreScan() {
-        guard !wallEdits.isEmpty else { return }
-        commitEdits([:])
+        guard hasEdits else { return }
+        commit { $0 = EditSnapshot(walls: [:], rooms: [], openings: []) }
     }
 
     func removeWallPoint(at index: Int) {
@@ -514,6 +553,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             let rawURL = dir.appendingPathComponent("scan-\(stamp).capturedstructure.json")
             try PlanExport.data(for: structure, corners: corners, wallPoints: wallPoints, gapDepths: gapDepths,
                                 measurements: measurements, spans: spans, wallEdits: wallEdits,
+                                roomLabels: roomLabels, addedOpenings: addedOpenings,
+                                rooms: resolvedRooms(structure),
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
@@ -549,6 +590,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         gapDepths = []
         spans = []
         wallEdits = [:]
+        roomLabels = []
+        addedOpenings = []
         editHistory = []
         measurements = [:]
         exteriorWalls = []
@@ -596,6 +639,15 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                     a: e.a.flatMap { $0.count == 2 ? SIMD2($0[0], $0[1]) : nil },
                     b: e.b.flatMap { $0.count == 2 ? SIMD2($0[0], $0[1]) : nil })) }
             })
+            roomLabels = (saved?.roomLabels ?? []).compactMap { r in
+                r.point.count == 2 ? RoomLabel(story: r.story, point: SIMD2(r.point[0], r.point[1]), name: r.name, replaces: r.replaces) : nil
+            }
+            addedOpenings = (saved?.addedOpenings ?? []).compactMap { o in
+                guard o.a.count == 2, o.b.count == 2 else { return nil }
+                return AddedOpening(story: o.story, wall: o.wall.flatMap(UUID.init(uuidString:)),
+                                    a: SIMD2(o.a[0], o.a[1]), b: SIMD2(o.b[0], o.b[1]),
+                                    kind: OpeningKind(rawValue: o.kind ?? "") ?? (o.door == false ? .opening : .interior))
+            }
             editHistory = []
             spans = (saved?.spans ?? []).compactMap { r in
                 guard r.a.count == 2, r.b.count == 2 else { return nil }
@@ -673,6 +725,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         struct Exterior: Decodable { let walls: [[Point]]; let anchorStart: Point?; let anchorEnd: Point? }
         struct WallPointIn: Decodable { let point: [Double]; let elevation: Double; let normal: [Double] }
         struct GapDepthIn: Decodable { let gap: [[Double]]; let from: String; let inches: Int }
+        struct RoomLabelIn: Decodable { let story: Int; let point: [Double]; let name: String; let replaces: Int? }
+        struct OpeningIn: Decodable { let story: Int; let wall: String?; let a: [Double]; let b: [Double]
+            let kind: String?; let door: Bool? }
         struct WallEditIn: Decodable { let wall: String; let hidden: Bool; let a: [Double]?; let b: [Double]? }
         struct SpanIn: Decodable {
             let a: [Double]; let b: [Double]; let story: Int; let inches: Int; let face: String; let entered: String?
@@ -682,6 +737,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         let gapDepths: [GapDepthIn]?
         let spans: [SpanIn]?
         let wallEdits: [WallEditIn]?
+        let roomLabels: [RoomLabelIn]?
+        let addedOpenings: [OpeningIn]?
         let measurements: [Reading]?
         let exterior: Exterior?
     }

@@ -24,8 +24,8 @@ export function readCvalrScan(d, opts = {}) {
   if (!d || d.format !== 'cvalrscan') {
     return { ok: false, reason: 'unknown-format', message: 'This is not a CValRScan plan (cvalrscan JSON).' };
   }
-  if ((d.version || 0) > 6) {
-    return { ok: false, reason: 'newer-version', message: `This scan is format version ${d.version}; this CValRSketch reads up to version 6. Update the app.` };
+  if ((d.version || 0) > 7) {
+    return { ok: false, reason: 'newer-version', message: `This scan is format version ${d.version}; this CValRSketch reads up to version 7. Update the app.` };
   }
   const defaultIn = opts.exteriorInches ?? DEFAULT_EXTERIOR_IN;
   const turn = houseAngle(d.walls || []);
@@ -274,10 +274,13 @@ function interiorDetail(d, story, plan, before, after) {
   const map = w => { const p = plan(w); return { x: +mx(p.x).toFixed(3), y: +my(p.y).toFixed(3) }; };
   const lines = [];
   for (const [list, kind] of [[d.walls, 'wall'], [d.doors, 'door'], [d.windows, 'window'], [d.openings, 'opening']]) {
-    for (const s of (list || []).filter(s => s.story === story)) lines.push({ a: map(s.a), b: map(s.b), kind });
+    for (const s of (list || []).filter(s => s.story === story)) lines.push({ a: map(s.a), b: map(s.b), kind: s.type === 'entrance' ? 'entrance' : kind });
   }
-  const rooms = (d.sections || []).filter(s => s.story === story && ROOM_NAMES[s.label])
-    .map(s => ({ ...map(s.center), name: ROOM_NAMES[s.label] }));
+  // Room names as the user left them (format 7), else the scan's own.
+  const rooms = d.rooms
+    ? d.rooms.filter(r => r.story === story && r.name).map(r => ({ ...map(r.center), name: r.name }))
+    : (d.sections || []).filter(s => s.story === story && ROOM_NAMES[s.label])
+        .map(s => ({ ...map(s.center), name: ROOM_NAMES[s.label] }));
   return { lines, rooms };
 }
 

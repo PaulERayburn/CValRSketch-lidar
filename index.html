@@ -1237,6 +1237,7 @@ let drawnLabelBoxes = [];
 const DETAIL_STYLE = {
   wall:    { stroke: '#6b7280', 'stroke-width': 1.5 },
   door:    { stroke: '#b45309', 'stroke-width': 3 },
+  entrance:{ stroke: '#991b1b', 'stroke-width': 4.5 },
   window:  { stroke: '#2b7bb9', 'stroke-width': 4 },
   opening: { stroke: '#9ca3af', 'stroke-width': 2, 'stroke-dasharray': '4,3' },
 };
@@ -5996,7 +5997,7 @@ document.getElementById('import-pdf').addEventListener('change', async (e) => {
 // ===== LIDAR SCAN IMPORT =====
 // A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
 // lidar-import.mjs loads only when a scan is picked.
-const LIDAR_IMPORT_VERSION = '0.5.1';
+const LIDAR_IMPORT_VERSION = '0.6.0';
 async function importScan(file) {
   let d;
   try { d = JSON.parse(await file.text()); }

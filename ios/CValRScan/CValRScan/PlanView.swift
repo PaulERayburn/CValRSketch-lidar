@@ -23,6 +23,9 @@ struct PlanView: View {
     @State private var endDrag: (from: CGPoint, to: CGPoint)?
     @State private var panBase: CGSize?
     @State private var deleting: EditTarget?
+    @State private var tool = EditTool.walls
+    @State private var roomDraft: RoomDraft?
+    @State private var doorDraft: DoorDraft?
     @State private var preview = ReadingPreview()
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
@@ -43,7 +46,12 @@ struct PlanView: View {
                 .padding(.horizontal)
             }
             if editMode {
-                Text("Edit: tap a wall to delete it, drag a wall's end (square) to move it. Readings stay as entered.")
+                Picker("Tool", selection: $tool) {
+                    ForEach(EditTool.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                Text(tool.hint)
                     .font(.footnote.bold())
                     .foregroundStyle(.teal)
                     .padding(.horizontal)
@@ -65,10 +73,32 @@ struct PlanView: View {
                                     pan: CGSize(width: pan.width + drag.width, height: pan.height + drag.height))
                 canvas(geo: geo, story: shown, view: view)
                     .contentShape(Rectangle())
-                    .gesture(editMode ? AnyGesture(editDrag(geo: geo, story: shown, view: view, size: box.size).map { _ in () })
+                    .gesture(editMode && tool == .walls ? AnyGesture(editDrag(geo: geo, story: shown, view: view, size: box.size).map { _ in () })
                                       : AnyGesture(panDrag(geo: geo, story: shown, size: box.size).map { _ in () }))
                     .simultaneousGesture(anchoredZoom(geo: geo, story: shown, size: box.size))
                     .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+                        if editMode && tool == .rooms {
+                            let near = geo.rooms.filter { $0.story == shown }
+                                .min { hypot(view.map($0.center).x - tap.location.x, view.map($0.center).y - tap.location.y)
+                                     < hypot(view.map($1.center).x - tap.location.x, view.map($1.center).y - tap.location.y) }
+                            if let r = near, hypot(view.map(r.center).x - tap.location.x, view.map(r.center).y - tap.location.y) < 34 {
+                                roomDraft = RoomDraft(source: r.source, point: geo.world(r.center), story: shown, name: r.name)
+                            } else {
+                                roomDraft = RoomDraft(source: .new, point: geo.world(view.unmap(tap.location)), story: shown, name: nil)
+                            }
+                            return
+                        }
+                        if editMode && tool == .doors {
+                            if let o = geo.addedOpenings.filter({ $0.story == shown })
+                                .first(where: { view.distance(tap.location, $0.a, $0.b) < 20 }) {
+                                doorDraft = DoorDraft(wall: nil, at: .zero, removing: o.index)
+                                return
+                            }
+                            if let w = view.nearest(to: tap.location, in: geo.walls.filter { $0.story == shown }) {
+                                doorDraft = DoorDraft(wall: w, at: view.unmap(tap.location), removing: nil)
+                            }
+                            return
+                        }
                         if editMode {
                             let walls = geo.walls.filter { $0.story == shown }
                             let wall = view.nearest(to: tap.location, in: walls)
@@ -147,7 +177,7 @@ struct PlanView: View {
                     }
                 }
                 if !cornerMode {
-                    Button(editMode ? "Done" : "Edit") { editMode.toggle() }
+                    Button(editMode ? "Done" : "Edit") { editMode.toggle(); tool = .walls }
                 }
                 Button("Fit") { withAnimation { zoom = 1; pan = .zero } }
             }
@@ -157,7 +187,22 @@ struct PlanView: View {
                         .disabled(!scan.canUndoEdit)
                     Spacer()
                     Button("Restore scan") { scan.restoreScan() }
-                        .disabled(scan.wallEdits.isEmpty)
+                        .disabled(!scan.hasEdits)
+                }
+            }
+        }
+        .sheet(item: $roomDraft) { d in
+            RoomSheet(draft: d) { name in scan.setRoomName(name, source: d.source, at: d.point, story: d.story) }
+                .presentationDetents([.medium, .large])
+        }
+        .confirmationDialog(doorDraft?.removing != nil ? "Remove this added opening?" : "Add on this wall",
+                            isPresented: Binding(get: { doorDraft != nil }, set: { if !$0 { doorDraft = nil } }),
+                            titleVisibility: .visible, presenting: doorDraft) { d in
+            if let i = d.removing {
+                Button("Remove", role: .destructive) { scan.removeOpening(at: i) }
+            } else if let w = d.wall {
+                ForEach(DoorDraft.choices, id: \.label) { c in
+                    Button(c.label) { addOpening(on: w, at: d.at, inches: c.inches, kind: c.kind, geo: geo) }
                 }
             }
         }
@@ -182,6 +227,17 @@ struct PlanView: View {
             .presentationDetents([.fraction(0.55), .large])
             .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.55)))
         }
+    }
+
+    // An added door or opening, centred where the wall was tapped and kept
+    // inside the wall.
+    private func addOpening(on w: PlanWall, at p: CGPoint, inches: Int, kind: OpeningKind, geo: PlanGeometry) {
+        let L = w.length, half = min(CGFloat(inches) / 24, L / 2)
+        let d = w.direction
+        let t = min(max((p.x - w.a.x) * d.dx + (p.y - w.a.y) * d.dy, half), L - half)
+        let a = CGPoint(x: w.a.x + d.dx * (t - half), y: w.a.y + d.dy * (t - half))
+        let b = CGPoint(x: w.a.x + d.dx * (t + half), y: w.a.y + d.dy * (t + half))
+        scan.addOpening(AddedOpening(story: w.story, wall: w.id, a: geo.world(a), b: geo.world(b), kind: kind))
     }
 
     private func panDrag(geo: PlanGeometry, story: Int, size: CGSize) -> some Gesture {
@@ -363,8 +419,8 @@ struct PlanView: View {
                 var p = Path()
                 p.move(to: view.map(f.a))
                 p.addLine(to: view.map(f.b))
-                let colour: Color = f.kind == .door ? .orange : (f.kind == .window ? .cyan : .gray)
-                ctx.stroke(p, with: .color(colour.opacity(0.85)), lineWidth: 5)
+                let colour: Color = f.kind == .door ? .orange : f.kind == .entrance ? .red : (f.kind == .window ? .cyan : .gray)
+                ctx.stroke(p, with: .color(colour.opacity(0.85)), lineWidth: f.kind == .entrance ? 7 : 5)
             }
             for gap in geo.gaps where gap.story == story {
                 var p = Path()
@@ -827,6 +883,75 @@ enum EditTarget {
         switch self {
         case .wall: return "For stray bits the scan made. The wall is left out of the plan, the import and the detailed plan; Undo or Restore scan brings it back."
         case .hidden(let h): return h.depth != nil ? "Removes the laser depth that placed it." : "Removes the Mark wall point that placed it."
+        }
+    }
+}
+
+enum EditTool: String, CaseIterable {
+    case walls = "Walls", rooms = "Rooms", doors = "Doors"
+    var hint: String {
+        switch self {
+        case .walls: return "Tap a wall to delete it, drag a wall's end (square) to move it."
+        case .rooms: return "Tap a room to name it, or tap a name to change or remove it."
+        case .doors: return "Tap a wall to add a door or opening there; tap one you added to remove it."
+        }
+    }
+}
+
+struct RoomDraft: Identifiable {
+    let id = UUID()
+    let source: RoomSource
+    let point: SIMD2<Double>
+    let story: Int
+    let name: String?
+}
+
+struct DoorDraft {
+    let wall: PlanWall?
+    let at: CGPoint
+    let removing: Int?
+    static let choices: [(label: String, inches: Int, kind: OpeningKind)] = [
+        ("Entrance door 3′ 0″", 36, .entrance), ("Interior door 2′ 8″", 32, .interior), ("Interior door 2′ 6″", 30, .interior),
+        ("Opening 3′ 0″", 36, .opening), ("Opening 6′ 0″", 72, .opening),
+    ]
+}
+
+// Naming a room: the usual appraisal names, or anything typed.
+struct RoomSheet: View {
+    let draft: RoomDraft
+    let onSave: (String?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    static let names = ["Bedroom", "Primary bedroom", "Bath", "2-pc bath", "3-pc bath", "4-pc bath", "Kitchen", "Living",
+                        "Dining", "Family", "Laundry", "Closet", "Entry", "Hall", "Mudroom", "Office", "Utility", "Storage"]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack {
+                        TextField("Room name", text: $text)
+                            .textInputAutocapitalization(.sentences)
+                        Button("Save") { onSave(text.trimmingCharacters(in: .whitespaces)); dismiss() }
+                            .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+                Section("Common") {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
+                        ForEach(Self.names, id: \.self) { n in
+                            Button(n) { onSave(n); dismiss() }
+                                .buttonStyle(.bordered)
+                        }
+                    }
+                }
+                if draft.name != nil {
+                    Button("Remove name", role: .destructive) { onSave(nil); dismiss() }
+                }
+            }
+            .navigationTitle(draft.name == nil ? "Name this room" : "Rename \(draft.name!)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .onAppear { text = draft.name ?? "" }
         }
     }
 }

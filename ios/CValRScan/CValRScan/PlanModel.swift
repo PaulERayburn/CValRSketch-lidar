@@ -28,7 +28,7 @@ struct PlanWall: Identifiable {
 }
 
 struct PlanFeature {
-    enum Kind { case door, window, opening }
+    enum Kind { case door, entrance, window, opening }
     let kind: Kind
     let story: Int
     let a: CGPoint
@@ -79,6 +79,8 @@ struct PlanGeometry {
     var sections: [(story: Int, label: String, center: CGPoint)] = []
     var exteriorLines: [(a: CGPoint, b: CGPoint)] = []
     var gaps: [PlanGap] = []
+    var rooms: [(story: Int, name: String, center: CGPoint, source: RoomSource)] = []
+    var addedOpenings: [(index: Int, story: Int, a: CGPoint, b: CGPoint)] = []
     var hiddenLines: [HiddenLine] = []
     var wallPoints: [(story: Int, point: CGPoint)] = []
     var spans: [(a: CGPoint, b: CGPoint, reading: SpanReading)] = []
@@ -349,16 +351,19 @@ extension ScanController {
         var g = PlanGeometry()
         g.angle = th
         g.floors = structure.floors.map { f in (f.story, PlanExport.floor(f).polygon.map(rot)) }
-        g.sections = structure.sections.map { s in
-            (s.story, Self.roomName(String(describing: s.label)),
-             rot([Double(s.center.x), Double(s.center.z)]))
-        }
+        g.rooms = resolvedRooms(structure).map { r in (r.story, r.name, rot([r.center.x, r.center.y]), r.source) }
+        g.sections = g.rooms.map { ($0.story, $0.name, $0.center) }
         for (kind, list) in [(PlanFeature.Kind.door, structure.doors),
                              (.window, structure.windows), (.opening, structure.openings)] {
             g.features += list.map { s in
                 let seg = PlanExport.segment(s)
                 return PlanFeature(kind: kind, story: s.story, a: rot(seg.a), b: rot(seg.b))
             }
+        }
+        for (i, o) in addedOpenings.enumerated() {
+            let a = rot([o.a.x, o.a.y]), b = rot([o.b.x, o.b.y])
+            g.features.append(PlanFeature(kind: o.kind == .entrance ? .entrance : o.kind == .interior ? .door : .opening, story: o.story, a: a, b: b))
+            g.addedOpenings.append((i, o.story, a, b))
         }
         g.walls = segs.map { surface, s in
             let a = rot(s.a), b = rot(s.b)
@@ -467,6 +472,21 @@ extension ScanController {
             j = i
         }
         return result
+    }
+
+    // The scan's room names with the user's renames, removals and additions.
+    func resolvedRooms(_ structure: CapturedStructure) -> [ResolvedRoom] {
+        var out: [ResolvedRoom] = []
+        for (i, s) in structure.sections.enumerated() where !roomLabels.contains(where: { $0.replaces == i }) {
+            let name = Self.roomName(String(describing: s.label))
+            if !name.isEmpty {
+                out.append(ResolvedRoom(story: s.story, center: SIMD2(Double(s.center.x), Double(s.center.z)), name: name, source: .scanned(i)))
+            }
+        }
+        for (i, l) in roomLabels.enumerated() where !l.name.isEmpty {
+            out.append(ResolvedRoom(story: l.story, center: l.point, name: l.name, source: .label(i)))
+        }
+        return out
     }
 
     private static func roomName(_ label: String) -> String {

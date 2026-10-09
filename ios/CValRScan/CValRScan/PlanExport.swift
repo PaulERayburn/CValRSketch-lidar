@@ -9,7 +9,7 @@ import simd
 // meter readings, which are whole inches as entered (ANSI Z765 precision).
 enum PlanExport {
     struct Plan: Encodable {
-        static let formatVersion = 6
+        static let formatVersion = 7
         var format = "cvalrscan"
         var version = formatVersion
         var app = "CValRScan " + ScanController.appVersion
@@ -27,6 +27,9 @@ enum PlanExport {
         let gapDepths: [GapDepthOut]
         let spans: [SpanOut]
         let wallEdits: [WallEditOut]
+        let roomLabels: [RoomLabelOut]
+        let addedOpenings: [OpeningOut]
+        let rooms: [RoomOut]
         let measurements: [Measurement]
         let exterior: Exterior
     }
@@ -49,6 +52,7 @@ enum PlanExport {
         let bottom: Double        // world height of the lower edge
         let wall: String?         // parent wall id for doors, windows, openings
         let curved: Bool
+        var type: String? = nil   // added doors: "entrance" or "interior"
     }
 
     struct Floor: Encodable {
@@ -103,6 +107,13 @@ enum PlanExport {
         let b: [Double]?
     }
 
+    // Room names the user gave, renamed, or (empty name) removed.
+    struct RoomLabelOut: Encodable { let story: Int; let point: [Double]; let name: String; let replaces: Int? }
+    // Doors and openings the user added on a wall; also in doors / openings.
+    struct OpeningOut: Encodable { let story: Int; let wall: String?; let a: [Double]; let b: [Double]; let kind: String }
+    // Every room name as it stands, scanned or the user's, for the importer.
+    struct RoomOut: Encodable { let story: Int; let center: [Double]; let name: String }
+
     // A face-to-face reading. `side` is +1 for the side the normal (−dy, dx)
     // of the wall's a→b points to, −1 for the other; `walls` is every scanned
     // segment the reading spans; `moving` the end walls that may shift to fit it.
@@ -121,11 +132,23 @@ enum PlanExport {
     static func data(for s: CapturedStructure, corners: [SIMD3<Float>],
                      wallPoints: [WallPoint], gapDepths: [GapDepth],
                      measurements: [UUID: WallMeasurement], spans: [SpanReading], wallEdits: [UUID: WallEdit],
+                     roomLabels: [RoomLabel], addedOpenings: [AddedOpening], rooms: [ResolvedRoom],
                      exterior: [[SIMD3<Float>]],
                      anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
-        let walls = s.walls.compactMap { WallEdit.apply(wallEdits, to: segment($0)) }, doors = s.doors.map(segment)
-        let windows = s.windows.map(segment), openings = s.openings.map(segment)
+        let walls = s.walls.compactMap { WallEdit.apply(wallEdits, to: segment($0)) }
+        // Added doors and openings take their height from a standard door and
+        // sit on the floor of the wall they are in.
+        func added(_ door: Bool) -> [Segment] {
+            addedOpenings.enumerated().filter { ($0.element.kind != .opening) == door }.map { i, o in
+                let w = o.wall.flatMap { id in walls.first { $0.id == id.uuidString } }
+                return Segment(id: "added-\(o.kind.rawValue)-\(i)", story: o.story, a: [o.a.x, o.a.y], b: [o.b.x, o.b.y],
+                               height: 2.03, bottom: w?.bottom ?? 0, wall: o.wall?.uuidString, curved: false,
+                               type: door ? o.kind.rawValue : nil)
+            }
+        }
+        let doors = s.doors.map(segment) + added(true)
+        let windows = s.windows.map(segment), openings = s.openings.map(segment) + added(false)
         let floors = s.floors.map(floor)
         let plan = Plan(
             createdAt: ISO8601DateFormatter().string(from: Date()),
@@ -155,6 +178,9 @@ enum PlanExport {
             wallEdits: wallEdits.sorted { $0.key.uuidString < $1.key.uuidString }.map { id, e in
                 WallEditOut(wall: id.uuidString, hidden: e.hidden, a: e.a.map { [$0.x, $0.y] }, b: e.b.map { [$0.x, $0.y] })
             },
+            roomLabels: roomLabels.map { RoomLabelOut(story: $0.story, point: [$0.point.x, $0.point.y], name: $0.name, replaces: $0.replaces) },
+            addedOpenings: addedOpenings.map { OpeningOut(story: $0.story, wall: $0.wall?.uuidString, a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y], kind: $0.kind.rawValue) },
+            rooms: rooms.map { RoomOut(story: $0.story, center: [$0.center.x, $0.center.y], name: $0.name) },
             measurements: measurements
                 .sorted { $0.key.uuidString < $1.key.uuidString }
                 .map { id, m in
@@ -220,4 +246,36 @@ struct WallEdit: Equatable {
                                   b: e.b.map { [$0.x, $0.y] } ?? s.b, height: s.height, bottom: s.bottom,
                                   wall: s.wall, curved: s.curved)
     }
+}
+
+// A room name the user gave at a spot (world x, z), or a rename (or, with an
+// empty name, removal) of the scan's own name with that index.
+struct RoomLabel: Equatable {
+    var story: Int
+    var point: SIMD2<Double>
+    var name: String
+    var replaces: Int?
+}
+
+// A door or opening the user added on a wall (world x, z ends).
+struct AddedOpening: Equatable {
+    var story: Int
+    var wall: UUID?
+    var a: SIMD2<Double>
+    var b: SIMD2<Double>
+    var kind: OpeningKind
+}
+
+// An added door's type: an exterior (entrance) door, an interior (privacy)
+// door, or an opening with no door.
+enum OpeningKind: String { case entrance, interior, opening }
+
+// Where a room name on the plan comes from.
+enum RoomSource: Equatable { case new, scanned(Int), label(Int) }
+
+struct ResolvedRoom {
+    let story: Int
+    let center: SIMD2<Double>
+    let name: String
+    let source: RoomSource
 }
