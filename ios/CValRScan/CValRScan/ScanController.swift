@@ -12,7 +12,12 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     @Published var isScanning = false
     @Published var isBusy = false
     @Published var message: String?
-    @Published var exportURLs: [URL] = []
+    @Published var exportURLs: [URL] = [] { didSet { shareURLs = namedCopies(of: exportURLs) } }
+    // The same files, named by the scan's name and date for sharing.
+    @Published private(set) var shareURLs: [URL] = []
+    // The user's name for this scan, usually the address.
+    @Published private(set) var scanName = ""
+    @Published private(set) var savedNames: [String: String] = [:]   // stamp: name
     @Published var torchOn = false
     @Published var corners: [SIMD3<Float>] = []        // older scans only; Mark wall replaced them
     @Published private(set) var wallPoints: [WallPoint] = []
@@ -459,7 +464,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             previous = nil
             structure = built
             // A resumed scan keeps its name; a new one is named by the time.
-            // File names carry only a timestamp: never an address or job number.
+            // Stored files are named by the time only; the scan's name (often
+            // the address) goes into the plan and into the copies that are shared.
             if !resumed || stamp.isEmpty { stamp = Self.stampFormatter.string(from: Date()) }
             writeFiles()
             saveWorldMap()
@@ -655,7 +661,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                 measurements: measurements, spans: spans, wallEdits: wallEdits,
                                 roomLabels: roomLabels, addedOpenings: addedOpenings,
                                 rooms: resolvedRooms(structure), hiddenOpenings: hiddenOpenings,
-                                exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd)
+                                exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd,
+                                name: scanName)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
             exportURLs = [planURL, rawURL] + (FileManager.default.fileExists(atPath: modelURL.path) ? [modelURL] : [])
@@ -676,12 +683,58 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             .filter { $0.hasPrefix("scan-") && $0.hasSuffix(".capturedstructure.json") }
             .map { String($0.dropFirst(5).dropLast(".capturedstructure.json".count)) }
             .sorted(by: >)
+        struct NameOnly: Decodable { let name: String? }
+        var found: [String: String] = [:]
+        for stamp in savedScans {
+            let url = Self.docs.appendingPathComponent("scan-\(stamp).cvalrscan.json")
+            if let n = (try? JSONDecoder().decode(NameOnly.self, from: Data(contentsOf: url)))?.name { found[stamp] = n }
+        }
+        savedNames = found
     }
 
     static func title(for stamp: String) -> String {
         guard let date = stampFormatter.date(from: stamp) else { return stamp }
         return date.formatted(date: .abbreviated, time: .shortened)
     }
+
+    // A saved scan's name and date, or just the date.
+    func savedTitle(for stamp: String) -> String {
+        let date = Self.title(for: stamp)
+        guard let name = savedNames[stamp], !name.isEmpty else { return date }
+        return "\(name) · \(date)"
+    }
+
+    func setName(_ name: String) {
+        scanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if structure != nil { writeFiles() }
+        shareURLs = namedCopies(of: exportURLs)
+    }
+
+    // Copies of the scan files named like "2603 36 Ave 2026-10-08_21-07.cvalrscan.json",
+    // so a shared or saved file says which job it is. The originals keep
+    // their timestamp names, which the app finds them by. Characters that
+    // file systems refuse (/ \ : * ? " < > |) are left out.
+    private func namedCopies(of urls: [URL]) -> [URL] {
+        let name = scanName.components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|")).joined()
+            .trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !stamp.isEmpty, !urls.isEmpty else { return urls }
+        let date = Self.stampFormatter.date(from: stamp).map(Self.fileDateFormatter.string(from:)) ?? stamp
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("share-\(stamp)")
+        try? FileManager.default.removeItem(at: dir)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return urls.map { url in
+            let suffix = url.lastPathComponent.replacingOccurrences(of: "scan-\(stamp)", with: "")
+            let copy = dir.appendingPathComponent("\(name) \(date)\(suffix)")
+            return (try? FileManager.default.copyItem(at: url, to: copy)) != nil ? copy : url
+        }
+    }
+
+    private static let fileDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd_HH-mm"
+        return f
+    }()
 
     func newScan() {
         rooms = []
@@ -706,6 +759,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         savedRooms = []
         previous = nil
         stamp = ""
+        scanName = ""
         message = nil
     }
 
@@ -773,6 +827,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             structure = loaded
             savedRooms = loaded.rooms
             self.stamp = stamp
+            scanName = saved?.name ?? ""
             loadedFromFile = true
             resumed = false
             canResume = FileManager.default.fileExists(atPath: worldMapURL.path)
@@ -836,6 +891,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         struct SpanIn: Decodable {
             let a: [Double]; let b: [Double]; let story: Int; let inches: Int; let face: String; let entered: String?
         }
+        let name: String?
         let corners: [Point]?
         let wallPoints: [WallPointIn]?
         let gapDepths: [GapDepthIn]?

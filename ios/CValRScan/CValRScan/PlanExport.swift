@@ -14,6 +14,9 @@ enum PlanExport {
         var version = formatVersion
         var app = "CValRScan " + ScanController.appVersion
         var units = "m"
+        // The user's name for the scan, usually the address. Only in files
+        // the user keeps or shares; never in this repository's test scans.
+        var name: String?
         let createdAt: String
         let walls: [Segment]
         let doors: [Segment]
@@ -161,7 +164,7 @@ enum PlanExport {
                      roomLabels: [RoomLabel], addedOpenings: [AddedOpening], rooms: [ResolvedRoom],
                      hiddenOpenings: Set<UUID>,
                      exterior: [[SIMD3<Float>]],
-                     anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?) throws -> Data {
+                     anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?, name: String = "") throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
         let walls = s.walls.compactMap { WallEdit.apply(wallEdits, to: segment($0)) }
         // Added doors and openings take their height from a standard door and
@@ -185,7 +188,7 @@ enum PlanExport {
             return d
         } + added(true)
         let windows = s.windows.map(segment), openings = kept(s.openings) + added(false)
-        let plan = Plan(
+        var plan = Plan(
             createdAt: ISO8601DateFormatter().string(from: Date()),
             walls: walls,
             doors: doors,
@@ -228,6 +231,7 @@ enum PlanExport {
                 },
             exterior: Exterior(walls: exterior.filter { !$0.isEmpty }.map { $0.map(corner) },
                                anchorStart: anchorStart.map(corner), anchorEnd: anchorEnd.map(corner)))
+        if !name.isEmpty { plan.name = name }
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try enc.encode(plan)

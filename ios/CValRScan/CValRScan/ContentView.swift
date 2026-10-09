@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var measuring = false
     @State private var askReading = false
     @State private var model3D: URL?
+    @State private var naming = false
+    @State private var nameDraft = ""
 
     // After Build floor plan: what still needs doing before leaving the site.
     private var buildAdvice: String {
@@ -32,6 +34,15 @@ struct ContentView: View {
                         .foregroundStyle(.red)
                 }
                 Section(scan.loadedFromFile ? "Opened scan" : "Rooms scanned") {
+                    if scan.structure != nil || !scan.rooms.isEmpty {
+                        Button {
+                            nameDraft = scan.scanName
+                            naming = true
+                        } label: {
+                            Label(scan.scanName.isEmpty ? "Name this scan" : scan.scanName, systemImage: "pencil")
+                                .font(.headline)
+                        }
+                    }
                     if scan.loadedFromFile {
                         if scan.canResume {
                             Button("Resume on site", systemImage: "location.viewfinder") { resuming = true }
@@ -114,7 +125,7 @@ struct ContentView: View {
                         Button("View in 3D", systemImage: "cube") { model3D = scan.modelURL }
                     }
                     if !scan.exportURLs.isEmpty {
-                        ShareLink(items: scan.exportURLs) {
+                        ShareLink(items: scan.shareURLs) {
                             Label("Share scan files", systemImage: "square.and.arrow.up")
                         }
                     }
@@ -128,7 +139,7 @@ struct ContentView: View {
                             Button {
                                 scan.load(stamp: stamp)
                             } label: {
-                                Label(ScanController.title(for: stamp), systemImage: "doc.text")
+                                Label(scan.savedTitle(for: stamp), systemImage: "doc.text")
                             }
                             .disabled(scan.isBusy)
                         }
@@ -147,6 +158,14 @@ struct ContentView: View {
             }
             .navigationTitle("CValRScan")
             .sheet(item: $model3D) { ModelView(url: $0) }
+            .alert("Name this scan", isPresented: $naming) {
+                TextField("e.g. 2603 36 Ave", text: $nameDraft)
+                    .textInputAutocapitalization(.words)
+                Button("Save") { scan.setName(nameDraft) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Usually the address. Shared files are named with it and the scan's date and time.")
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("New") { scan.newScan() }
