@@ -62,7 +62,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     private var discardNext = false
     private var stamp = ""
     private var savedRooms: [CapturedRoom] = []
-    private var previousWalls: [CapturedRoom.Surface] = []
+    private var previous: CapturedStructure?   // the plan before a rebuild, for edits to follow
     private var relocalizeStarted = Date.distantPast
 
     override init() {
@@ -81,7 +81,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         if loadedFromFile { newScan() }
         discardNext = false
         exportURLs = []
-        if let s = structure { previousWalls = s.walls }
+        if let s = structure { previous = s }
         structure = nil
         isScanning = true
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
@@ -450,7 +450,13 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         do {
             let built = try await StructureBuilder(options: [.beautifyObjects])
                 .capturedStructure(from: rooms)
-            measurements = remap(measurements, from: previousWalls, to: built.walls)
+            // Readings and edits follow their walls and doors into the new plan.
+            var lost = 0
+            if let old = structure ?? previous {
+                measurements = remap(measurements, from: old.walls, to: built.walls)
+                lost = carryEdits(from: old, to: built)
+            }
+            previous = nil
             structure = built
             // A resumed scan keeps its name; a new one is named by the time.
             // File names carry only a timestamp: never an address or job number.
@@ -458,6 +464,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             writeFiles()
             saveWorldMap()
             write3DModel(replace: true)
+            if lost > 0 {
+                message = "\(lost == 1 ? "1 edit" : "\(lost) edits") couldn't find \(lost == 1 ? "its wall" : "their walls") in the rebuilt plan. Check them in Measure walls, Edit."
+            }
         } catch {
             message = "Export failed: \(error.localizedDescription)"
         }
@@ -468,16 +477,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     // about a foot. Readings whose wall has gone are dropped.
     private func remap(_ readings: [UUID: WallMeasurement], from old: [CapturedRoom.Surface],
                        to new: [CapturedRoom.Surface]) -> [UUID: WallMeasurement] {
-        let newIDs = Set(new.map(\.identifier))
-        func mid(_ s: CapturedRoom.Surface) -> SIMD2<Float> { SIMD2(s.transform.columns.3.x, s.transform.columns.3.z) }
-        func dir(_ s: CapturedRoom.Surface) -> SIMD2<Float> { SIMD2(s.transform.columns.0.x, s.transform.columns.0.z) }
-        func map(_ id: UUID) -> UUID? {
-            if newIDs.contains(id) { return id }
-            guard let o = old.first(where: { $0.identifier == id }) else { return nil }
-            return new.filter { $0.story == o.story && abs(simd_dot(dir($0), dir(o))) > 0.98 }
-                .min { simd_distance(mid($0), mid(o)) < simd_distance(mid($1), mid(o)) }
-                .flatMap { simd_distance(mid($0), mid(o)) < 0.3 ? $0.identifier : nil }
-        }
+        let map = Self.matcher(old, new, sameLength: false)
         var out: [UUID: WallMeasurement] = [:]
         for (id, m) in readings {
             guard let key = map(id) else { continue }
@@ -487,6 +487,74 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             out[key] = moved
         }
         return out
+    }
+
+    // The surface of a new build in the same place as one of an earlier
+    // build: same floor, parallel, middles within about a foot and, for
+    // edits, lengths within about a foot (so a deleted piece of wall doesn't
+    // hide the whole wall it was rebuilt into).
+    private nonisolated static func matcher(_ old: [CapturedRoom.Surface], _ new: [CapturedRoom.Surface],
+                                            sameLength: Bool) -> (UUID) -> UUID? {
+        let newIDs = Set(new.map(\.identifier))
+        func mid(_ s: CapturedRoom.Surface) -> SIMD2<Float> { SIMD2(s.transform.columns.3.x, s.transform.columns.3.z) }
+        func dir(_ s: CapturedRoom.Surface) -> SIMD2<Float> { SIMD2(s.transform.columns.0.x, s.transform.columns.0.z) }
+        return { id in
+            if newIDs.contains(id) { return id }
+            guard let o = old.first(where: { $0.identifier == id }) else { return nil }
+            return new.filter { $0.story == o.story && abs(simd_dot(dir($0), dir(o))) > 0.98
+                                && (!sameLength || abs($0.dimensions.x - o.dimensions.x) < 0.3) }
+                .min { simd_distance(mid($0), mid(o)) < simd_distance(mid($1), mid(o)) }
+                .flatMap { simd_distance(mid($0), mid(o)) < 0.3 ? $0.identifier : nil }
+        }
+    }
+
+    // Moves the clean-up edits onto a rebuilt plan's walls, doors and rooms.
+    // Returns how many could not be placed; those are dropped.
+    private func carryEdits(from old: CapturedStructure, to new: CapturedStructure) -> Int {
+        let wall = Self.matcher(old.walls, new.walls, sameLength: true)
+        let wallNear = Self.matcher(old.walls, new.walls, sameLength: false)
+        let opening = Self.matcher(old.doors + old.windows + old.openings,
+                                   new.doors + new.windows + new.openings, sameLength: true)
+        var lost = 0
+        var edits: [UUID: WallEdit] = [:]
+        for (id, e) in wallEdits {
+            if let n = wall(id), edits[n] == nil { edits[n] = e } else { lost += 1 }
+        }
+        var hidden: Set<UUID> = []
+        for id in hiddenOpenings {
+            if let n = opening(id) { hidden.insert(n) } else { lost += 1 }
+        }
+        // Added doors keep their place; only the wall they sit in is renamed.
+        let added = addedOpenings.map { o -> AddedOpening in
+            var o = o
+            o.wall = o.wall.flatMap(wallNear)
+            return o
+        }
+        var depths: [GapDepth] = []
+        for d in gapDepths {
+            if let n = wallNear(d.from) { var d = d; d.from = n; depths.append(d) } else { lost += 1 }
+        }
+        // A name that replaced a scanned room follows that room: same floor,
+        // middle within a metre.
+        let labels = roomLabels.map { l -> RoomLabel in
+            var l = l
+            if let i = l.replaces, i < old.sections.count {
+                let o = old.sections[i]
+                l.replaces = new.sections.indices
+                    .filter { new.sections[$0].story == o.story }
+                    .min { simd_distance(new.sections[$0].center, o.center) < simd_distance(new.sections[$1].center, o.center) }
+                    .flatMap { simd_distance(new.sections[$0].center, o.center) < 1 ? $0 : nil }
+            }
+            return l
+        }
+        wallEdits = edits
+        hiddenOpenings = hidden
+        addedOpenings = added
+        gapDepths = depths
+        roomLabels = labels
+        // Undo steps name the old walls; Restore scan still undoes everything.
+        editHistory = []
+        return lost
     }
 
     // MARK: Save and resume on site
@@ -546,7 +614,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         resumed = true
         loadedFromFile = false
         rooms = savedRooms
-        if let s = structure { previousWalls = s.walls }
+        if let s = structure { previous = s }
         // Fold an earlier walk's drift correction into its points, so a new
         // walk can measure its own drift from a fresh start spot.
         if let d = drift {
@@ -636,7 +704,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         resumed = false
         canResume = false
         savedRooms = []
-        previousWalls = []
+        previous = nil
         stamp = ""
         message = nil
     }
