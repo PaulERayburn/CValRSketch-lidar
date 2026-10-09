@@ -89,13 +89,29 @@ struct PlanView: View {
                             return
                         }
                         if editMode && tool == .doors {
+                            let walls = geo.walls.filter { $0.story == shown }
+                            func wallUnder(_ a: CGPoint, _ b: CGPoint, _ id: UUID?) -> PlanWall? {
+                                id.flatMap { geo.wall($0) }
+                                    ?? view.nearest(to: view.map(CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)), in: walls)
+                            }
+                            func inches(_ a: CGPoint, _ b: CGPoint) -> Int { Int((hypot(b.x - a.x, b.y - a.y) * 12).rounded()) }
                             if let o = geo.addedOpenings.filter({ $0.story == shown })
-                                .first(where: { view.distance(tap.location, $0.a, $0.b) < 20 }) {
-                                doorDraft = DoorDraft(wall: nil, at: .zero, removing: o.index)
+                                .first(where: { view.distance(tap.location, $0.a, $0.b) < 20 }),
+                               let w = wallUnder(o.a, o.b, scan.addedOpenings[o.index].wall) {
+                                doorDraft = DoorDraft(wall: w, at: CGPoint(x: (o.a.x + o.b.x) / 2, y: (o.a.y + o.b.y) / 2),
+                                                      ref: .added(o.index), kind: scan.addedOpenings[o.index].kind, inches: inches(o.a, o.b))
                                 return
                             }
-                            if let w = view.nearest(to: tap.location, in: geo.walls.filter { $0.story == shown }) {
-                                doorDraft = DoorDraft(wall: w, at: view.unmap(tap.location), removing: nil)
+                            if let f = geo.features.filter({ $0.story == shown && $0.id != nil && $0.kind != .window })
+                                .first(where: { view.distance(tap.location, $0.a, $0.b) < 20 }),
+                               let id = f.id, let w = wallUnder(f.a, f.b, f.wall) {
+                                doorDraft = DoorDraft(wall: w, at: CGPoint(x: (f.a.x + f.b.x) / 2, y: (f.a.y + f.b.y) / 2),
+                                                      ref: .scanned(id), kind: f.kind == .opening ? .opening : .interior,
+                                                      inches: inches(f.a, f.b))
+                                return
+                            }
+                            if let w = view.nearest(to: tap.location, in: walls) {
+                                doorDraft = DoorDraft(wall: w, at: view.unmap(tap.location), ref: .new, kind: .interior, inches: 32)
                             }
                             return
                         }
@@ -195,16 +211,12 @@ struct PlanView: View {
             RoomSheet(draft: d) { name in scan.setRoomName(name, source: d.source, at: d.point, story: d.story) }
                 .presentationDetents([.medium, .large])
         }
-        .confirmationDialog(doorDraft?.removing != nil ? "Remove this added opening?" : "Add on this wall",
-                            isPresented: Binding(get: { doorDraft != nil }, set: { if !$0 { doorDraft = nil } }),
-                            titleVisibility: .visible, presenting: doorDraft) { d in
-            if let i = d.removing {
-                Button("Remove", role: .destructive) { scan.removeOpening(at: i) }
-            } else if let w = d.wall {
-                ForEach(DoorDraft.choices, id: \.label) { c in
-                    Button(c.label) { addOpening(on: w, at: d.at, inches: c.inches, kind: c.kind, geo: geo) }
-                }
+        .sheet(item: $doorDraft) { d in
+            DoorSheet(draft: d) { choice in
+                guard let (kind, inches) = choice else { scan.setOpening(nil, replacing: d.ref); return }
+                scan.setOpening(opening(on: d.wall, at: d.at, inches: inches, kind: kind, geo: geo), replacing: d.ref)
             }
+            .presentationDetents([.medium, .large])
         }
         .confirmationDialog(deleting?.title ?? "", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                             titleVisibility: .visible, presenting: deleting) { target in
@@ -231,13 +243,13 @@ struct PlanView: View {
 
     // An added door or opening, centred where the wall was tapped and kept
     // inside the wall.
-    private func addOpening(on w: PlanWall, at p: CGPoint, inches: Int, kind: OpeningKind, geo: PlanGeometry) {
+    private func opening(on w: PlanWall, at p: CGPoint, inches: Int, kind: OpeningKind, geo: PlanGeometry) -> AddedOpening {
         let L = w.length, half = min(CGFloat(inches) / 24, L / 2)
         let d = w.direction
         let t = min(max((p.x - w.a.x) * d.dx + (p.y - w.a.y) * d.dy, half), L - half)
         let a = CGPoint(x: w.a.x + d.dx * (t - half), y: w.a.y + d.dy * (t - half))
         let b = CGPoint(x: w.a.x + d.dx * (t + half), y: w.a.y + d.dy * (t + half))
-        scan.addOpening(AddedOpening(story: w.story, wall: w.id, a: geo.world(a), b: geo.world(b), kind: kind))
+        return AddedOpening(story: w.story, wall: w.id, a: geo.world(a), b: geo.world(b), kind: kind)
     }
 
     private func panDrag(geo: PlanGeometry, story: Int, size: CGSize) -> some Gesture {
@@ -893,7 +905,7 @@ enum EditTool: String, CaseIterable {
         switch self {
         case .walls: return "Tap a wall to delete it, drag a wall's end (square) to move it."
         case .rooms: return "Tap a room to name it, or tap a name to change or remove it."
-        case .doors: return "Tap a wall to add a door or opening there; tap one you added to remove it."
+        case .doors: return "Tap a wall to add a door or opening; tap any door or opening to change its type or width, or remove it."
         }
     }
 }
@@ -906,14 +918,68 @@ struct RoomDraft: Identifiable {
     let name: String?
 }
 
-struct DoorDraft {
-    let wall: PlanWall?
+struct DoorDraft: Identifiable {
+    let id = UUID()
+    let wall: PlanWall
     let at: CGPoint
-    let removing: Int?
-    static let choices: [(label: String, inches: Int, kind: OpeningKind)] = [
-        ("Entrance door 3′ 0″", 36, .entrance), ("Interior door 2′ 8″", 32, .interior), ("Interior door 2′ 6″", 30, .interior),
-        ("Opening 3′ 0″", 36, .opening), ("Opening 6′ 0″", 72, .opening),
+    let ref: OpeningRef
+    let kind: OpeningKind
+    let inches: Int
+}
+
+// A door or opening: its type, then a common width or any typed one.
+struct DoorSheet: View {
+    let draft: DoorDraft
+    let onSave: ((OpeningKind, Int)?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var kind = OpeningKind.interior
+    @State private var inches = 32
+    @State private var custom = ""
+    static let widths: [OpeningKind: [Int]] = [
+        .entrance: [32, 34, 36, 42, 60, 72], .interior: [24, 28, 30, 32, 34, 36], .opening: [30, 36, 48, 60, 72, 96],
     ]
+
+    var body: some View {
+        let typed = LengthParser.inches(from: custom)
+        NavigationStack {
+            Form {
+                Picker("Type", selection: $kind) {
+                    Text("Entrance").tag(OpeningKind.entrance)
+                    Text("Interior").tag(OpeningKind.interior)
+                    Text("Opening").tag(OpeningKind.opening)
+                }
+                .pickerStyle(.segmented)
+                Section("Width") {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 80), spacing: 8)], spacing: 8) {
+                        ForEach(Self.widths[kind] ?? [], id: \.self) { w in
+                            Button(Feet.text(w)) { inches = w; custom = "" }
+                                .buttonStyle(.bordered)
+                                .tint(inches == w && custom.isEmpty ? .accentColor : .gray)
+                        }
+                    }
+                    HStack {
+                        TextField("Other, e.g. 40 in or 3 4", text: $custom)
+                            .keyboardType(.numbersAndPunctuation)
+                            .autocorrectionDisabled()
+                        if let typed { Text("= \(Feet.text(typed))").bold() }
+                    }
+                }
+                if draft.ref != .new {
+                    Button("Remove", role: .destructive) { onSave(nil); dismiss() }
+                }
+            }
+            .navigationTitle(draft.ref == .new ? "Add on this wall" : "This door or opening")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { onSave((kind, typed ?? inches)); dismiss() }
+                        .disabled(!custom.isEmpty && typed == nil)
+                }
+            }
+            .onAppear { kind = draft.kind; inches = draft.inches }
+        }
+    }
 }
 
 // Naming a room: the usual appraisal names, or anything typed.

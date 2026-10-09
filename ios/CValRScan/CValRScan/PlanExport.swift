@@ -27,6 +27,7 @@ enum PlanExport {
         let gapDepths: [GapDepthOut]
         let spans: [SpanOut]
         let wallEdits: [WallEditOut]
+        let hiddenOpenings: [String]
         let roomLabels: [RoomLabelOut]
         let addedOpenings: [OpeningOut]
         let rooms: [RoomOut]
@@ -133,6 +134,7 @@ enum PlanExport {
                      wallPoints: [WallPoint], gapDepths: [GapDepth],
                      measurements: [UUID: WallMeasurement], spans: [SpanReading], wallEdits: [UUID: WallEdit],
                      roomLabels: [RoomLabel], addedOpenings: [AddedOpening], rooms: [ResolvedRoom],
+                     hiddenOpenings: Set<UUID>,
                      exterior: [[SIMD3<Float>]],
                      anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
@@ -147,8 +149,9 @@ enum PlanExport {
                                type: door ? o.kind.rawValue : nil)
             }
         }
-        let doors = s.doors.map(segment) + added(true)
-        let windows = s.windows.map(segment), openings = s.openings.map(segment) + added(false)
+        let kept = { (l: [CapturedRoom.Surface]) in l.filter { !hiddenOpenings.contains($0.identifier) }.map(segment) }
+        let doors = kept(s.doors) + added(true)
+        let windows = s.windows.map(segment), openings = kept(s.openings) + added(false)
         let floors = s.floors.map(floor)
         let plan = Plan(
             createdAt: ISO8601DateFormatter().string(from: Date()),
@@ -178,6 +181,7 @@ enum PlanExport {
             wallEdits: wallEdits.sorted { $0.key.uuidString < $1.key.uuidString }.map { id, e in
                 WallEditOut(wall: id.uuidString, hidden: e.hidden, a: e.a.map { [$0.x, $0.y] }, b: e.b.map { [$0.x, $0.y] })
             },
+            hiddenOpenings: hiddenOpenings.map(\.uuidString).sorted(),
             roomLabels: roomLabels.map { RoomLabelOut(story: $0.story, point: [$0.point.x, $0.point.y], name: $0.name, replaces: $0.replaces) },
             addedOpenings: addedOpenings.map { OpeningOut(story: $0.story, wall: $0.wall?.uuidString, a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y], kind: $0.kind.rawValue) },
             rooms: rooms.map { RoomOut(story: $0.story, center: [$0.center.x, $0.center.y], name: $0.name) },
@@ -279,3 +283,6 @@ struct ResolvedRoom {
     let name: String
     let source: RoomSource
 }
+
+// Which door or opening an edit is about.
+enum OpeningRef: Equatable { case new, added(Int), scanned(UUID) }

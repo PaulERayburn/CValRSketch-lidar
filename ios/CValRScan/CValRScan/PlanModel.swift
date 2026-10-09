@@ -33,6 +33,8 @@ struct PlanFeature {
     let story: Int
     let a: CGPoint
     let b: CGPoint
+    var id: UUID? = nil          // the scan's door or opening
+    var wall: UUID? = nil        // the wall it is in
 }
 
 // A stretch of one face that a single laser reading covers: collinear
@@ -355,9 +357,10 @@ extension ScanController {
         g.sections = g.rooms.map { ($0.story, $0.name, $0.center) }
         for (kind, list) in [(PlanFeature.Kind.door, structure.doors),
                              (.window, structure.windows), (.opening, structure.openings)] {
-            g.features += list.map { s in
+            g.features += list.filter { !hiddenOpenings.contains($0.identifier) }.map { s in
                 let seg = PlanExport.segment(s)
-                return PlanFeature(kind: kind, story: s.story, a: rot(seg.a), b: rot(seg.b))
+                return PlanFeature(kind: kind, story: s.story, a: rot(seg.a), b: rot(seg.b),
+                                   id: s.identifier, wall: s.parentIdentifier)
             }
         }
         for (i, o) in addedOpenings.enumerated() {
