@@ -79,7 +79,7 @@ export function readCvalrScan(d, opts = {}) {
 // is compared with the outer corners beside its two scanned corners, an inside
 // one with the inside outline, along the house's main direction.
 function checkSpans(d, story, plan, inside, outer, warnings) {
-  const fmt = inches => `${Math.floor(inches / 12)}′ ${Math.round(inches % 12)}″`;
+  const fmt = inches => { const n = Math.round(inches); return `${Math.floor(n / 12)}′ ${n % 12}″`; };
   for (const sp of (d.spans || []).filter(s => s.story === story)) {
     const pts = sp.face === 'outside' ? outer : inside;
     const near = p => pts.reduce((best, q) => Math.hypot(q.x - p.x, q.y - p.y) < Math.hypot(best.x - p.x, best.y - p.y) ? q : best, pts[0]);
