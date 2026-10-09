@@ -82,6 +82,13 @@ struct ContentView: View {
                         }
                     }
                     .disabled(scan.rooms.isEmpty || scan.isBusy)
+                    if scan.loadedFromFile && scan.rooms.isEmpty && scan.structure != nil {
+                        Text(scan.canResume
+                             ? "This plan is already built. Build floor plan comes back after Resume on site, once you scan another room."
+                             : "This plan is already built; it can't be rebuilt.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     if scan.structure != nil {
                         Button {
                             measuring = true
