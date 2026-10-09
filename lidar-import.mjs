@@ -84,6 +84,7 @@ export function readCvalrScan(d, opts = {}) {
         interior: Math.abs(signedArea(inside)), interiorPoints: tidy(inside),
         sides: thick.map(t => ({ inches: +t.inches.toFixed(1), measured: t.measured })),
         scanTraced: Math.abs(signedArea(tidy(outline(scanned)))), walls: fit.walls, notes,
+        detail: interiorDetail(d, story, plan, scanned, fit.sides),
         areas: {}, stated: null, excludedTraced: null, placement: 'reference', turned: 0,
       });
     }
@@ -246,6 +247,38 @@ function checkSpans(d, story, plan, inside, outer, warnings) {
     const diff = Math.round(got - sp.inches);
     warnings.push(`${floorTitle(story)}: ${sp.face} reading ${fmt(sp.inches)}${sp.entered && /[+\-−]/.test(sp.entered) ? ` (${sp.entered})` : ''} between two corners; the import measures ${fmt(got)} there (${diff === 0 ? 'matches' : (diff > 0 ? '+' : '−') + Math.abs(diff) + '″'}).`);
   }
+}
+
+// The interior from the scan, for a detailed plan: walls (their inside
+// faces, so outside walls show their thickness), doors, windows, openings and
+// room names. Moved with the outline's fit: along each axis, a point between
+// two outer sides keeps its share of the gap between them.
+const ROOM_NAMES = { livingRoom: 'Living', diningRoom: 'Dining', bedroom: 'Bedroom', bathroom: 'Bath',
+  kitchen: 'Kitchen', laundryRoom: 'Laundry', garage: 'Garage', office: 'Office', hallway: 'Hall' };
+function interiorDetail(d, story, plan, before, after) {
+  const axis = kind => {
+    const pairs = before.map((s, i) => s.kind === kind ? [s.c, after[i].c] : null).filter(Boolean)
+      .sort((p, q) => p[0] - q[0]).filter((p, i, a) => i === 0 || p[0] - a[i - 1][0] > 1e-6);
+    return v => {
+      if (!pairs.length) return v;
+      if (v <= pairs[0][0]) return v + pairs[0][1] - pairs[0][0];
+      for (let i = 1; i < pairs.length; i++) {
+        const [a0, a1] = pairs[i - 1], [b0, b1] = pairs[i];
+        if (v <= b0) return a1 + (v - a0) * (b1 - a1) / (b0 - a0);
+      }
+      const last = pairs[pairs.length - 1];
+      return v + last[1] - last[0];
+    };
+  };
+  const mx = axis('v'), my = axis('h');
+  const map = w => { const p = plan(w); return { x: +mx(p.x).toFixed(3), y: +my(p.y).toFixed(3) }; };
+  const lines = [];
+  for (const [list, kind] of [[d.walls, 'wall'], [d.doors, 'door'], [d.windows, 'window'], [d.openings, 'opening']]) {
+    for (const s of (list || []).filter(s => s.story === story)) lines.push({ a: map(s.a), b: map(s.b), kind });
+  }
+  const rooms = (d.sections || []).filter(s => s.story === story && ROOM_NAMES[s.label])
+    .map(s => ({ ...map(s.center), name: ROOM_NAMES[s.label] }));
+  return { lines, rooms };
 }
 
 function floorTitle(story) {

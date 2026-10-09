@@ -1231,6 +1231,29 @@ function patternOptions(selected) {
 // Area-label boxes (screen px) drawn this render, so another floor's faded label can
 // step down out of the way instead of printing over the active floor's.
 let drawnLabelBoxes = [];
+// Interior detail from a scan: thin lines and room names over the fill, kept
+// out of the way of clicks. Coordinates are relative to the area's first corner.
+const DETAIL_STYLE = {
+  wall:    { stroke: '#6b7280', 'stroke-width': 1.5 },
+  door:    { stroke: '#b45309', 'stroke-width': 3 },
+  window:  { stroke: '#2b7bb9', 'stroke-width': 4 },
+  opening: { stroke: '#9ca3af', 'stroke-width': 2, 'stroke-dasharray': '4,3' },
+};
+function renderDetail(sh, W) {
+  const o = sh.points[0];
+  const at = p => W({ x: o.x + p.x, y: o.y + p.y });
+  for (const l of sh.detail.lines || []) {
+    const a = at(l.a), b = at(l.b);
+    const el = addEl('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, 'stroke-linecap': 'round', ...(DETAIL_STYLE[l.kind] || DETAIL_STYLE.wall) });
+    el.style.pointerEvents = 'none';
+  }
+  for (const r of sh.detail.rooms || []) {
+    const p = at(r);
+    const el = addEl('text', { x: p.x, y: p.y, 'text-anchor': 'middle', 'font-size': 11, 'font-style': 'italic', fill: '#4b5563' }, r.name);
+    el.style.pointerEvents = 'none';
+  }
+}
+
 function renderShape(sh, W, isGhost) {
   const t = TYPES[sh.type] || TYPES.living;
   const screenPts = sh.points.map(W);
@@ -1243,6 +1266,7 @@ function renderShape(sh, W, isGhost) {
   const poly = addEl('path', { d, fill: isGhost ? 'none' : fillFor(st), stroke: isGhost ? '#2b6cb0' : 'black', 'stroke-width': isGhost ? 1.5 : 2, class: cls });
   if (isGhost) poly.setAttribute('stroke-dasharray', '6,4');
   else if (t.dashed) poly.setAttribute('stroke-dasharray', '8,5');
+  if (!isGhost && sh.detail && state.settings.showDetail) renderDetail(sh, W);
   if (!isGhost) {
     poly.style.cursor = 'pointer';
     poly.addEventListener('click', (ev) => {
@@ -4420,6 +4444,7 @@ function openSettings() {
         ${settingRow('showFloorGhosts', 'Show other floors faded as ghosts')}
         ${settingRow('exportIncludeTitle', 'Include subject as title on SVG/PNG exports')}
         ${settingRow('exportIncludeLegend', 'Include legend (fill/line key) on SVG/PNG exports')}
+        ${settingRow('showDetail', 'Show interior detail from scans (walls, doors, windows, rooms)')}
         ${settingRow('confirmDelete', 'Confirm before deleting walls/vertices/shapes')}
         ${settingRow('askOnLengthEdit', 'Ask which mode to use when changing a wall length')}
         ${settingRow('snapAngleTo90', 'Snap angles to 90° when entering segments (TODO)')}
@@ -4557,7 +4582,7 @@ function settingRow(key, label) {
 }
 
 function applySettings() {
-  ['showSegmentLabels','showCentroidLabels','showVertexDots','showFloorGhosts','exportIncludeTitle','exportIncludeLegend','confirmDelete','askOnLengthEdit','snapAngleTo90','autosaveToFile'].forEach(k => {
+  ['showSegmentLabels','showCentroidLabels','showVertexDots','showFloorGhosts','exportIncludeTitle','exportIncludeLegend','showDetail','confirmDelete','askOnLengthEdit','snapAngleTo90','autosaveToFile'].forEach(k => {
     state.settings[k] = document.getElementById('set-'+k).checked;
   });
   state.settings.defaultLengthEditMode = document.getElementById('set-default-mode').value;
@@ -5035,6 +5060,7 @@ function openExportPreview() {
       </label>
       <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" id="prev-title" ${s.exportIncludeTitle?'checked':''}> Title</label>
       <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" id="prev-legend" ${s.exportIncludeLegend?'checked':''}> Legend</label>
+      ${state.shapes.some(sh => sh.detail) ? `<label style="display:flex; align-items:center; gap:5px;" title="Detailed plan: interior walls, doors, windows and room names from the scan. Off: basic plan, outline only."><input type="checkbox" id="prev-detail" ${s.showDetail?'checked':''}> Interior detail</label>` : ''}
     </div>
     <div id="prev-dimrow" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; font-size:12px;">
       <span style="color:#555;">Show dimensions + notes for:</span>
@@ -5072,6 +5098,7 @@ function openExportPreview() {
     div.querySelector('#prev-dimrow').style.display = s.exportLayout === 'active' ? '' : 'none';
     s.exportIncludeTitle = div.querySelector('#prev-title').checked;
     s.exportIncludeLegend = div.querySelector('#prev-legend').checked;
+    if (div.querySelector('#prev-detail')) s.showDetail = div.querySelector('#prev-detail').checked;
     s.ghostDimFloors = [...div.querySelectorAll('[data-dimfloor]')]
       .filter(cb => cb.checked && !cb.disabled).map(cb => cb.dataset.dimfloor);
     saveSettings();
@@ -5099,6 +5126,7 @@ function openExportPreview() {
   laySel.addEventListener('change', draw);
   div.querySelector('#prev-title').addEventListener('change', draw);
   div.querySelector('#prev-legend').addEventListener('change', draw);
+  if (div.querySelector('#prev-detail')) div.querySelector('#prev-detail').addEventListener('change', draw);
   div.querySelectorAll('[data-dimfloor]').forEach(cb => cb.addEventListener('change', draw));
   if (bSel) bSel.addEventListener('change', draw);
   const saveAll = async (fmt) => {
@@ -5914,7 +5942,7 @@ document.getElementById('import-pdf').addEventListener('change', async (e) => {
 // ===== LIDAR SCAN IMPORT =====
 // A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
 // lidar-import.mjs loads only when a scan is picked.
-const LIDAR_IMPORT_VERSION = '0.3.4';
+const LIDAR_IMPORT_VERSION = '0.4.0';
 async function importScan(file) {
   let d;
   try { d = JSON.parse(await file.text()); }
@@ -6068,6 +6096,13 @@ function pdfImportToSketch(res, picked) {
       rebuildSegments(sh);
       Object.defineProperty(sh, 'importKind', { value: r.f.kind, enumerable: false });   // not saved
       shapes.push(sh);
+      // A scan's interior goes on the area, relative to its first corner, so it
+      // moves with the area; it is drawn for a detailed plan and never counted.
+      if (r.f.detail) {
+        const rel = p => ({ x: +(p.x - ox + nextX - pts[0].x).toFixed(4), y: +(p.y - oy - pts[0].y).toFixed(4) });
+        sh.detail = { lines: r.f.detail.lines.map(l => ({ a: rel(l.a), b: rel(l.b), kind: l.kind })),
+                      rooms: r.f.detail.rooms.map(rm => ({ ...rel(rm), name: rm.name })) };
+      }
       // A scan's notes (e.g. walls calculated, not measured) ride along as labels.
       (r.f.notes || []).forEach(t => labels.push({ x: +(t.x - ox + nextX).toFixed(4), y: +(t.y - oy).toFixed(4), text: t.text, floor: r.floor }));
     });
