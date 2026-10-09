@@ -332,6 +332,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             if !resumed || stamp.isEmpty { stamp = Self.stampFormatter.string(from: Date()) }
             writeFiles()
             saveWorldMap()
+            write3DModel(replace: true)
         } catch {
             message = "Export failed: \(error.localizedDescription)"
         }
@@ -364,6 +365,23 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     }
 
     // MARK: Save and resume on site
+
+    var modelURL: URL { Self.docs.appendingPathComponent("scan-\(stamp).usdz") }
+
+    // A 3-D model of the scan (walls, doors, windows, furniture boxes) that
+    // Files, Quick Look and AR on any iPhone or Mac open directly. Written
+    // when a plan is built, and for older scans the first time they're opened.
+    func write3DModel(replace: Bool) {
+        guard let structure, !stamp.isEmpty else { return }
+        let url = modelURL
+        if !replace && FileManager.default.fileExists(atPath: url.path) { return }
+        try? FileManager.default.removeItem(at: url)
+        do {
+            try structure.export(to: url, exportOptions: .model)
+        } catch {
+            try? structure.export(to: url, exportOptions: .parametric)
+        }
+    }
 
     private var worldMapURL: URL { Self.docs.appendingPathComponent("scan-\(stamp).worldmap") }
 
@@ -445,7 +463,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
-            exportURLs = [planURL, rawURL]
+            exportURLs = [planURL, rawURL] + (FileManager.default.fileExists(atPath: modelURL.path) ? [modelURL] : [])
             message = "Saved and ready to share"
             refreshSaved()
         } catch {
@@ -540,7 +558,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             loadedFromFile = true
             resumed = false
             canResume = FileManager.default.fileExists(atPath: worldMapURL.path)
-            exportURLs = FileManager.default.fileExists(atPath: planURL.path) ? [planURL, rawURL] : [rawURL]
+            write3DModel(replace: false)
+            exportURLs = (FileManager.default.fileExists(atPath: planURL.path) ? [planURL, rawURL] : [rawURL])
+                + (FileManager.default.fileExists(atPath: modelURL.path) ? [modelURL] : [])
             writeFiles()
             message = "Opened scan from \(Self.title(for: stamp))"
         } catch {
@@ -562,7 +582,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let folder = url.deletingLastPathComponent()
-        for suffix in [".capturedstructure.json", ".cvalrscan.json", ".worldmap"] {
+        for suffix in [".capturedstructure.json", ".cvalrscan.json", ".worldmap", ".usdz"] {
             let src = folder.appendingPathComponent("scan-\(stamp)\(suffix)")
             let dst = Self.docs.appendingPathComponent(src.lastPathComponent)
             guard src != dst, FileManager.default.fileExists(atPath: src.path) else { continue }
@@ -574,7 +594,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     }
 
     func deleteSaved(_ stamp: String) {
-        for suffix in [".capturedstructure.json", ".cvalrscan.json", ".worldmap"] {
+        for suffix in [".capturedstructure.json", ".cvalrscan.json", ".worldmap", ".usdz"] {
             try? FileManager.default.removeItem(at: Self.docs.appendingPathComponent("scan-\(stamp)\(suffix)"))
         }
         if loadedFromFile && self.stamp == stamp { newScan() }

@@ -2,6 +2,7 @@ import SwiftUI
 import RoomPlan
 import UIKit
 import UniformTypeIdentifiers
+import QuickLook
 
 struct ContentView: View {
     @StateObject private var scan = ScanController()
@@ -9,6 +10,7 @@ struct ContentView: View {
     @State private var resuming = false
     @State private var measuring = false
     @State private var askReading = false
+    @State private var model3D: URL?
 
     // After Build floor plan: what still needs doing before leaving the site.
     private var buildAdvice: String {
@@ -102,6 +104,9 @@ struct ContentView: View {
                                 .foregroundStyle(.red)
                         }
                     }
+                    if scan.exportURLs.contains(scan.modelURL) {
+                        Button("View in 3D", systemImage: "cube") { model3D = scan.modelURL }
+                    }
                     if !scan.exportURLs.isEmpty {
                         ShareLink(items: scan.exportURLs) {
                             Label("Share scan files", systemImage: "square.and.arrow.up")
@@ -135,6 +140,7 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("CValRScan")
+            .quickLookPreview($model3D)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("New") { scan.newScan() }

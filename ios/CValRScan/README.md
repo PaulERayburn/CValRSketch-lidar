@@ -19,6 +19,7 @@ It lives only in the `PaulERayburn/CValRSketch-lidar` fork for now. Adding an `i
 5. **Share scan files** sends two files (AirDrop, Files, email):
    - `scan-<date>.cvalrscan.json`: the plan CValRSketch reads (below).
    - `scan-<date>.capturedstructure.json`: RoomPlan's full output.
+   - `scan-<date>.usdz`: a 3-D model (walls with door and window openings, furniture as boxes) that Files, Quick Look and AR open on any iPhone or Mac. **View in 3D** opens it in the app.
 
 Saved scans are listed on the home screen and in the Files app under On My iPhone → CValRScan. File names carry only a timestamp. Scan your own house for testing: this fork is public.
 
