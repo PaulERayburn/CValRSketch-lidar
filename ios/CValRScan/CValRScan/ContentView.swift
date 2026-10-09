@@ -2,7 +2,6 @@ import SwiftUI
 import RoomPlan
 import UIKit
 import UniformTypeIdentifiers
-import QuickLook
 
 struct ContentView: View {
     @StateObject private var scan = ScanController()
@@ -140,7 +139,7 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("CValRScan")
-            .quickLookPreview($model3D)
+            .sheet(item: $model3D) { ModelView(url: $0) }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("New") { scan.newScan() }
