@@ -76,16 +76,28 @@ struct MarkedPointsOverlay: View {
     let points: [SIMD3<Float>]
     let colour: Color
 
+    // Redrawn ten times a second, and only while there are dots: drawing on
+    // every display frame, and holding ARFrames to do it, starves RoomPlan's
+    // tracking ("World tracking failure").
     var body: some View {
+        if points.isEmpty {
+            Color.clear.allowsHitTesting(false)
+        } else {
+            dots
+        }
+    }
+
+    private var dots: some View {
         GeometryReader { box in
-            TimelineView(.animation) { _ in
+            TimelineView(.periodic(from: .now, by: 0.1)) { _ in
                 Canvas { ctx, size in
-                    guard let frame = session.currentFrame else { return }
-                    let view = frame.camera.viewMatrix(for: .portrait)
+                    // Take only the camera, so no ARFrame is kept between draws.
+                    guard let camera = session.currentFrame?.camera else { return }
+                    let view = camera.viewMatrix(for: .portrait)
                     for (i, p) in points.enumerated() {
                         // Only points in front of the camera.
                         guard (view * SIMD4(p, 1)).z < 0 else { continue }
-                        let s = frame.camera.projectPoint(p, orientation: .portrait, viewportSize: size)
+                        let s = camera.projectPoint(p, orientation: .portrait, viewportSize: size)
                         guard s.x > -20, s.y > -20, s.x < size.width + 20, s.y < size.height + 20 else { continue }
                         let latest = i == points.count - 1
                         let r: CGFloat = latest ? 9 : 6
