@@ -402,6 +402,12 @@ struct PlanView: View {
     // at a slant: whichever way the finger has gone further. It still snaps to
     // a corner or square with a far end on that line.
     private func squareDrag(_ p: CGPoint, from: CGPoint, geo: PlanGeometry, story: Int, view: Viewport) -> CGPoint {
+        // Right on another corner, it goes there whatever the angle (to put a
+        // stray end back where it belongs).
+        if let c = geo.corners(story: story).filter({ hypot($0.x - from.x, $0.y - from.y) > 0.3 })
+            .min(by: { hypot(view.map($0).x - view.map(p).x, view.map($0).y - view.map(p).y)
+                     < hypot(view.map($1).x - view.map(p).x, view.map($1).y - view.map(p).y) }),
+           hypot(view.map(c).x - view.map(p).x, view.map(c).y - view.map(p).y) < 14 { return c }
         let across = abs(p.x - from.x) >= abs(p.y - from.y)
         var q = snap(across ? CGPoint(x: p.x, y: from.y) : CGPoint(x: from.x, y: p.y), from: from, geo: geo, story: story, view: view)
         if across { q.y = from.y } else { q.x = from.x }
