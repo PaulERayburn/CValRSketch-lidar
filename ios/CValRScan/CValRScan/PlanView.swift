@@ -26,6 +26,8 @@ struct PlanView: View {
     @State private var dragEnded = Date.distantPast
     @State private var shownPhoto: ScanPhoto?
     @State private var addingWall = false
+    @State private var lengthWall: PlanWall?
+    @State private var lengthKeepA = true
     @State private var wallStart: CGPoint?   // a tap right after a drag is the drag's end
     @State private var panBase: CGSize?
     @State private var deleting: EditTarget?
@@ -245,22 +247,30 @@ struct PlanView: View {
                         .disabled(!scan.canUndoEdit)
                     Spacer()
                     if !selectedWalls.isEmpty && tool == .walls {
-                        Button("Align \(selectedWalls.count)") {
-                            align(selectedWalls, geo: geo)
-                            selectedWalls = []
+                        if selectedWalls.count == 1, let w = geo.wall(selectedWalls.first!) {
+                            Button("Length") {
+                                let joins = { (e: CGPoint) in geo.walls.filter { $0.story == w.story && $0.id != w.id
+                                    && (hypot($0.a.x - e.x, $0.a.y - e.y) < 0.1 || hypot($0.b.x - e.x, $0.b.y - e.y) < 0.1) }.count }
+                                lengthKeepA = joins(w.a) >= joins(w.b)
+                                lengthWall = w
+                            }
+                            Spacer()
                         }
-                        Spacer()
-                        Button("Delete \(selectedWalls.count)", role: .destructive) {
+                        if selectedWalls.count > 1 {
+                            Button("Align") {
+                                align(selectedWalls, geo: geo)
+                                selectedWalls = []
+                            }
+                            Spacer()
+                        }
+                        Button("Delete", role: .destructive) {
                             scan.deleteWalls(selectedWalls)
                             selectedWalls = []
                         }
                         Spacer()
-                        Button("Clear") { selectedWalls = [] }
+                        Button { selectedWalls = [] } label: { Image(systemName: "xmark") }
                     } else if tool == .walls {
-                        Button { addingWall.toggle(); wallStart = nil } label: {
-                            Label(addingWall ? "Cancel" : "Add wall", systemImage: addingWall ? "xmark" : "plus")
-                                .labelStyle(.titleAndIcon)
-                        }
+                        Button(addingWall ? "Cancel" : "＋ Add wall") { addingWall.toggle(); wallStart = nil }
                         Spacer()
                         Button("Restore scan") { scan.restoreScan() }
                             .disabled(!scan.hasEdits)
@@ -270,6 +280,21 @@ struct PlanView: View {
                     }
                 }
             }
+        }
+        .sheet(item: $lengthWall) { w in
+            let geo = scan.planGeometry
+            WallLengthSheet(wall: w, keepA: $lengthKeepA) { inches, keepA in
+                let fixed = keepA ? w.a : w.b, moving = keepA ? w.b : w.a
+                let d = keepA ? w.direction : CGVector(dx: -w.direction.dx, dy: -w.direction.dy)
+                let ft = CGFloat(inches) / 12
+                let to = CGPoint(x: fixed.x + d.dx * ft, y: fixed.y + d.dy * ft)
+                // Walls joined at the moving end slide across with it, staying square.
+                let moves = squareMoves(from: moving, to: to, geo: geo, story: w.story)
+                scan.moveWallEnds(moves.map { (geo.world($0.from), geo.world($0.to)) })
+                selectedWalls = []
+            }
+            .presentationDetents([.medium])
+            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         }
         .sheet(item: $shownPhoto) { p in
             PhotoSheet(photo: p, url: scan.photoURL(p)) { scan.deletePhoto(p) }
@@ -586,6 +611,7 @@ struct PlanView: View {
         let cornerMode = self.cornerMode, spanStart = self.spanStart, draft = self.spanDraft
         let editMode = self.editMode, endDrag = self.endDrag, picked = self.selectedWalls, moves = self.dragMoves
         let wallStart = self.wallStart
+        let fixedEnd = lengthWall.map { lengthKeepA ? $0.a : $0.b }
         return Canvas { ctx, _ in
             for f in geo.floors where f.story == story {
                 var p = Path()
@@ -697,6 +723,10 @@ struct PlanView: View {
                     let t = view.map(d.to)
                     ctx.fill(Path(ellipseIn: CGRect(x: t.x - 7, y: t.y - 7, width: 14, height: 14)), with: .color(.teal))
                 }
+            }
+            if let f = fixedEnd {
+                let p = view.map(f)
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 9, y: p.y - 9, width: 18, height: 18)), with: .color(.teal))
             }
             if let w = wallStart {
                 let p = view.map(w)
@@ -1193,7 +1223,7 @@ enum EditTool: String, CaseIterable {
     case walls = "Walls", rooms = "Rooms", doors = "Doors"
     var hint: String {
         switch self {
-        case .walls: return "Tap walls to select them, then Align or Delete. Drag a wall's end (square) along the wall to lengthen it, or across to slide the wall."
+        case .walls: return "Tap a wall to set its Length or Delete it; tap several to Align them. Drag a wall's end (square) along the wall to lengthen it, or across to slide it."
         case .rooms: return "Tap a room to name it, or tap a name to change or remove it."
         case .doors: return "Tap a wall to add a door or opening; tap any door or opening to change its type or width, or remove it."
         }
@@ -1589,5 +1619,65 @@ enum RoomNames {
             }
         }
         return d[a.count][b.count]
+    }
+}
+
+
+// Sets a wall's length exactly: one end stays, the other moves along the
+// wall, and walls joined at the moving end follow it.
+struct WallLengthSheet: View {
+    let wall: PlanWall
+    @Binding var keepA: Bool
+    let onSave: (Int, Bool) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @FocusState private var typing: Bool
+
+    // Ends named as they sit on screen.
+    private var names: (a: String, b: String) {
+        abs(wall.b.x - wall.a.x) >= abs(wall.b.y - wall.a.y)
+            ? (wall.a.x < wall.b.x ? ("Left end", "Right end") : ("Right end", "Left end"))
+            : (wall.a.y < wall.b.y ? ("Top end", "Bottom end") : ("Bottom end", "Top end"))
+    }
+
+    var body: some View {
+        let parsed = LengthParser.inches(from: text)
+        NavigationStack {
+            Form {
+                Section {
+                    LabeledContent("Now", value: Feet.text(Int((wall.length * 12).rounded())))
+                    HStack {
+                        TextField("e.g. 6 5  or  77 in", text: $text)
+                            .keyboardType(.numbersAndPunctuation)
+                            .autocorrectionDisabled()
+                            .focused($typing)
+                        if let parsed { Text("= \(Feet.text(parsed))").bold() }
+                    }
+                } header: {
+                    Text("Wall length, end to end on the plan")
+                } footer: {
+                    Text("This sets the wall line's length, not a laser reading. For a reading taken face to face, tap the wall with Edit off.")
+                }
+                Section("Keep fixed") {
+                    Picker("Keep fixed", selection: $keepA) {
+                        Text(names.a).tag(true)
+                        Text(names.b).tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    Text("The fixed end is shown as a teal dot; the other end moves.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Set length")
+            .onAppear { typing = true }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { if let parsed { onSave(parsed, keepA) }; dismiss() }
+                        .disabled(parsed == nil || (parsed ?? 0) < 2)
+                }
+            }
+        }
     }
 }
