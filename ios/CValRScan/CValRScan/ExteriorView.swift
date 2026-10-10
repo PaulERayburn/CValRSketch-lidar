@@ -43,6 +43,15 @@ struct ExteriorView: View {
                     Text(flash).padding(8).background(.thinMaterial, in: Capsule())
                 }
                 Spacer()
+                // Outside photos for the report (front, rear, street), pinned
+                // on the plan where they were taken.
+                if scan.anchorStart != nil {
+                    HStack {
+                        Spacer()
+                        PhotoButton(scan: scan, outside: true) { show($0) }
+                    }
+                    .padding(.horizontal)
+                }
                 controls.padding()
             }
             .padding(.top)

@@ -23,7 +23,8 @@ struct PlanView: View {
     @State private var editMode = false
     @State private var endDrag: (from: CGPoint, to: CGPoint)?
     @State private var dragMoves: [(from: CGPoint, to: CGPoint)] = []
-    @State private var dragEnded = Date.distantPast   // a tap right after a drag is the drag's end
+    @State private var dragEnded = Date.distantPast
+    @State private var shownPhoto: ScanPhoto?   // a tap right after a drag is the drag's end
     @State private var panBase: CGSize?
     @State private var deleting: EditTarget?
     @State private var tool = EditTool.walls
@@ -168,6 +169,15 @@ struct PlanView: View {
                             }
                             return
                         }
+                        // A photo pin wins when the tap is right on it.
+                        if let pin = geo.photos.filter({ $0.story == shown })
+                            .min(by: { hypot(view.map($0.at).x - tap.location.x, view.map($0.at).y - tap.location.y)
+                                     < hypot(view.map($1.at).x - tap.location.x, view.map($1.at).y - tap.location.y) }),
+                           hypot(view.map(pin.at).x - tap.location.x, view.map(pin.at).y - tap.location.y) < 18,
+                           let photo = scan.photos.first(where: { $0.id == pin.id }) {
+                            shownPhoto = photo
+                            return
+                        }
                         let wall = view.nearest(to: tap.location, in: geo.walls.filter { $0.story == shown })
                         // A gap wins when it's nearer than any wall.
                         let gaps = geo.gaps.filter { $0.story == shown }
@@ -243,6 +253,10 @@ struct PlanView: View {
                     }
                 }
             }
+        }
+        .sheet(item: $shownPhoto) { p in
+            PhotoSheet(photo: p, url: scan.photoURL(p)) { scan.deletePhoto(p) }
+                .presentationDetents([.large])
         }
         .sheet(item: $roomDraft) { d in
             RoomSheet(draft: d) { name in scan.setRoomName(name, source: d.source, at: d.point, story: d.story) }
@@ -640,6 +654,16 @@ struct PlanView: View {
                     let t = view.map(d.to)
                     ctx.fill(Path(ellipseIn: CGRect(x: t.x - 7, y: t.y - 7, width: 14, height: 14)), with: .color(.teal))
                 }
+            }
+            // Photo pins: a camera dot with a pointer the way it faced.
+            for pin in geo.photos where pin.story == story {
+                let p = view.map(pin.at)
+                var ray = Path()
+                ray.move(to: p)
+                ray.addLine(to: CGPoint(x: p.x + pin.dir.dx * 20, y: p.y + pin.dir.dy * 20))
+                ctx.stroke(ray, with: .color(.indigo), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 9, y: p.y - 9, width: 18, height: 18)), with: .color(.indigo))
+                ctx.draw(Text(Image(systemName: "camera.fill")).font(.system(size: 9)).foregroundStyle(.white), at: p)
             }
             // Corners to pick from, the one picked, and the pair being entered.
             if cornerMode {

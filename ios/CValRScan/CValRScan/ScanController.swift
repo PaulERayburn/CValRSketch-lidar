@@ -18,6 +18,10 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     // The user's name for this scan, usually the address.
     @Published private(set) var scanName = ""
     @Published private(set) var savedNames: [String: String] = [:]   // stamp: name
+    // Photos taken mid-scan (Photos.swift), kept in their own folder.
+    @Published var photos: [ScanPhoto] = []
+    var photoFolder = ""
+    var photoZip: URL?
     @Published var torchOn = false
     @Published var corners: [SIMD3<Float>] = []        // older scans only; Mark wall replaced them
     @Published private(set) var wallPoints: [WallPoint] = []
@@ -651,7 +655,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         writeFiles()
     }
 
-    private func writeFiles() {
+    func writeFiles() {
         guard let structure else { return }
         do {
             let dir = Self.docs
@@ -662,7 +666,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                 roomLabels: roomLabels, addedOpenings: addedOpenings,
                                 rooms: resolvedRooms(structure), hiddenOpenings: hiddenOpenings,
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd,
-                                name: scanName)
+                                name: scanName, photos: photos, photoFolder: photoFolder)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
             exportURLs = [planURL, rawURL] + (FileManager.default.fileExists(atPath: modelURL.path) ? [modelURL] : [])
@@ -706,6 +710,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
 
     func setName(_ name: String) {
         scanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        photoZip = nil
         if structure != nil { writeFiles() }
         shareURLs = namedCopies(of: exportURLs)
     }
@@ -717,7 +722,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     private func namedCopies(of urls: [URL]) -> [URL] {
         let name = scanName.components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|")).joined()
             .trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty, !stamp.isEmpty, !urls.isEmpty else { return urls }
+        guard !name.isEmpty, !stamp.isEmpty, !urls.isEmpty else {
+            return urls + [zippedPhotos(named: stamp.isEmpty ? "scan" : "scan-\(stamp)")].compactMap { $0 }
+        }
         let date = Self.stampFormatter.date(from: stamp).map(Self.fileDateFormatter.string(from:)) ?? stamp
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("share-\(stamp)")
         try? FileManager.default.removeItem(at: dir)
@@ -726,7 +733,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             let suffix = url.lastPathComponent.replacingOccurrences(of: "scan-\(stamp)", with: "")
             let copy = dir.appendingPathComponent("\(name) \(date)\(suffix)")
             return (try? FileManager.default.copyItem(at: url, to: copy)) != nil ? copy : url
-        }
+        } + [zippedPhotos(named: "\(name) \(date)")].compactMap { $0 }
     }
 
     private static let fileDateFormatter: DateFormatter = {
@@ -760,6 +767,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         previous = nil
         stamp = ""
         scanName = ""
+        photos = []
+        photoFolder = ""
+        photoZip = nil
         message = nil
     }
 
@@ -828,6 +838,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             savedRooms = loaded.rooms
             self.stamp = stamp
             scanName = saved?.name ?? ""
+            photoFolder = saved?.photoFolder ?? ""
+            photos = (saved?.photos ?? []).compactMap(PlanExport.photoIn)
+            photoZip = nil
             loadedFromFile = true
             resumed = false
             canResume = FileManager.default.fileExists(atPath: worldMapURL.path)
@@ -867,6 +880,11 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     }
 
     func deleteSaved(_ stamp: String) {
+        struct FolderOnly: Decodable { let photoFolder: String? }
+        let plan = Self.docs.appendingPathComponent("scan-\(stamp).cvalrscan.json")
+        if let folder = (try? JSONDecoder().decode(FolderOnly.self, from: Data(contentsOf: plan)))?.photoFolder, !folder.isEmpty {
+            try? FileManager.default.removeItem(at: Self.docs.appendingPathComponent(folder, isDirectory: true))
+        }
         for suffix in [".capturedstructure.json", ".cvalrscan.json", ".worldmap", ".usdz"] {
             try? FileManager.default.removeItem(at: Self.docs.appendingPathComponent("scan-\(stamp)\(suffix)"))
         }
@@ -892,6 +910,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             let a: [Double]; let b: [Double]; let story: Int; let inches: Int; let face: String; let entered: String?
         }
         let name: String?
+        let photoFolder: String?
+        let photos: [PlanExport.PhotoOut]?
         let corners: [Point]?
         let wallPoints: [WallPointIn]?
         let gapDepths: [GapDepthIn]?

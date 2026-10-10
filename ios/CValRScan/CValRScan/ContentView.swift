@@ -68,6 +68,10 @@ struct ContentView: View {
                         Text("\(count(scan.wallPoints.count, "hidden-wall point")) marked")
                             .foregroundStyle(.secondary)
                     }
+                    if !scan.photos.isEmpty {
+                        Text("\(count(scan.photos.count, "photo")), shown as camera pins on Measure walls")
+                            .foregroundStyle(.secondary)
+                    }
                     let outsideWalls = scan.exteriorWalls.filter { $0.count >= 2 }.count
                     if outsideWalls > 0 {
                         Text("Outside: \(count(outsideWalls, "wall")) marked" + (scan.anchorEnd != nil ? ", loop closed" : ""))
@@ -218,6 +222,7 @@ struct ScanningView: View {
                 .allowsHitTesting(false)
             VStack {
                 HStack {
+                    PhotoButton(scan: scan, outside: false) { show($0, seconds: 2) }
                     Spacer()
                     Button {
                         scan.setTorch(!scan.torchOn)

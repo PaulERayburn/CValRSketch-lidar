@@ -17,6 +17,8 @@ enum PlanExport {
         // The user's name for the scan, usually the address. Only in files
         // the user keeps or shares; never in this repository's test scans.
         var name: String?
+        var photoFolder: String?
+        var photos: [PhotoOut]?
         let createdAt: String
         let walls: [Segment]
         let doors: [Segment]
@@ -164,7 +166,8 @@ enum PlanExport {
                      roomLabels: [RoomLabel], addedOpenings: [AddedOpening], rooms: [ResolvedRoom],
                      hiddenOpenings: Set<UUID>,
                      exterior: [[SIMD3<Float>]],
-                     anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?, name: String = "") throws -> Data {
+                     anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?, name: String = "",
+                     photos: [ScanPhoto] = [], photoFolder: String = "") throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
         let walls = s.walls.compactMap { WallEdit.apply(wallEdits, to: segment($0)) }
         // Added doors and openings take their height from a standard door and
@@ -232,6 +235,7 @@ enum PlanExport {
             exterior: Exterior(walls: exterior.filter { !$0.isEmpty }.map { $0.map(corner) },
                                anchorStart: anchorStart.map(corner), anchorEnd: anchorEnd.map(corner)))
         if !name.isEmpty { plan.name = name }
+        if !photos.isEmpty { plan.photos = photos.map(photoOut); plan.photoFolder = photoFolder }
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try enc.encode(plan)

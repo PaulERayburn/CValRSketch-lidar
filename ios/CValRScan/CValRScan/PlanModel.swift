@@ -81,6 +81,7 @@ struct PlanGeometry {
     var walls: [PlanWall] = []
     var features: [PlanFeature] = []
     var floors: [(story: Int, points: [CGPoint])] = []
+    var photos: [(id: String, story: Int, at: CGPoint, dir: CGVector)] = []
     var sections: [(story: Int, label: String, center: CGPoint)] = []
     var exteriorLines: [(a: CGPoint, b: CGPoint)] = []
     var gaps: [PlanGap] = []
@@ -387,6 +388,16 @@ extension ScanController {
             (rot([line.a.x, line.a.y]), rot([line.b.x, line.b.y]))
         }
         addHiddenWalls(to: &g, structure: structure)
+        // Photos go on the floor the phone stood over.
+        let levels = structure.floors.map { ($0.story, $0.transform.columns.3.y) }
+        g.photos = photos.map { p in
+            let story = levels.filter { $0.1 <= p.point.y - 0.3 }.max { $0.1 < $1.1 }?.0
+                ?? levels.min { $0.1 < $1.1 }?.0 ?? 0
+            let at = g.plan(SIMD2(Double(p.point.x), Double(p.point.z)))
+            let tip = g.plan(SIMD2(Double(p.point.x + p.facing.x), Double(p.point.z + p.facing.y)))
+            let len = max(hypot(tip.x - at.x, tip.y - at.y), 0.001)
+            return (p.id, story, at, CGVector(dx: (tip.x - at.x) / len, dy: (tip.y - at.y) / len))
+        }
         g.spans = spans.map { (g.plan($0.a), g.plan($0.b), $0) }
         return g
     }
