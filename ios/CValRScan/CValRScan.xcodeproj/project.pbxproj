@@ -165,7 +165,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.19.4;
+				MARKETING_VERSION = 0.19.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.paulrayburn.CValRScan;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = iphoneos;
@@ -195,7 +195,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.19.4;
+				MARKETING_VERSION = 0.19.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.paulrayburn.CValRScan;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = iphoneos;

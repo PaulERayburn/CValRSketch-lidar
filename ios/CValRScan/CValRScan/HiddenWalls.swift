@@ -136,6 +136,7 @@ struct GapSheet: View {
                         Button("Draw the wall here", systemImage: "line.diagonal") { onDraw(); dismiss() }
                         if let onOutside {
                             Button("It's outside (open porch or entry)", systemImage: "sun.max") { onOutside(); dismiss() }
+                            Button("No wall here: clear the warning", systemImage: "xmark.circle") { onOutside(); dismiss() }
                         }
                     } footer: {
                         Text("Draw the wall when it's there but the scan left a gap. Say it's outside when the scan's floor ran out under a porch roof or through a glass entry; the import cuts that floor using the outside walk.")
