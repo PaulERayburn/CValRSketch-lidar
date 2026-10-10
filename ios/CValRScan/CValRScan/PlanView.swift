@@ -331,7 +331,8 @@ struct PlanView: View {
             Text(target.message)
         }
         .sheet(item: $selected, onDismiss: { preview = ReadingPreview() }) { wall in
-            MeasureSheet(wall: wall, geo: geo, measured: measuredIDs(excluding: wall.id),
+            MeasureSheet(wall: wall, geo: geo, drawn: scan.addedWalls.contains { $0.id == wall.id },
+                         measured: measuredIDs(excluding: wall.id),
                          existing: scan.measurements[wall.id], preview: $preview) { m in
                 scan.setMeasurement(m, for: wall.id)
             }
@@ -963,6 +964,7 @@ private struct Viewport {
 struct MeasureSheet: View {
     let wall: PlanWall
     let geo: PlanGeometry
+    var drawn = false            // a wall the user drew: its length is theirs, so it starts filled in
     let measured: Set<UUID>
     let existing: WallMeasurement?
     @Binding var preview: ReadingPreview
@@ -1025,6 +1027,9 @@ struct MeasureSheet: View {
                         Button("Paste") { text = UIPasteboard.general.string ?? text }
                             .buttonStyle(.bordered)
                     }
+                    if text.isEmpty {
+                        Button("Use \(Feet.text(estimate)) and edit") { text = "\(estimate / 12) \(estimate % 12)" }
+                    }
                     if let parsed {
                         let diff = parsed - estimate
                         HStack {
@@ -1083,6 +1088,11 @@ struct MeasureSheet: View {
                 }
             }
             .onAppear {
+                if existing == nil && drawn {
+                    let p = places[min(choice, places.count - 1)]
+                    let e = geo.estimateInches(geo.run(from: wall, sign: p.sign, outside: p.outside))
+                    text = "\(e / 12) \(e % 12)"
+                }
                 if let existing {
                     text = existing.entered.isEmpty ? "\(existing.inches / 12) \(existing.inches % 12)" : existing.entered
                     // Outside first: which side a wall's label sits on can change after
