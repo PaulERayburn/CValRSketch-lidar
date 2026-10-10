@@ -27,6 +27,8 @@ struct PlanView: View {
     // A drag finished but not yet applied: shown as a teal preview until Apply or Cancel.
     @State private var confirming = false
     @State private var confirmRestore = false
+    @State private var namingFloor = false
+    @State private var floorNameText = ""
     @State private var dragEnded = Date.distantPast
     @State private var shownPhoto: ScanPhoto?
     @State private var doorCheck: UnscannedDoor?
@@ -68,11 +70,28 @@ struct PlanView: View {
         let shown = story ?? geo.stories.first ?? 0
         VStack(spacing: 6) {
             if geo.stories.count > 1 {
-                Picker("Floor", selection: Binding(get: { shown }, set: { story = $0 })) {
-                    ForEach(geo.stories, id: \.self) { Text("Floor \($0 + 1)").tag($0) }
+                HStack {
+                    Picker("Floor", selection: Binding(get: { shown }, set: { story = $0 })) {
+                        ForEach(geo.stories, id: \.self) { Text(scan.floorName($0)).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    // Name the floor shown: what the plan and CValRSketch call it.
+                    Menu {
+                        ForEach(["Main floor", "2nd floor", "3rd floor", "Basement", "Basement 2", "Basement 3"], id: \.self) { n in
+                            Button(n) { scan.setFloorName(shown, n) }
+                        }
+                        Button("Other name…") { floorNameText = scan.floorNames[shown] ?? ""; namingFloor = true }
+                        if scan.floorNames[shown] != nil { Button("Clear name", role: .destructive) { scan.setFloorName(shown, nil) } }
+                    } label: {
+                        Image(systemName: "pencil.circle")
+                    }
                 }
-                .pickerStyle(.segmented)
                 .padding(.horizontal)
+                .alert("Name this floor", isPresented: $namingFloor) {
+                    TextField("e.g. Loft", text: $floorNameText)
+                    Button("Save") { scan.setFloorName(shown, floorNameText) }
+                    Button("Cancel", role: .cancel) {}
+                }
             }
             if editMode {
                 Picker("Tool", selection: $tool) {

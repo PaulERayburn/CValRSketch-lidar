@@ -27,7 +27,8 @@ enum PlanExport {
         var outsideDoors: [String]?           // doors the user says open to outside
         var ignoredAreas: [[Double]]?         // unscanned areas the user says aren't rooms
         var fillsFromAbove: [FillOut]?
-        var outsideEdges: [[Double]]?         // missing-wall edges the user says open to outside        // unscanned areas filled in from the floor above
+        var outsideEdges: [[Double]]?         // missing-wall edges the user says open to outside
+        var floorNames: [FloorNameOut]?       // the user's floor names        // unscanned areas filled in from the floor above
         var wallsShapeFloor: Bool?      // false: drawn or moved walls don't change the floor outline
         let createdAt: String
         let walls: [Segment]
@@ -138,6 +139,7 @@ enum PlanExport {
 
     // A scanned wall the user deleted or whose ends they moved (world x, z),
     // already applied to `walls`; kept so the app can reopen and undo it.
+    struct FloorNameOut: Encodable { let story: Int; let name: String }
     struct FillOut: Encodable { let story: Int; let centre: [Double]; let cell: Double; let cells: [[[Double]]] }
     struct StairEditOut: Encodable { let id: String; let flip: Bool; let hidden: Bool; let turn: Bool; let run: Double? }
     struct AddedWallOut: Codable { let id: String; let story: Int; let a: [Double]; let b: [Double] }
@@ -183,7 +185,7 @@ enum PlanExport {
                      photos: [ScanPhoto] = [], photoFolder: String = "", addedWalls: [AddedWall] = [],
                      wallsShapeFloor: Bool = true, stairEdits: [UUID: StairEdit] = [:],
                      stairChains: [StairChain] = [], outsideDoors: Set<UUID> = [],
-                     ignoredAreas: [SIMD2<Double>] = [], outsideEdges: [SIMD2<Double>] = [],
+                     ignoredAreas: [SIMD2<Double>] = [], outsideEdges: [SIMD2<Double>] = [], floorNames: [Int: String] = [:],
                      areaFills: [AreaFill] = []) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
         // Drawn walls go in with the scanned ones, at the height of that floor's walls.
@@ -270,6 +272,7 @@ enum PlanExport {
         if !outsideDoors.isEmpty { plan.outsideDoors = outsideDoors.map(\.uuidString).sorted() }
         if !ignoredAreas.isEmpty { plan.ignoredAreas = ignoredAreas.map { [$0.x, $0.y] } }
         if !outsideEdges.isEmpty { plan.outsideEdges = outsideEdges.map { [$0.x, $0.y] } }
+        if !floorNames.isEmpty { plan.floorNames = floorNames.sorted { $0.key < $1.key }.map { FloorNameOut(story: $0.key, name: $0.value) } }
         if !areaFills.isEmpty {
             func r(_ v: Double) -> Double { (v * 10000).rounded() / 10000 }
             plan.fillsFromAbove = areaFills.map { FillOut(story: $0.story, centre: [r($0.centre.x), r($0.centre.y)], cell: $0.cell,

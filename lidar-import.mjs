@@ -33,6 +33,7 @@ export const DEFAULT_EXTERIOR_IN = 6;
 // The floor the outside walk was taken beside is the main floor; floors are
 // named from it. Set per scan by readCvalrScan.
 let mainStory = 0;
+let userNames = {};               // the user's floor names from CValRScan, by story
 
 export function readCvalrScan(d, opts = {}) {
   if (!d || d.format !== 'cvalrscan') {
@@ -48,7 +49,9 @@ export function readCvalrScan(d, opts = {}) {
   if (d.app) warnings.push(`Scanned with ${d.app}, scan format ${d.version}.`);
 
   const walk = outsideWalk(d.exterior, plan);
-  mainStory = walkStory(d) ?? 0;
+  userNames = Object.fromEntries((d.floorNames || []).map(f => [f.story, f.name]));
+  const namedMain = (d.floorNames || []).find(f => /^(main|1st|first|ground)/i.test(f.name));
+  mainStory = namedMain ? namedMain.story : (walkStory(d) ?? 0);
   // An outside walk can sit turned or shifted from the scan (tracking that
   // re-settled between the two). Line it up with the walk's floor first.
   const mainSides = (d.floors || []).filter(f => f.story === mainStory && (f.polygon || []).length >= 3)
@@ -361,6 +364,7 @@ function doorStyle(s) {
 
 // RoomPlan counts floors from where scanning began (0); appraisal plans name them.
 function floorTitle(story) {
+  if (userNames[story]) return userNames[story];
   story -= mainStory;
   const above = ['First floor', 'Second floor', 'Third floor', 'Fourth floor'];
   if (story >= 0) return above[story] || `Floor ${story + 1}`;
@@ -370,6 +374,12 @@ function floorTitle(story) {
 // RoomPlan numbers floors from where scanning began; the lowest of several is a
 // basement only when the user says so, so the start floor is main.
 function classifyStory(story, stories) {
+  const name = userNames[story];
+  if (name) {
+    if (/basement|lower|cellar/i.test(name)) return ['basement', 'finished'];
+    if (/^(main|1st|first|ground)/i.test(name)) return ['main', 'living'];
+    return ['upper', 'upper'];
+  }
   story -= mainStory;
   if (story === 0 || stories.length === 1) return ['main', 'living'];
   return story > 0 ? ['upper', 'upper'] : ['basement', 'finished'];
