@@ -325,6 +325,41 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         commit { $0.walls = e; $0.added.removeAll { ids.contains($0.id) } }
     }
 
+    // Slides one wall sideways by `v` (world). Walls joined at its ends that
+    // run across it stretch to follow; walls running on in line with it stay
+    // put, and a short wall joins each to the moved end. One Undo step.
+    func slideWall(_ id: UUID, by v: SIMD2<Double>) {
+        guard let structure else { return }
+        var segs: [(id: UUID, a: SIMD2<Double>, b: SIMD2<Double>, scanned: Bool)] =
+            structure.walls.compactMap { w in edited(PlanExport.segment(w)).map { (w.identifier, SIMD2($0.a[0], $0.a[1]), SIMD2($0.b[0], $0.b[1]), true) } }
+        segs += addedWalls.map { ($0.id, $0.a, $0.b, false) }
+        guard let me = segs.first(where: { $0.id == id }) else { return }
+        let dir = simd_normalize(me.b - me.a)
+        var e = wallEdits, drawn = addedWalls, links: [AddedWall] = []
+        for end in [me.a, me.b] {
+            let to = end + v
+            for s in segs {
+                let atA = simd_distance(s.a, end) < 0.1, atB = simd_distance(s.b, end) < 0.1
+                guard atA || atB else { continue }
+                let inLine = s.id != id && abs(simd_dot(simd_normalize(s.b - s.a), dir)) > 0.9
+                if inLine { continue }
+                if s.scanned {
+                    if atA { e[s.id, default: WallEdit()].a = to }
+                    if atB { e[s.id, default: WallEdit()].b = to }
+                } else if let i = drawn.firstIndex(where: { $0.id == s.id }) {
+                    if atA { drawn[i].a = to }
+                    if atB { drawn[i].b = to }
+                }
+            }
+            if segs.contains(where: { $0.id != id && abs(simd_dot(simd_normalize($0.b - $0.a), dir)) > 0.9
+                && (simd_distance($0.a, end) < 0.1 || simd_distance($0.b, end) < 0.1) }) {
+                links.append(AddedWall(story: structure.walls.first { $0.identifier == id }?.story ?? addedWalls.first { $0.id == id }?.story ?? 0,
+                                       a: end, b: to))
+            }
+        }
+        commit { $0.walls = e; $0.added = drawn + links }
+    }
+
     // A wall drawn where the scan saw none (world x, z).
     func addWall(story: Int, a: SIMD2<Double>, b: SIMD2<Double>) {
         commit { $0.added.append(AddedWall(story: story, a: a, b: b)) }

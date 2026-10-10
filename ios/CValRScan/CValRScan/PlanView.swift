@@ -419,9 +419,8 @@ struct PlanView: View {
                     Button(name) {
                         if let n = LengthParser.inches(from: moveText), n > 0 {
                             let geo = scan.planGeometry, ft = CGFloat(n) / 12
-                            let v = CGVector(dx: dx * ft, dy: dy * ft)
-                            // Walls joined at its ends stretch to follow.
-                            scan.moveWallEnds([w.a, w.b].map { e in (geo.world(e), geo.world(CGPoint(x: e.x + v.dx, y: e.y + v.dy))) })
+                            let v = geo.world(CGPoint(x: dx * ft, y: dy * ft)) - geo.world(.zero)
+                            scan.slideWall(w.id, by: v)
                             selectedWalls = []
                         }
                         moveWall = nil
@@ -430,7 +429,7 @@ struct PlanView: View {
             }
             Button("Cancel", role: .cancel) { moveWall = nil }
         } message: {
-            Text("Slides the whole wall, square; walls joined to it stretch to follow. Tap a wall again to deselect it.")
+            Text("Slides the whole wall, square. Walls across its ends stretch to follow; a wall carrying on in line stays put, joined by a short new wall. Tap a wall again to deselect it.")
         }
         .sheet(item: $lengthWall) { w in
             let geo = scan.planGeometry
