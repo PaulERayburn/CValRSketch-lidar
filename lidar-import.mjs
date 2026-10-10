@@ -313,7 +313,7 @@ function interiorDetail(d, story, plan, before, after) {
   const lines = [];
   for (const [list, kind] of [[d.walls, 'wall'], [d.doors, 'door'], [d.windows, 'window'], [d.openings, 'opening']]) {
     for (const s of (list || []).filter(s => s.story === story)) lines.push({ a: map(s.a), b: map(s.b), kind: s.type === 'entrance' ? 'entrance' : kind,
-                                                                   ...(s.hinge ? { hinge: s.hinge, side: s.side || 1, style: s.style || 'swing' } : {}) });
+                                                                   ...(s.hinge ? { hinge: s.hinge, side: s.side || 1, style: doorStyle(s) } : {}) });
   }
   // Room names as the user left them (format 7), else the scan's own.
   const rooms = d.rooms
@@ -321,6 +321,12 @@ function interiorDetail(d, story, plan, before, after) {
     : (d.sections || []).filter(s => s.story === story && ROOM_NAMES[s.label])
         .map(s => ({ ...map(s.center), name: ROOM_NAMES[s.label] }));
   return { lines, rooms };
+}
+
+// A scanned door over 6 ft wide is a garage door, whatever older scans say.
+function doorStyle(s) {
+  if (s.style && s.style !== 'swing') return s.style;
+  return !s.type && Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]) > 1.83 ? 'overhead' : 'swing';
 }
 
 // RoomPlan counts floors from where scanning began (0); appraisal plans name them.

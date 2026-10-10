@@ -129,7 +129,7 @@ struct PlanView: View {
                                 let (h, s) = swing(f.a, f.b, on: w, hingeAtB: f.hingeAtB, side: f.side)
                                 doorDraft = DoorDraft(wall: w, at: CGPoint(x: (f.a.x + f.b.x) / 2, y: (f.a.y + f.b.y) / 2),
                                                       ref: .scanned(id), kind: f.kind == .opening ? .opening : .interior,
-                                                      inches: inches(f.a, f.b), hingeAtB: h, side: s)
+                                                      inches: inches(f.a, f.b), hingeAtB: h, side: s, style: f.style)
                                 return
                             }
                             if let w = view.nearest(to: tap.location, in: walls) {
@@ -830,6 +830,11 @@ struct PlanView: View {
             p.move(to: at(0, off)); p.addLine(to: at(L * 0.55, off))
             p.move(to: at(L * 0.45, -off)); p.addLine(to: at(L, -off))
             return (p, false)
+        case .overhead:
+            // The door rolled up overhead, dashed just inside the opening.
+            let off = min(L * 0.12, 14)
+            p.move(to: at(0, off)); p.addLine(to: at(L, off))
+            return (p, true)
         }
     }
 
@@ -1331,6 +1336,7 @@ struct DoorSheet: View {
                         Text("Pocket").tag(DoorStyle.pocket)
                         Text("Bifold").tag(DoorStyle.bifold)
                         Text("Sliding").tag(DoorStyle.sliding)
+                        Text("Garage").tag(DoorStyle.overhead)
                     }
                     .pickerStyle(.segmented)
                     Section(style == .swing ? "Swing" : "Which way") {

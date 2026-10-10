@@ -366,7 +366,9 @@ extension ScanController {
                 return PlanFeature(kind: kind, story: s.story, a: rot(seg.a), b: rot(seg.b),
                                    id: s.identifier, wall: s.parentIdentifier,
                                    side: kind == .door ? PlanExport.defaultSide(a: seg.a, b: seg.b, story: s.story,
-                                                                               floors: structure.floors.map(PlanExport.floor)) : 1)
+                                                                               floors: structure.floors.map(PlanExport.floor)) : 1,
+                                   style: kind == .door && hypot(seg.b[0] - seg.a[0], seg.b[1] - seg.a[1]) > DoorStyle.overheadMetres
+                                       ? .overhead : .swing)
             }
         }
         for (i, o) in addedOpenings.enumerated() {
