@@ -24,6 +24,8 @@ struct PlanView: View {
     @State private var endDrag: (from: CGPoint, to: CGPoint)?
     @State private var dragMoves: [(from: CGPoint, to: CGPoint)] = []
     @State private var soloWall: UUID?   // dragging the end of the one selected wall only
+    // A drag finished but not yet applied: shown as a teal preview until Apply or Cancel.
+    @State private var confirming = false
     @State private var dragEnded = Date.distantPast
     @State private var shownPhoto: ScanPhoto?
     @State private var doorCheck: UnscannedDoor?
@@ -279,6 +281,22 @@ struct PlanView: View {
                     }
             }
             .clipped()
+            .overlay(alignment: .bottom) {
+                if confirming {
+                    HStack(spacing: 12) {
+                        Text("Keep this change?").font(.callout.bold())
+                        Spacer()
+                        Button("Cancel", role: .cancel) { finishEdit(apply: false) }
+                            .buttonStyle(.bordered)
+                        Button("Apply") { finishEdit(apply: true) }
+                            .buttonStyle(.borderedProminent).tint(.teal)
+                    }
+                    .padding(12)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+                }
+            }
             legend
         }
         .navigationTitle("Measure walls")
@@ -293,6 +311,7 @@ struct PlanView: View {
                 }
                 if !cornerMode {
                     Button(editMode ? "Done" : "Edit") {
+                        if confirming { finishEdit(apply: false) }
                         editMode.toggle(); tool = .walls; selectedWalls = []; addingWall = false; wallStart = nil
                         addingStairs = false; stairStart = nil; stairChain = nil
                         selected = nil; selectedGap = nil   // a reading sheet would hide Undo
@@ -575,6 +594,14 @@ struct PlanView: View {
     private func editDrag(geo: PlanGeometry, story: Int, view: Viewport, size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { v in
+                if confirming {
+                    if panBase == nil { panBase = pan }
+                    if let b = panBase {
+                        pan = clamp(CGSize(width: b.width + v.translation.width, height: b.height + v.translation.height),
+                                    geo: geo, story: story, size: size, zoom: zoom)
+                    }
+                    return
+                }
                 if endDrag == nil && panBase == nil {
                     // One wall selected and the drag starts on one of its ends:
                     // that end moves alone.
@@ -611,17 +638,15 @@ struct PlanView: View {
                 }
             }
             .onEnded { _ in
-                if let d = endDrag, hypot(d.to.x - d.from.x, d.to.y - d.from.y) > 0.02 {
-                    if let id = soloWall {
-                        scan.moveOneEnd(id, from: geo.world(d.from), to: geo.world(d.to))
-                    } else {
-                        scan.moveWallEnds(dragMoves.map { (geo.world($0.from), geo.world($0.to)) })
-                    }
-                }
-                soloWall = nil
+                if confirming { panBase = nil; return }
                 if endDrag != nil { dragEnded = Date() }
-                endDrag = nil
-                dragMoves = []
+                if let d = endDrag, hypot(d.to.x - d.from.x, d.to.y - d.from.y) > 0.02 {
+                    confirming = true          // keep the preview; Apply or Cancel decides
+                } else {
+                    soloWall = nil
+                    endDrag = nil
+                    dragMoves = []
+                }
                 panBase = nil
             }
     }
@@ -659,6 +684,14 @@ struct PlanView: View {
     private func stairsDrag(geo: PlanGeometry, story: Int, view: Viewport, size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { v in
+                if confirming {
+                    if panBase == nil { panBase = pan }
+                    if let b = panBase {
+                        pan = clamp(CGSize(width: b.width + v.translation.width, height: b.height + v.translation.height),
+                                    geo: geo, story: story, size: size, zoom: zoom)
+                    }
+                    return
+                }
                 if stairDrag == nil && panBase == nil {
                     var best: (id: UUID, handle: StairChain.Handle, chain: StairChain, at: SIMD2<Double>, d: CGFloat)?
                     for c in scan.addedStairs where c.story == story || c.story + (c.down ? -1 : 1) == story {
@@ -684,14 +717,33 @@ struct PlanView: View {
                 }
             }
             .onEnded { _ in
-                if let d = stairDrag, d.now != d.base {
-                    let now = d.now
-                    scan.changeStairChain(d.id) { $0 = now }
-                }
+                if confirming { panBase = nil; return }
                 if stairDrag != nil { dragEnded = Date() }
-                stairDrag = nil
+                if let d = stairDrag, d.now != d.base { confirming = true } else { stairDrag = nil }
                 panBase = nil
             }
+    }
+
+    // Applies or drops the drag waiting for confirmation.
+    private func finishEdit(apply: Bool) {
+        let geo = scan.planGeometry
+        if apply {
+            if let d = endDrag {
+                if let id = soloWall {
+                    scan.moveOneEnd(id, from: geo.world(d.from), to: geo.world(d.to))
+                } else {
+                    scan.moveWallEnds(dragMoves.map { (geo.world($0.from), geo.world($0.to)) })
+                }
+            } else if let d = stairDrag {
+                let now = d.now
+                scan.changeStairChain(d.id) { $0 = now }
+            }
+        }
+        soloWall = nil
+        endDrag = nil
+        dragMoves = []
+        stairDrag = nil
+        confirming = false
     }
 
     private func saveStairAsk() {
