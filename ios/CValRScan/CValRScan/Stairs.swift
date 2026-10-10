@@ -2,10 +2,14 @@ import RoomPlan
 import SwiftUI
 import simd
 
-// Stairs RoomPlan found, drawn on the floor they rise from (UP) and the one
-// they come down from (DN), the way appraisal plans show them. RoomPlan says
-// where a flight is but not which way it climbs, so the user can flip it, or
-// hide one it got wrong.
+// Stairs on the plan. RoomPlan finds stairs as rough boxes, often only part
+// of a flight and never which way it climbs, so a scanned flight can be
+// flipped, turned, lengthened or removed; and the user can draw a stair as a
+// chain of pieces: straight flights, and turns that are either a flat landing
+// or winders (pie-shaped treads) through 90° or 180°.
+//
+// A stair is drawn on the floor it was drawn from (UP or DN beside its start)
+// and again on the floor at its other end, with the arrow reversed.
 
 struct StairEdit: Equatable {
     var flip = false
@@ -14,40 +18,167 @@ struct StairEdit: Equatable {
     var run: Double?             // metres, when set by the user; kept centred
 }
 
-// A flight the user drew: bottom to top (world x, z), on the floor it rises from.
-struct AddedStair: Equatable {
-    var id = UUID()
-    var story: Int
-    var a: SIMD2<Double>          // bottom
-    var b: SIMD2<Double>          // top
-    var width = 0.914             // 36 in
-
-    var corners: [SIMD2<Double>] {
-        let d = b - a, len = max(simd_length(d), 0.001)
-        let n = SIMD2(-d.y, d.x) / len * width / 2
-        return [a - n, a + n, b + n, b - n]
+// A drawn stair: where it starts on the floor it was drawn from, which way,
+// and its pieces in walking order. Positions follow from these, so a change
+// of width or steps reflows the rest of the stair.
+struct StairChain: Equatable, Identifiable {
+    struct Piece: Equatable {
+        enum Kind: String { case flight, turn }
+        var kind: Kind
+        var length = 0.0         // flight, metres
+        var degrees = 90         // turn: 90 or 180, signed: + to the left
+        var steps = 0            // flight: risers; turn: 0 a flat landing, else winders
     }
-    var up: SIMD2<Double> { simd_normalize(b - a) }
+    var id = UUID()
+    var story: Int               // the floor it was drawn from
+    var down = false             // drawn going down from that floor
+    var start: SIMD2<Double>     // world x, z, centre of the first tread
+    var dir: SIMD2<Double>       // unit, walking direction
+    var width = 0.914            // 36 in
+    var pieces: [Piece] = []
+
+    static func defaultSteps(metres: Double) -> Int { max(1, Int((metres / 0.254).rounded())) }   // 10 in treads
+}
+
+// What to draw for stairs, world x, z.
+struct StairDrawing {
+    struct Piece { let id: UUID; let index: Int; let story: Int; let outline: [SIMD2<Double>]; let treads: [(SIMD2<Double>, SIMD2<Double>)] }
+    struct Path { let story: Int; let points: [SIMD2<Double>]; let label: String }
+    var pieces: [Piece] = []
+    var paths: [Path] = []
+}
+
+extension StairChain {
+    private static func left(_ u: SIMD2<Double>) -> SIMD2<Double> { SIMD2(-u.y, u.x) }
+
+    // Each piece's outline and treads, the walking line, and where it ends.
+    func layout() -> (pieces: [(outline: [SIMD2<Double>], treads: [(SIMD2<Double>, SIMD2<Double>)])],
+                      path: [SIMD2<Double>], end: SIMD2<Double>, dir: SIMD2<Double>) {
+        var cur = start, u = simd_normalize(dir)
+        let w = width
+        var out: [(outline: [SIMD2<Double>], treads: [(SIMD2<Double>, SIMD2<Double>)])] = []
+        var path = [cur]
+        for p in pieces {
+            let n = Self.left(u)
+            switch p.kind {
+            case .flight:
+                let b = cur + u * p.length
+                var treads: [(SIMD2<Double>, SIMD2<Double>)] = []
+                if p.steps > 1 {
+                    for i in 1..<p.steps {
+                        let q = cur + (b - cur) * Double(i) / Double(p.steps)
+                        treads.append((q - n * w / 2, q + n * w / 2))
+                    }
+                }
+                out.append(([cur - n * w / 2, cur + n * w / 2, b + n * w / 2, b - n * w / 2], treads))
+                path.append(b)
+                cur = b
+            case .turn:
+                let s: Double = p.degrees >= 0 ? 1 : -1, m = n * s
+                let half = abs(p.degrees) >= 180
+                let pivot = cur + m * w / 2
+                let outline = half
+                    ? [cur - m * w / 2, cur - m * w / 2 + u * w, cur + m * (1.5 * w) + u * w, cur + m * (1.5 * w)]
+                    : [pivot, cur - m * w / 2, cur - m * w / 2 + u * w, pivot + u * w]
+                let sweep = half ? Double.pi : Double.pi / 2
+                // Winders radiate from the pivot out to the edge of the turn.
+                var treads: [(SIMD2<Double>, SIMD2<Double>)] = []
+                if p.steps > 1 {
+                    for i in 1..<p.steps {
+                        let phi = sweep * Double(i) / Double(p.steps)
+                        let d = -m * cos(phi) + u * sin(phi)
+                        let across = abs(simd_dot(d, m)), fwd = simd_dot(d, u)
+                        let t = min(across > 1e-6 ? w / across : .infinity, fwd > 1e-6 ? w / fwd : .infinity)
+                        treads.append((pivot, pivot + d * t))
+                    }
+                }
+                out.append((outline, treads))
+                for i in 1...12 {
+                    let phi = sweep * Double(i) / 12
+                    path.append(pivot + (-m * cos(phi) + u * sin(phi)) * w / 2)
+                }
+                cur = path.last!
+                u = half ? -u : m
+            }
+        }
+        return (out, path, cur, u)
+    }
+}
+
+extension StairDrawing {
+    // Drawn stairs and the scan's own (unless hidden), on every floor they touch.
+    init(chains: [StairChain], structure: CapturedStructure, edits: [UUID: StairEdit]) {
+        let stories = Set(structure.floors.map(\.story))
+        for c in chains {
+            let l = c.layout()
+            let other = c.story + (c.down ? -1 : 1)
+            for (i, p) in l.pieces.enumerated() {
+                pieces.append(Piece(id: c.id, index: i, story: c.story, outline: p.outline, treads: p.treads))
+                if stories.contains(other) { pieces.append(Piece(id: c.id, index: i, story: other, outline: p.outline, treads: p.treads)) }
+            }
+            guard l.path.count > 1 else { continue }
+            paths.append(Path(story: c.story, points: l.path, label: c.down ? "DN" : "UP"))
+            if stories.contains(other) { paths.append(Path(story: other, points: l.path.reversed(), label: c.down ? "UP" : "DN")) }
+        }
+        for o in structure.objects where o.category == .stairs && edits[o.identifier]?.hidden != true {
+            let f = PlanExport.flight(o, edit: edits[o.identifier])
+            let c = f.corners
+            // Treads every 10 in along the climb.
+            let e0 = c[1] - c[0], e1 = c[3] - c[0]
+            let along0 = abs(simd_dot(e0, f.up)) >= abs(simd_dot(e1, f.up))
+            let run = along0 ? e0 : e1, across = along0 ? e1 : e0
+            let steps = StairChain.defaultSteps(metres: simd_length(run))
+            let treads = steps > 1 ? (1..<steps).map { i -> (SIMD2<Double>, SIMD2<Double>) in
+                let q = c[0] + run * Double(i) / Double(steps); return (q, q + across)
+            } : []
+            let mid = c[0] + across / 2
+            let line = simd_dot(run, f.up) >= 0 ? [mid, mid + run] : [mid + run, mid]
+            pieces.append(Piece(id: o.identifier, index: -1, story: o.story, outline: c, treads: treads))
+            paths.append(Path(story: o.story, points: line, label: "UP"))
+            if stories.contains(o.story + 1) {
+                pieces.append(Piece(id: o.identifier, index: -1, story: o.story + 1, outline: c, treads: treads))
+                paths.append(Path(story: o.story + 1, points: line.reversed(), label: "DN"))
+            }
+        }
+    }
 }
 
 extension PlanExport {
-    struct AddedStairOut: Codable { let id: String; let story: Int; let a: [Double]; let b: [Double]; let width: Double }
-
-    struct StairOut: Encodable {
-        let id: String
-        let story: Int
-        let corners: [[Double]]      // x, z, round the flight
-        let up: [Double]             // level direction of climb
+    // Stairs as drawn, for the importer: outline and treads per piece, and
+    // the walking line with its label, per floor.
+    struct StairPieceOut: Encodable { let story: Int; let outline: [[Double]]; let treads: [[[Double]]] }
+    struct StairPathOut: Encodable { let story: Int; let path: [[Double]]; let label: String }
+    struct StairChainOut: Codable {
+        struct PieceOut: Codable { let kind: String; let length: Double; let degrees: Int; let steps: Int }
+        let id: String; let story: Int; let down: Bool; let start: [Double]; let dir: [Double]; let width: Double
+        let pieces: [PieceOut]
     }
 
-    // A flight's footprint and climb, world x, z. Its run is along the longer
-    // side; it climbs toward +run unless flipped.
+    static func chainOut(_ c: StairChain) -> StairChainOut {
+        StairChainOut(id: c.id.uuidString, story: c.story, down: c.down, start: [c.start.x, c.start.y], dir: [c.dir.x, c.dir.y],
+                      width: c.width, pieces: c.pieces.map { .init(kind: $0.kind.rawValue, length: $0.length, degrees: $0.degrees, steps: $0.steps) })
+    }
+
+    static func chainIn(_ o: StairChainOut) -> StairChain? {
+        guard o.start.count == 2, o.dir.count == 2 else { return nil }
+        return StairChain(id: UUID(uuidString: o.id) ?? UUID(), story: o.story, down: o.down,
+                          start: SIMD2(o.start[0], o.start[1]), dir: SIMD2(o.dir[0], o.dir[1]), width: o.width,
+                          pieces: o.pieces.map { .init(kind: .init(rawValue: $0.kind) ?? .flight, length: $0.length, degrees: $0.degrees, steps: $0.steps) })
+    }
+
+    static func stairOut(_ d: StairDrawing) -> (pieces: [StairPieceOut], paths: [StairPathOut]) {
+        func r(_ v: SIMD2<Double>) -> [Double] { [(v.x * 1000).rounded() / 1000, (v.y * 1000).rounded() / 1000] }
+        return (d.pieces.map { StairPieceOut(story: $0.story, outline: $0.outline.map(r), treads: $0.treads.map { [r($0.0), r($0.1)] }) },
+                d.paths.map { StairPathOut(story: $0.story, path: $0.points.map(r), label: $0.label) })
+    }
+
+    // A scanned flight's footprint and climb, world x, z. Its run is along the
+    // longer side unless turned; it climbs toward +run unless flipped.
     static func flight(_ o: CapturedRoom.Object, edit: StairEdit?) -> (corners: [SIMD2<Double>], up: SIMD2<Double>) {
         let t = o.transform, d = o.dimensions
         let c = SIMD2(Double(t.columns.3.x), Double(t.columns.3.z))
         let ax = simd_normalize(SIMD2(Double(t.columns.0.x), Double(t.columns.0.z))) * Double(d.x) / 2
         let az = simd_normalize(SIMD2(Double(t.columns.2.x), Double(t.columns.2.z))) * Double(d.z) / 2
-        // The climb runs along the longer side unless turned.
         let alongZ = (d.z >= d.x) != (edit?.turn == true)
         var runHalf = alongZ ? az : ax
         let wide = alongZ ? ax : az
@@ -57,62 +188,37 @@ extension PlanExport {
         if edit?.flip == true { up = -up }
         return (corners, up)
     }
-
-    static func stairs(_ s: CapturedStructure, edits: [UUID: StairEdit], added: [AddedStair] = []) -> [StairOut] {
-        func r(_ v: Double) -> Double { (v * 1000).rounded() / 1000 }
-        return added.map { st in
-            StairOut(id: st.id.uuidString, story: st.story, corners: st.corners.map { [r($0.x), r($0.y)] }, up: [r(st.up.x), r(st.up.y)])
-        } + s.objects.filter { $0.category == .stairs && edits[$0.identifier]?.hidden != true }.map { o in
-            let f = flight(o, edit: edits[o.identifier])
-            return StairOut(id: o.identifier.uuidString, story: o.story, corners: f.corners.map { [r($0.x), r($0.y)] },
-                            up: [r(f.up.x), r(f.up.y)])
-        }
-    }
 }
 
 extension PlanView {
-    // Outline, treads about every 10″, and an arrow from the end you'd start
-    // at on this floor, with UP or DN beside it. Screen points.
-    static func drawStairs(_ ctx: GraphicsContext, corners: [CGPoint], up: CGVector, label: String, colour: Color) {
-        guard corners.count == 4 else { return }
-        var outline = Path()
-        outline.addLines(corners)
-        outline.closeSubpath()
-        ctx.fill(outline, with: .color(colour.opacity(0.08)))
-        ctx.stroke(outline, with: .color(colour), lineWidth: 1.5)
-        // Which pair of opposite sides runs along the climb.
-        let e0 = CGVector(dx: corners[1].x - corners[0].x, dy: corners[1].y - corners[0].y)
-        let e1 = CGVector(dx: corners[3].x - corners[0].x, dy: corners[3].y - corners[0].y)
-        let along0 = abs(e0.dx * up.dx + e0.dy * up.dy) >= abs(e1.dx * up.dx + e1.dy * up.dy)
-        let run = along0 ? e0 : e1, across = along0 ? e1 : e0
-        let runLen = hypot(run.dx, run.dy)
-        guard runLen > 4 else { return }
-        let steps = max(3, min(16, Int(runLen / 9)))
-        var treads = Path()
-        for i in 1..<steps {
-            let f = CGFloat(i) / CGFloat(steps)
-            let p = CGPoint(x: corners[0].x + run.dx * f, y: corners[0].y + run.dy * f)
-            treads.move(to: p)
-            treads.addLine(to: CGPoint(x: p.x + across.dx, y: p.y + across.dy))
-        }
-        ctx.stroke(treads, with: .color(colour.opacity(0.6)), lineWidth: 0.8)
-        // The arrow runs down the middle, start to finish in the climb's direction.
-        let mid = CGPoint(x: corners[0].x + across.dx / 2, y: corners[0].y + across.dy / 2)
-        let forward = (run.dx * up.dx + run.dy * up.dy) >= 0
-        let start = forward ? mid : CGPoint(x: mid.x + run.dx, y: mid.y + run.dy)
-        let end = forward ? CGPoint(x: mid.x + run.dx, y: mid.y + run.dy) : mid
-        let ux = (end.x - start.x) / runLen, uy = (end.y - start.y) / runLen
-        let s = CGPoint(x: start.x + ux * runLen * 0.12, y: start.y + uy * runLen * 0.12)
-        let e = CGPoint(x: end.x - ux * runLen * 0.08, y: end.y - uy * runLen * 0.08)
-        var arrow = Path()
-        arrow.move(to: s)
-        arrow.addLine(to: e)
-        let h: CGFloat = min(8, runLen * 0.15)
-        arrow.move(to: CGPoint(x: e.x - ux * h - uy * h * 0.6, y: e.y - uy * h + ux * h * 0.6))
-        arrow.addLine(to: e)
-        arrow.addLine(to: CGPoint(x: e.x - ux * h + uy * h * 0.6, y: e.y - uy * h - ux * h * 0.6))
-        ctx.stroke(arrow, with: .color(colour), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+    // A stair piece: outline and treads. Screen points.
+    static func drawStairPiece(_ ctx: GraphicsContext, outline: [CGPoint], treads: [(CGPoint, CGPoint)], colour: Color) {
+        guard outline.count >= 3 else { return }
+        var o = Path()
+        o.addLines(outline)
+        o.closeSubpath()
+        ctx.fill(o, with: .color(colour.opacity(0.08)))
+        ctx.stroke(o, with: .color(colour), lineWidth: 1.5)
+        var t = Path()
+        for (a, b) in treads { t.move(to: a); t.addLine(to: b) }
+        ctx.stroke(t, with: .color(colour.opacity(0.6)), lineWidth: 0.8)
+    }
+
+    // The walking line: from the start, with UP or DN there, to an arrowhead.
+    static func drawStairPath(_ ctx: GraphicsContext, points: [CGPoint], label: String, colour: Color) {
+        guard points.count > 1, let first = points.first, let last = points.last else { return }
+        var p = Path()
+        p.addLines(points)
+        let prev = points[points.count - 2]
+        let L = max(hypot(last.x - prev.x, last.y - prev.y), 0.001)
+        let ux = (last.x - prev.x) / L, uy = (last.y - prev.y) / L, h: CGFloat = 7
+        p.move(to: CGPoint(x: last.x - ux * h - uy * h * 0.6, y: last.y - uy * h + ux * h * 0.6))
+        p.addLine(to: last)
+        p.addLine(to: CGPoint(x: last.x - ux * h + uy * h * 0.6, y: last.y - uy * h - ux * h * 0.6))
+        ctx.stroke(p, with: .color(colour), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+        let next = points[1]
+        let L0 = max(hypot(next.x - first.x, next.y - first.y), 0.001)
         ctx.draw(Text(label).font(.caption2.bold()).foregroundStyle(colour),
-                 at: CGPoint(x: s.x - ux * 7, y: s.y - uy * 7))
+                 at: CGPoint(x: first.x - (next.x - first.x) / L0 * 9, y: first.y - (next.y - first.y) / L0 * 9))
     }
 }

@@ -82,8 +82,9 @@ struct PlanGeometry {
     var features: [PlanFeature] = []
     var floors: [(story: Int, points: [CGPoint])] = []
     var photos: [(id: String, story: Int, at: CGPoint, dir: CGVector)] = []
-    // Stairs on each floor they touch: UP where they rise from, DN above.
-    var stairs: [(id: UUID, story: Int, corners: [CGPoint], up: CGVector, label: String)] = []
+    // Stairs on each floor they touch (Stairs.swift): pieces, and walking lines with UP or DN.
+    var stairPieces: [(id: UUID, index: Int, story: Int, outline: [CGPoint], treads: [(CGPoint, CGPoint)])] = []
+    var stairPaths: [(story: Int, points: [CGPoint], label: String)] = []
     var sections: [(story: Int, label: String, center: CGPoint)] = []
     var exteriorLines: [(a: CGPoint, b: CGPoint)] = []
     var gaps: [PlanGap] = []
@@ -401,24 +402,9 @@ extension ScanController {
             (rot([line.a.x, line.a.y]), rot([line.b.x, line.b.y]))
         }
         addHiddenWalls(to: &g, structure: structure)
-        let stories = Set(structure.floors.map(\.story))
-        for st in addedStairs {
-            let corners = st.corners.map { g.plan($0) }
-            let c = g.plan(SIMD2(0, 0)), u = g.plan(st.up)
-            let up = CGVector(dx: u.x - c.x, dy: u.y - c.y)
-            g.stairs.append((st.id, st.story, corners, up, "UP"))
-            if stories.contains(st.story + 1) { g.stairs.append((st.id, st.story + 1, corners, CGVector(dx: -up.dx, dy: -up.dy), "DN")) }
-        }
-        for o in structure.objects where o.category == .stairs && stairEdits[o.identifier]?.hidden != true {
-            let f = PlanExport.flight(o, edit: stairEdits[o.identifier])
-            let corners = f.corners.map { g.plan($0) }
-            let c = g.plan(SIMD2(0, 0)), u = g.plan(f.up)
-            let up = CGVector(dx: u.x - c.x, dy: u.y - c.y)
-            g.stairs.append((o.identifier, o.story, corners, up, "UP"))
-            if stories.contains(o.story + 1) {
-                g.stairs.append((o.identifier, o.story + 1, corners, CGVector(dx: -up.dx, dy: -up.dy), "DN"))
-            }
-        }
+        let drawing = StairDrawing(chains: addedStairs, structure: structure, edits: stairEdits)
+        g.stairPieces = drawing.pieces.map { p in (p.id, p.index, p.story, p.outline.map { g.plan($0) }, p.treads.map { (g.plan($0.0), g.plan($0.1)) }) }
+        g.stairPaths = drawing.paths.map { ($0.story, $0.points.map { g.plan($0) }, $0.label) }
         // Photos go on the floor the phone stood over.
         let levels = structure.floors.map { ($0.story, $0.transform.columns.3.y) }
         g.photos = photos.map { p in

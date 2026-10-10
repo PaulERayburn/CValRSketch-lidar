@@ -20,9 +20,10 @@ enum PlanExport {
         var photoFolder: String?
         var photos: [PhotoOut]?
         var addedWalls: [AddedWallOut]?
-        var stairs: [StairOut]?
+        var stairs: [StairPieceOut]?          // drawn per floor: outline and treads
+        var stairPaths: [StairPathOut]?       // walking line, UP or DN at its start
         var stairEdits: [StairEditOut]?
-        var addedStairs: [AddedStairOut]?
+        var stairChains: [StairChainOut]?     // stairs the user drew
         var wallsShapeFloor: Bool?      // false: drawn or moved walls don't change the floor outline
         let createdAt: String
         let walls: [Segment]
@@ -176,7 +177,7 @@ enum PlanExport {
                      anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?, name: String = "",
                      photos: [ScanPhoto] = [], photoFolder: String = "", addedWalls: [AddedWall] = [],
                      wallsShapeFloor: Bool = true, stairEdits: [UUID: StairEdit] = [:],
-                     addedStairs: [AddedStair] = []) throws -> Data {
+                     stairChains: [StairChain] = []) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
         // Drawn walls go in with the scanned ones, at the height of that floor's walls.
         let drawn = addedWalls.map { w -> Segment in
@@ -255,11 +256,9 @@ enum PlanExport {
         if !name.isEmpty { plan.name = name }
         if !photos.isEmpty { plan.photos = photos.map(photoOut); plan.photoFolder = photoFolder }
         if !wallsShapeFloor { plan.wallsShapeFloor = false }
-        let flights = stairs(s, edits: stairEdits, added: addedStairs)
-        if !addedStairs.isEmpty {
-            plan.addedStairs = addedStairs.map { AddedStairOut(id: $0.id.uuidString, story: $0.story, a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y], width: $0.width) }
-        }
-        if !flights.isEmpty { plan.stairs = flights }
+        let stairDrawn = stairOut(StairDrawing(chains: stairChains, structure: s, edits: stairEdits))
+        if !stairDrawn.pieces.isEmpty { plan.stairs = stairDrawn.pieces; plan.stairPaths = stairDrawn.paths }
+        if !stairChains.isEmpty { plan.stairChains = stairChains.map(chainOut) }
         if !stairEdits.isEmpty {
             plan.stairEdits = stairEdits.map { StairEditOut(id: $0.key.uuidString, flip: $0.value.flip, hidden: $0.value.hidden,
                              turn: $0.value.turn, run: $0.value.run) }

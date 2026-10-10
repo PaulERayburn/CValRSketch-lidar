@@ -27,11 +27,16 @@ struct PlanView: View {
     @State private var shownPhoto: ScanPhoto?
     @State private var addingWall = false
     @State private var lengthWall: PlanWall?
-    @State private var stairChoice: UUID?
-    @State private var stairRunFor: UUID?
+    // Stairs: the one tapped (a drawn piece, or a scanned flight at index -1),
+    // the one being drawn, and what the next tap adds.
+    struct StairPick: Equatable { let id: UUID; let index: Int }
+    enum StairMode: Hashable { case flight, turn90, turn180 }
+    @State private var stairChoice: StairPick?
     @State private var addingStairs = false
     @State private var stairStart: CGPoint?
-    @State private var stairWidthFor: UUID?
+    @State private var stairChain: UUID?
+    @State private var stairMode = StairMode.flight
+    @State private var stairAsk: (kind: String, pick: StairPick)?   // "steps", "width", "length", "run"
     @State private var stairRunText = ""
     @State private var lengthKeepA = true
     @State private var wallStart: CGPoint?   // a tap right after a drag is the drag's end
@@ -67,8 +72,11 @@ struct PlanView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
                 Text(addingStairs && tool == .rooms
-                     ? (stairStart == nil ? "Add stairs: tap where the flight starts on this floor (bottom going up, or top going down)."
-                                          : "Now tap where it ends. A turn? Draw the next flight from here.")
+                     ? (stairChain == nil
+                        ? (stairStart == nil ? "Add stairs: tap where they start on this floor (the bottom going up, or the top going down)."
+                                             : "Tap where the first flight ends.")
+                        : stairMode == .flight ? "Tap where this flight ends, or pick Turn for a landing or winders. Done when finished."
+                        : "Tap the side the stair turns to. It's a flat landing; tap it afterwards to give it winder steps.")
                      : addingWall && tool == .walls
                      ? (wallStart == nil ? "Add wall: tap where the wall starts. It snaps to a corner or wall end near your finger."
                                          : "Now tap where it ends. The wall stays square to the house.")
@@ -76,6 +84,15 @@ struct PlanView: View {
                     .font(.footnote.bold())
                     .foregroundStyle(.teal)
                     .padding(.horizontal)
+                if addingStairs && stairChain != nil && tool == .rooms {
+                    Picker("Next", selection: $stairMode) {
+                        Text("Flight").tag(StairMode.flight)
+                        Text("Turn 90°").tag(StairMode.turn90)
+                        Text("Turn 180°").tag(StairMode.turn180)
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+                }
             } else if cornerMode {
                 Text(spanStart == nil ? "Tap the corner where your reading starts." : "Now tap the corner where it ends.")
                     .font(.footnote.bold())
@@ -103,9 +120,9 @@ struct PlanView: View {
                             return
                         }
                         if editMode && tool == .rooms,
-                           let st = geo.stairs.first(where: { $0.story == shown
-                               && ScanController.inside(view.unmap(tap.location), $0.corners) }) {
-                            stairChoice = st.id
+                           let st = geo.stairPieces.last(where: { $0.story == shown
+                               && ScanController.inside(view.unmap(tap.location), $0.outline) }) {
+                            stairChoice = StairPick(id: st.id, index: st.index)
                             return
                         }
                         if editMode && tool == .rooms {
@@ -255,7 +272,7 @@ struct PlanView: View {
                 if !cornerMode {
                     Button(editMode ? "Done" : "Edit") {
                         editMode.toggle(); tool = .walls; selectedWalls = []; addingWall = false; wallStart = nil
-                        addingStairs = false; stairStart = nil
+                        addingStairs = false; stairStart = nil; stairChain = nil
                         selected = nil; selectedGap = nil   // a reading sheet would hide Undo
                     }
                 }
@@ -295,7 +312,9 @@ struct PlanView: View {
                         Button("Restore scan") { scan.restoreScan() }
                             .disabled(!scan.hasEdits)
                     } else if tool == .rooms {
-                        Button(addingStairs ? "Cancel" : "＋ Stairs") { addingStairs.toggle(); stairStart = nil }
+                        Button(addingStairs ? (stairChain == nil ? "Cancel" : "Done") : "＋ Stairs") {
+                            addingStairs.toggle(); stairStart = nil; stairChain = nil; stairMode = .flight
+                        }
                         Spacer()
                         Button("Restore scan") { scan.restoreScan() }
                             .disabled(!scan.hasEdits)
@@ -306,41 +325,44 @@ struct PlanView: View {
                 }
             }
         }
-        .confirmationDialog("Stairs", isPresented: Binding(get: { stairChoice != nil }, set: { if !$0 { stairChoice = nil } }),
+        .confirmationDialog(stairChoice?.index == -1 ? "Stairs from the scan" : "Stairs", isPresented: Binding(get: { stairChoice != nil }, set: { if !$0 { stairChoice = nil } }),
                             titleVisibility: .visible) {
-            if let id = stairChoice, scan.addedStairs.contains(where: { $0.id == id }) {
-                Button("Flip direction") { scan.flipAddedStairs(id); stairChoice = nil }
-                Button("Width…") { stairWidthFor = id; stairRunText = ""; stairChoice = nil }
-                Button("Remove", role: .destructive) { scan.removeAddedStairs(id); stairChoice = nil }
-            } else {
-                Button("Flip direction") { if let id = stairChoice { scan.flipStairs(id) }; stairChoice = nil }
-                Button("Turn 90°") { if let id = stairChoice { scan.turnStairs(id) }; stairChoice = nil }
-                Button("Run length…") { stairRunFor = stairChoice; stairRunText = ""; stairChoice = nil }
-            }
-            if let id = stairChoice, !scan.addedStairs.contains(where: { $0.id == id }) {
-                Button("Not stairs: remove", role: .destructive) { scan.hideStairs(id); stairChoice = nil }
+            if let pick = stairChoice {
+                if pick.index == -1 {
+                    Button("Flip direction") { scan.flipStairs(pick.id); stairChoice = nil }
+                    Button("Turn 90°") { scan.turnStairs(pick.id); stairChoice = nil }
+                    Button("Run length…") { stairAsk = ("run", pick); stairRunText = ""; stairChoice = nil }
+                    Button("Not stairs: remove", role: .destructive) { scan.hideStairs(pick.id); stairChoice = nil }
+                } else if let chain = scan.addedStairs.first(where: { $0.id == pick.id }), pick.index < chain.pieces.count {
+                    let piece = chain.pieces[pick.index]
+                    Button(piece.kind == .flight ? "Steps (\(piece.steps))…"
+                           : piece.steps == 0 ? "Make winders…" : "Winder steps (\(piece.steps))…") { stairAsk = ("steps", pick); stairRunText = ""; stairChoice = nil }
+                    if piece.kind == .flight {
+                        Button("Length…") { stairAsk = ("length", pick); stairRunText = ""; stairChoice = nil }
+                    } else if piece.steps > 0 {
+                        Button("Make a flat landing") { scan.changeStairChain(pick.id) { $0.pieces[pick.index].steps = 0 }; stairChoice = nil }
+                    }
+                    Button("Width…") { stairAsk = ("width", pick); stairRunText = ""; stairChoice = nil }
+                    Button(chain.down ? "Goes up from this floor" : "Goes down from this floor") {
+                        scan.changeStairChain(pick.id) { $0.down.toggle() }; stairChoice = nil
+                    }
+                    Button("Remove this piece and after", role: .destructive) { scan.removeStairPieces(pick.id, from: pick.index); stairChoice = nil }
+                    Button("Remove the whole stair", role: .destructive) { scan.removeStairPieces(pick.id, from: 0); stairChoice = nil }
+                }
             }
             Button("Cancel", role: .cancel) { stairChoice = nil }
         } message: {
-            Text("The scan finds stairs but not which way they climb, and often only part of the flight. UP marks the floor they rise from, DN the floor above.")
+            Text(stairChoice?.index == -1
+                 ? "The scan finds stairs but not which way they climb, and often only part of the flight. Remove it and draw the stair with ＋ Stairs if it's far off."
+                 : "UP marks the floor a stair rises from, DN the floor above.")
         }
-        .alert("Stair width", isPresented: Binding(get: { stairWidthFor != nil }, set: { if !$0 { stairWidthFor = nil } })) {
-            TextField("e.g. 3 0  or  36 in", text: $stairRunText).keyboardType(.numbersAndPunctuation)
-            Button("Save") {
-                if let id = stairWidthFor, let n = LengthParser.inches(from: stairRunText), n >= 18 { scan.setAddedStairsWidth(id, inches: n) }
-                stairWidthFor = nil
-            }
-            Button("Cancel", role: .cancel) { stairWidthFor = nil }
-        }
-        .alert("Run length", isPresented: Binding(get: { stairRunFor != nil }, set: { if !$0 { stairRunFor = nil } })) {
-            TextField("e.g. 10 0", text: $stairRunText).keyboardType(.numbersAndPunctuation)
-            Button("Save") {
-                if let id = stairRunFor, let n = LengthParser.inches(from: stairRunText), n >= 12 { scan.setStairRun(id, inches: n) }
-                stairRunFor = nil
-            }
-            Button("Cancel", role: .cancel) { stairRunFor = nil }
+        .alert(stairAskTitle, isPresented: Binding(get: { stairAsk != nil }, set: { if !$0 { stairAsk = nil } })) {
+            TextField(stairAsk?.kind == "steps" ? "e.g. 3" : "e.g. 3 0  or  36 in", text: $stairRunText)
+                .keyboardType(.numbersAndPunctuation)
+            Button("Save") { saveStairAsk(); stairAsk = nil }
+            Button("Cancel", role: .cancel) { stairAsk = nil }
         } message: {
-            Text("Bottom tread to top, measured along the floor. A full storey is usually about 10 ft.")
+            Text(stairAskMessage)
         }
         .sheet(item: $lengthWall) { w in
             let geo = scan.planGeometry
@@ -531,11 +553,59 @@ struct PlanView: View {
         return geo.estimateInches(run) - Int((w.length * 12).rounded())
     }
 
-    // Add stairs: the first tap is where the flight starts on this floor, the
-    // second where it ends, squared to the house. With a floor above, it
-    // climbs from here (UP); on the top floor it goes down to the one below.
-    // The next flight starts where this one ended, for an L or U.
+    private var stairAskTitle: String {
+        switch stairAsk?.kind { case "steps": return "Steps"; case "width": return "Stair width"
+        case "length": return "Flight length"; default: return "Run length" }
+    }
+    private var stairAskMessage: String {
+        switch stairAsk?.kind {
+        case "steps": return "Risers in this piece. On a turn, 0 makes a flat landing; 2 or more makes winders."
+        case "width": return "Tread width, wall to wall or to the rail. Applies to the whole stair."
+        case "length": return "Along the floor, first tread to last."
+        default: return "Bottom tread to top, measured along the floor. A full storey is usually about 10 ft."
+        }
+    }
+    private func saveStairAsk() {
+        guard let ask = stairAsk else { return }
+        let pick = ask.pick
+        switch ask.kind {
+        case "steps":
+            if let n = Int(stairRunText.trimmingCharacters(in: .whitespaces)), (0...30).contains(n) {
+                scan.changeStairChain(pick.id) { c in
+                    c.pieces[pick.index].steps = c.pieces[pick.index].kind == .flight ? max(1, n) : (n == 1 ? 2 : n)
+                }
+            }
+        case "width":
+            if let n = LengthParser.inches(from: stairRunText), n >= 18 { scan.changeStairChain(pick.id) { $0.width = Double(n) * 0.0254 } }
+        case "length":
+            if let n = LengthParser.inches(from: stairRunText), n >= 6 { scan.changeStairChain(pick.id) { $0.pieces[pick.index].length = Double(n) * 0.0254 } }
+        default:
+            if let n = LengthParser.inches(from: stairRunText), n >= 12 { scan.setStairRun(pick.id, inches: n) }
+        }
+    }
+
+    // Add stairs. The first tap is where the stair starts on this floor, the
+    // second where the first flight ends (square to the house). Each tap after
+    // adds the next piece from where the stair has got to: a flight to where
+    // the tap is along the way it's going, or a turn to the side tapped. With
+    // a floor above it climbs from here (UP); on the top floor it goes down.
     private func addStairsTap(_ p: CGPoint, geo: PlanGeometry, story: Int, view: Viewport) {
+        if let id = stairChain, let chain = scan.addedStairs.first(where: { $0.id == id }) {
+            let l = chain.layout()
+            let q = geo.world(p) - l.end
+            switch stairMode {
+            case .flight:
+                let len = simd_dot(q, l.dir)
+                guard len > 0.1 else { return }
+                scan.changeStairChain(id) { $0.pieces.append(.init(kind: .flight, length: len, steps: StairChain.defaultSteps(metres: len))) }
+            case .turn90, .turn180:
+                let side = l.dir.x * q.y - l.dir.y * q.x >= 0 ? 1 : -1
+                scan.changeStairChain(id) { $0.pieces.append(.init(kind: .turn, degrees: side * (stairMode == .turn90 ? 90 : 180), steps: 0)) }
+                stairMode = .flight
+            }
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            return
+        }
         guard let start = stairStart else {
             stairStart = p
             UISelectionFeedbackGenerator().selectionChanged()
@@ -543,13 +613,16 @@ struct PlanView: View {
         }
         let across = abs(p.x - start.x) >= abs(p.y - start.y)
         let end = across ? CGPoint(x: p.x, y: start.y) : CGPoint(x: start.x, y: p.y)
-        guard hypot(end.x - start.x, end.y - start.y) > 1 else { return }
+        guard hypot(end.x - start.x, end.y - start.y) > 0.3 else { return }
         let stories = Set(geo.floors.map(\.story))
-        let up = stories.contains(story + 1) || !stories.contains(story - 1)
-        let a = geo.world(start), b = geo.world(end)
-        scan.addStairs(up ? AddedStair(story: story, a: a, b: b) : AddedStair(story: story - 1, a: b, b: a))
+        let down = !stories.contains(story + 1) && stories.contains(story - 1)
+        let a = geo.world(start), b = geo.world(end), len = simd_distance(a, b)
+        let chain = StairChain(story: story, down: down, start: a, dir: (b - a) / len,
+                               pieces: [.init(kind: .flight, length: len, steps: StairChain.defaultSteps(metres: len))])
+        scan.addStairChain(chain)
+        stairChain = chain.id
+        stairStart = nil
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        stairStart = end
     }
 
     // Add wall: the first tap starts it, the second ends it. Each end snaps to
@@ -708,7 +781,10 @@ struct PlanView: View {
         let reference = selectedGap.flatMap { geo.referenceWall(for: $0)?.wall.id }
         let cornerMode = self.cornerMode, spanStart = self.spanStart, draft = self.spanDraft
         let editMode = self.editMode, endDrag = self.endDrag, picked = self.selectedWalls, moves = self.dragMoves
-        let wallStart = self.wallStart, stairStart = self.stairStart
+        let wallStart = self.wallStart
+        // Where the next stair tap starts from: the first tap, or the end of the stair so far.
+        let stairStart = self.stairStart ?? self.stairChain.flatMap { id in
+            scan.addedStairs.first { $0.id == id }.map { geo.plan($0.layout().end) } }
         let fixedEnd = lengthWall.map { lengthKeepA ? $0.a : $0.b }
         return Canvas { ctx, _ in
             for f in geo.floors where f.story == story {
@@ -830,8 +906,11 @@ struct PlanView: View {
                 let p = view.map(w)
                 ctx.fill(Path(ellipseIn: CGRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16)), with: .color(.teal))
             }
-            for st in geo.stairs where st.story == story {
-                Self.drawStairs(ctx, corners: st.corners.map(view.map), up: st.up, label: st.label, colour: .secondary)
+            for st in geo.stairPieces where st.story == story {
+                Self.drawStairPiece(ctx, outline: st.outline.map(view.map), treads: st.treads.map { (view.map($0.0), view.map($0.1)) }, colour: .secondary)
+            }
+            for p in geo.stairPaths where p.story == story {
+                Self.drawStairPath(ctx, points: p.points.map(view.map), label: p.label, colour: .secondary)
             }
             // Photo pins: a camera dot with a pointer the way it faced.
             for pin in geo.photos where pin.story == story {
