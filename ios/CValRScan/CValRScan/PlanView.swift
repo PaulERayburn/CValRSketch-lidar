@@ -42,6 +42,8 @@ struct PlanView: View {
     @State private var stairRunText = ""
     @State private var stairDrag: (id: UUID, handle: StairChain.Handle, base: StairChain, from: SIMD2<Double>, now: StairChain)?
     @State private var lengthKeepA = true
+    @State private var moveWall: PlanWall?
+    @State private var moveText = ""
     @State private var wallStart: CGPoint?   // a tap right after a drag is the drag's end
     @State private var panBase: CGSize?
     @State private var deleting: EditTarget?
@@ -304,6 +306,8 @@ struct PlanView: View {
                     Spacer()
                     if !selectedWalls.isEmpty && tool == .walls {
                         if selectedWalls.count == 1, let w = geo.wall(selectedWalls.first!) {
+                            Button("Move") { moveWall = w; moveText = "" }
+                            Spacer()
                             Button("Length") {
                                 let joins = { (e: CGPoint) in geo.walls.filter { $0.story == w.story && $0.id != w.id
                                     && (hypot($0.a.x - e.x, $0.a.y - e.y) < 0.1 || hypot($0.b.x - e.x, $0.b.y - e.y) < 0.1) }.count }
@@ -324,7 +328,9 @@ struct PlanView: View {
                             selectedWalls = []
                         }
                         Spacer()
-                        Button { selectedWalls = [] } label: { Image(systemName: "xmark") }
+                        if selectedWalls.count > 1 {
+                            Button { selectedWalls = [] } label: { Image(systemName: "xmark") }
+                        }
                     } else if tool == .walls {
                         Button(addingWall ? "Cancel" : "＋ Add wall") { addingWall.toggle(); wallStart = nil }
                         Spacer()
@@ -404,6 +410,27 @@ struct PlanView: View {
             Button("Cancel", role: .cancel) { areaCheck = nil }
         } message: {
             Text("About \(areaCheck?.squareFeet ?? 0) sf under the floor above has no floor scanned here. A missed room? Fill it from the floor above (its outline is shown faintly in Edit), draw its walls in Edit, or Resume on site and scan it. If it's slab (a garage), crawlspace or unexcavated, ignore it.")
+        }
+        .alert("Move wall", isPresented: Binding(get: { moveWall != nil }, set: { if !$0 { moveWall = nil } })) {
+            TextField("e.g. 1 0  or  12 in", text: $moveText).keyboardType(.numbersAndPunctuation)
+            if let w = moveWall {
+                let across = abs(w.b.x - w.a.x) < abs(w.b.y - w.a.y)   // an up-and-down wall moves left or right
+                ForEach(across ? [("Left", -1.0, 0.0), ("Right", 1.0, 0.0)] : [("Up", 0.0, -1.0), ("Down", 0.0, 1.0)], id: \.0) { name, dx, dy in
+                    Button(name) {
+                        if let n = LengthParser.inches(from: moveText), n > 0 {
+                            let geo = scan.planGeometry, ft = CGFloat(n) / 12
+                            let v = CGVector(dx: dx * ft, dy: dy * ft)
+                            // Walls joined at its ends stretch to follow.
+                            scan.moveWallEnds([w.a, w.b].map { e in (geo.world(e), geo.world(CGPoint(x: e.x + v.dx, y: e.y + v.dy))) })
+                            selectedWalls = []
+                        }
+                        moveWall = nil
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) { moveWall = nil }
+        } message: {
+            Text("Slides the whole wall, square; walls joined to it stretch to follow. Tap a wall again to deselect it.")
         }
         .sheet(item: $lengthWall) { w in
             let geo = scan.planGeometry
