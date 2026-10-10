@@ -170,12 +170,12 @@ struct PlanView: View {
                                                       hingeAtB: h, side: s, style: src.style)
                                 return
                             }
-                            if let f = geo.features.filter({ $0.story == shown && $0.id != nil && $0.kind != .window })
+                            if let f = geo.features.filter({ $0.story == shown && $0.id != nil })
                                 .first(where: { view.distance(tap.location, $0.a, $0.b) < 20 }),
                                let id = f.id, let w = wallUnder(f.a, f.b, f.wall) {
                                 let (h, s) = swing(f.a, f.b, on: w, hingeAtB: f.hingeAtB, side: f.side)
                                 doorDraft = DoorDraft(wall: w, at: CGPoint(x: (f.a.x + f.b.x) / 2, y: (f.a.y + f.b.y) / 2),
-                                                      ref: .scanned(id), kind: f.kind == .opening ? .opening : .interior,
+                                                      ref: .scanned(id), kind: f.kind == .opening ? .opening : f.kind == .window ? .window : .interior,
                                                       inches: inches(f.a, f.b), hingeAtB: h, side: s, style: f.style)
                                 return
                             }
@@ -414,6 +414,12 @@ struct PlanView: View {
             Button("It's an outside door") { if let d = doorCheck { scan.markOutsideDoor(d.id) }; doorCheck = nil }
             ForEach(["Closet", "Storage", "Unfinished"], id: \.self) { name in
                 Button("Goes to \(name.lowercased()) space") { if let d = doorCheck { scan.markDoorLeadsTo(d, name: name) }; doorCheck = nil }
+            }
+            Button("It's a window") {
+                if let d = doorCheck {
+                    scan.setOpening(AddedOpening(story: d.story, wall: d.wall, a: d.a, b: d.b, kind: .window), replacing: .scanned(d.id))
+                }
+                doorCheck = nil
             }
             Button("Not a door: remove", role: .destructive) {
                 if let d = doorCheck { scan.setOpening(nil, replacing: .scanned(d.id)) }
@@ -1739,6 +1745,7 @@ struct DoorSheet: View {
     @State private var style = DoorStyle.swing
     static let widths: [OpeningKind: [Int]] = [
         .entrance: [32, 34, 36, 42, 60, 72], .interior: [24, 28, 30, 32, 34, 36], .opening: [30, 36, 48, 60, 72, 96],
+        .window: [24, 30, 36, 48, 60, 72],
     ]
 
     var body: some View {
@@ -1749,6 +1756,7 @@ struct DoorSheet: View {
                     Text("Entrance").tag(OpeningKind.entrance)
                     Text("Interior").tag(OpeningKind.interior)
                     Text("Opening").tag(OpeningKind.opening)
+                    Text("Window").tag(OpeningKind.window)
                 }
                 .pickerStyle(.segmented)
                 Section("Width") {
@@ -1766,7 +1774,7 @@ struct DoorSheet: View {
                         if let typed { Text("= \(Feet.text(typed))").bold() }
                     }
                 }
-                if kind != .opening {
+                if kind.isDoor {
                     // Buttons rather than a segmented control: six names don't fit one row.
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
                         ForEach([(DoorStyle.swing, "Swing"), (.double, "Double"), (.pocket, "Pocket"),

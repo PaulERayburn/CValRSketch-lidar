@@ -194,8 +194,9 @@ enum PlanExport {
         let walls = s.walls.compactMap { WallEdit.apply(wallEdits, to: segment($0)) } + drawn
         // Added doors and openings take their height from a standard door and
         // sit on the floor of the wall they are in.
-        func added(_ door: Bool) -> [Segment] {
-            addedOpenings.enumerated().filter { ($0.element.kind != .opening) == door }.map { i, o in
+        func added(_ door: Bool, windows: Bool = false) -> [Segment] {
+            addedOpenings.enumerated().filter { windows ? $0.element.kind == .window
+                                                : $0.element.kind != .window && $0.element.kind.isDoor == door }.map { i, o in
                 let w = o.wall.flatMap { id in walls.first { $0.id == id.uuidString } }
                 return Segment(id: "added-\(o.kind.rawValue)-\(i)", story: o.story, a: [o.a.x, o.a.y], b: [o.b.x, o.b.y],
                                height: 2.03, bottom: w?.bottom ?? 0, wall: o.wall?.uuidString, curved: false,
@@ -214,7 +215,7 @@ enum PlanExport {
             if style != .swing { d.style = style.rawValue }
             return d
         } + added(true)
-        let windows = s.windows.map(segment), openings = kept(s.openings) + added(false)
+        let windows = kept(s.windows) + added(false, windows: true), openings = kept(s.openings) + added(false)
         var plan = Plan(
             createdAt: ISO8601DateFormatter().string(from: Date()),
             walls: walls,
@@ -384,7 +385,10 @@ enum DoorStyle: String, CaseIterable {
 
 // An added door's type: an exterior (entrance) door, an interior (privacy)
 // door, or an opening with no door.
-enum OpeningKind: String { case entrance, interior, opening }
+enum OpeningKind: String {
+    case entrance, interior, opening, window
+    var isDoor: Bool { self == .entrance || self == .interior }
+}
 
 // Where a room name on the plan comes from.
 enum RoomSource: Equatable { case new, scanned(Int), label(Int) }

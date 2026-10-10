@@ -383,7 +383,7 @@ extension ScanController {
         }
         for (i, o) in addedOpenings.enumerated() {
             let a = rot([o.a.x, o.a.y]), b = rot([o.b.x, o.b.y])
-            g.features.append(PlanFeature(kind: o.kind == .entrance ? .entrance : o.kind == .interior ? .door : .opening,
+            g.features.append(PlanFeature(kind: o.kind == .entrance ? .entrance : o.kind == .interior ? .door : o.kind == .window ? .window : .opening,
                                           story: o.story, a: a, b: b, hingeAtB: o.hingeAtB, side: o.side, style: o.style))
             g.addedOpenings.append((i, o.story, a, b))
         }

@@ -15,6 +15,8 @@ struct UnscannedDoor: Identifiable, Equatable {
     let story: Int
     let at: SIMD2<Double>        // middle of the door
     let beyond: SIMD2<Double>    // a point on the unscanned side
+    var a = SIMD2<Double>(0, 0), b = SIMD2<Double>(0, 0)   // its ends
+    var wall: UUID?              // the wall it's in
 }
 
 struct UnscannedArea: Identifiable, Equatable {
@@ -70,7 +72,7 @@ enum Unscanned {
             let p1 = m + n * 0.6, p2 = m - n * 0.6
             let here = polys[d.story] ?? []
             let in1 = here.contains { inside(p1, $0) }, in2 = here.contains { inside(p2, $0) }
-            if in1 != in2 { out.append(UnscannedDoor(id: d.identifier, story: d.story, at: m, beyond: in1 ? p2 : p1)) }
+            if in1 != in2 { out.append(UnscannedDoor(id: d.identifier, story: d.story, at: m, beyond: in1 ? p2 : p1, a: a, b: b, wall: d.parentIdentifier)) }
         }
         return out
     }
