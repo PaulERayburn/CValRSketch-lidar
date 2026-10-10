@@ -118,6 +118,7 @@ struct GapSheet: View {
     let gap: PlanGap
     let geo: PlanGeometry
     var onDraw: (() -> Void)? = nil
+    var onOutside: (() -> Void)? = nil
     let onSave: (GapDepth?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
@@ -133,8 +134,11 @@ struct GapSheet: View {
                 if let onDraw {
                     Section {
                         Button("Draw the wall here", systemImage: "line.diagonal") { onDraw(); dismiss() }
+                        if let onOutside {
+                            Button("It's outside (open porch or entry)", systemImage: "sun.max") { onOutside(); dismiss() }
+                        }
                     } footer: {
-                        Text("When the wall is there but the scan left a gap in it: draws a wall along the red edge. Undo takes it away.")
+                        Text("Draw the wall when it's there but the scan left a gap. Say it's outside when the scan's floor ran out under a porch roof or through a glass entry; the import cuts that floor using the outside walk.")
                     }
                 }
                 Section("Fix it on site") {

@@ -56,6 +56,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     @Published private(set) var unscannedAreas: [UnscannedArea] = []
     @Published private(set) var outsideDoors: Set<UUID> = []
     @Published private(set) var ignoredAreas: [SIMD2<Double>] = []
+    // Missing-wall edges the user says are open to outside (a porch or recessed entry).
+    @Published private(set) var outsideEdges: [SIMD2<Double>] = []
+    func markEdgeOutside(_ g: PlanGap) { outsideEdges.append((g.worldA + g.worldB) / 2); writeFiles() }
 
     func refreshChecks() {
         if let s = structure {
@@ -827,7 +830,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd,
                                 name: scanName, photos: photos, photoFolder: photoFolder, addedWalls: addedWalls,
                                 wallsShapeFloor: wallsShapeFloor, stairEdits: stairEdits,
-                                stairChains: addedStairs, outsideDoors: outsideDoors, ignoredAreas: ignoredAreas,
+                                stairChains: addedStairs, outsideDoors: outsideDoors, ignoredAreas: ignoredAreas, outsideEdges: outsideEdges,
                                 areaFills: areaFills)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
@@ -937,6 +940,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         addedStairs = []
         outsideDoors = []
         ignoredAreas = []
+        outsideEdges = []
         areaFills = []
         unscannedDoors = []
         unscannedAreas = []
@@ -1005,6 +1009,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             }
             outsideDoors = Set((saved?.outsideDoors ?? []).compactMap(UUID.init(uuidString:)))
             ignoredAreas = (saved?.ignoredAreas ?? []).filter { $0.count == 2 }.map { SIMD2($0[0], $0[1]) }
+            outsideEdges = (saved?.outsideEdges ?? []).filter { $0.count == 2 }.map { SIMD2($0[0], $0[1]) }
             areaFills = (saved?.fillsFromAbove ?? []).filter { $0.centre.count == 2 }.map {
                 AreaFill(story: $0.story, centre: SIMD2($0.centre[0], $0.centre[1]), cell: $0.cell,
                          cells: $0.cells.map { $0.filter { $0.count == 2 }.map { SIMD2($0[0], $0[1]) } }.filter { $0.count == 4 })
@@ -1115,6 +1120,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         let stairChains: [PlanExport.StairChainOut]?
         let outsideDoors: [String]?
         let ignoredAreas: [[Double]]?
+        let outsideEdges: [[Double]]?
         struct FillIn: Decodable { let story: Int; let centre: [Double]; let cell: Double; let cells: [[[Double]]] }
         let fillsFromAbove: [FillIn]?
         let corners: [Point]?

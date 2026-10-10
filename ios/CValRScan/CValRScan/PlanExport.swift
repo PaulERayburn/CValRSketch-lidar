@@ -26,7 +26,8 @@ enum PlanExport {
         var stairChains: [StairChainOut]?     // stairs the user drew
         var outsideDoors: [String]?           // doors the user says open to outside
         var ignoredAreas: [[Double]]?         // unscanned areas the user says aren't rooms
-        var fillsFromAbove: [FillOut]?        // unscanned areas filled in from the floor above
+        var fillsFromAbove: [FillOut]?
+        var outsideEdges: [[Double]]?         // missing-wall edges the user says open to outside        // unscanned areas filled in from the floor above
         var wallsShapeFloor: Bool?      // false: drawn or moved walls don't change the floor outline
         let createdAt: String
         let walls: [Segment]
@@ -182,7 +183,8 @@ enum PlanExport {
                      photos: [ScanPhoto] = [], photoFolder: String = "", addedWalls: [AddedWall] = [],
                      wallsShapeFloor: Bool = true, stairEdits: [UUID: StairEdit] = [:],
                      stairChains: [StairChain] = [], outsideDoors: Set<UUID> = [],
-                     ignoredAreas: [SIMD2<Double>] = [], areaFills: [AreaFill] = []) throws -> Data {
+                     ignoredAreas: [SIMD2<Double>] = [], outsideEdges: [SIMD2<Double>] = [],
+                     areaFills: [AreaFill] = []) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
         // Drawn walls go in with the scanned ones, at the height of that floor's walls.
         let drawn = addedWalls.map { w -> Segment in
@@ -267,6 +269,7 @@ enum PlanExport {
         if !stairChains.isEmpty { plan.stairChains = stairChains.map(chainOut) }
         if !outsideDoors.isEmpty { plan.outsideDoors = outsideDoors.map(\.uuidString).sorted() }
         if !ignoredAreas.isEmpty { plan.ignoredAreas = ignoredAreas.map { [$0.x, $0.y] } }
+        if !outsideEdges.isEmpty { plan.outsideEdges = outsideEdges.map { [$0.x, $0.y] } }
         if !areaFills.isEmpty {
             func r(_ v: Double) -> Double { (v * 10000).rounded() / 10000 }
             plan.fillsFromAbove = areaFills.map { FillOut(story: $0.story, centre: [r($0.centre.x), r($0.centre.y)], cell: $0.cell,

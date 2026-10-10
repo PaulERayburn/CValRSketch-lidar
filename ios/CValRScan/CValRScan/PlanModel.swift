@@ -439,7 +439,7 @@ extension ScanController {
                                                   height: 2.4, bottom: 0, wall: nil, curved: false) }
         // Edges where the floor meets an area filled from the floor above are a
         // seam, not a missing wall.
-        let fills = areaFills
+        let fills = areaFills, outside = outsideEdges
         let found = PlanExport.gaps(floors: structure.floors.map(PlanExport.floor), segments: segments).filter { gap in
             let a = SIMD2(gap.a[0], gap.a[1]), b = SIMD2(gap.b[0], gap.b[1])
             guard simd_distance(a, b) > 0.01 else { return true }
@@ -451,7 +451,8 @@ extension ScanController {
             let touchesFill = samples.contains { p in
                 fills.contains { $0.story == gap.story && $0.cells.contains { Unscanned.inside(p, $0) } }
             }
-            return !touchesFill
+            let saidOutside = outside.contains { simd_distance($0, (a + b) / 2) < 0.3 }
+            return !touchesFill && !saidOutside
         }
         g.gaps = found.enumerated().map { i, gap in
             let a = SIMD2(gap.a[0], gap.a[1]), b = SIMD2(gap.b[0], gap.b[1])
