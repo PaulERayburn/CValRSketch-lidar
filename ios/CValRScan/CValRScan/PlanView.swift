@@ -386,9 +386,16 @@ struct PlanView: View {
         .confirmationDialog("Door to unscanned space", isPresented: Binding(get: { doorCheck != nil }, set: { if !$0 { doorCheck = nil } }),
                             titleVisibility: .visible) {
             Button("It's an outside door") { if let d = doorCheck { scan.markOutsideDoor(d.id) }; doorCheck = nil }
+            ForEach(["Closet", "Storage", "Unfinished"], id: \.self) { name in
+                Button("Goes to \(name.lowercased()) space") { if let d = doorCheck { scan.markDoorLeadsTo(d, name: name) }; doorCheck = nil }
+            }
+            Button("Not a door: remove", role: .destructive) {
+                if let d = doorCheck { scan.setOpening(nil, replacing: .scanned(d.id)) }
+                doorCheck = nil
+            }
             Button("Cancel", role: .cancel) { doorCheck = nil }
         } message: {
-            Text("Nothing was scanned past this door: a closet, room or stairs? Resume on site and scan it with the door open. If it's an outside door, say so and the warning goes.")
+            Text("Nothing was scanned past this door. If it's a room you missed, Resume on site and scan it, or fill it from the floor above. Otherwise say what's beyond, and its name goes on the plan.")
         }
         .confirmationDialog("Not scanned under the floor above", isPresented: Binding(get: { areaCheck != nil }, set: { if !$0 { areaCheck = nil } }),
                             titleVisibility: .visible) {

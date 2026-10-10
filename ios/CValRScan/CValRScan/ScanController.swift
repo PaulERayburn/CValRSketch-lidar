@@ -68,7 +68,13 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             unscannedAreas = Unscanned.areas(floors: rooms.flatMap(\.floors), ignored: ignoredAreas)
         }
     }
+    // Doors the user has answered for (outside, or leading to a closet,
+    // storage or unfinished space) are no longer flagged.
     func markOutsideDoor(_ id: UUID) { outsideDoors.insert(id); writeFiles(); refreshChecks() }
+    func markDoorLeadsTo(_ d: UnscannedDoor, name: String) {
+        outsideDoors.insert(d.id)
+        setRoomName(name, source: .new, at: d.beyond, story: d.story)
+    }
     func ignoreArea(_ a: UnscannedArea) { ignoredAreas.append(a.centre); writeFiles(); refreshChecks() }
 
     // Stairs the user drew (Stairs.swift).
