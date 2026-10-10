@@ -815,6 +815,12 @@ struct PlanView: View {
         switch style {
         case .swing:
             return (swingPath(a: a, b: b, hingeAtB: hingeAtB, side: side), false)
+        case .double:
+            // A pair: a leaf hinged at each jamb, meeting in the middle.
+            let m = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+            p.addPath(swingPath(a: a, b: m, hingeAtB: false, side: side))
+            p.addPath(swingPath(a: m, b: b, hingeAtB: true, side: side))
+            return (p, false)
         case .pocket:
             let off: CGFloat = 2.5
             if hingeAtB { p.move(to: at(L * 0.15, off)); p.addLine(to: at(L * 2, off)) }
@@ -1331,14 +1337,15 @@ struct DoorSheet: View {
                     }
                 }
                 if kind != .opening {
-                    Picker("Style", selection: $style) {
-                        Text("Swing").tag(DoorStyle.swing)
-                        Text("Pocket").tag(DoorStyle.pocket)
-                        Text("Bifold").tag(DoorStyle.bifold)
-                        Text("Sliding").tag(DoorStyle.sliding)
-                        Text("Garage").tag(DoorStyle.overhead)
+                    // Buttons rather than a segmented control: six names don't fit one row.
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
+                        ForEach([(DoorStyle.swing, "Swing"), (.double, "Double"), (.pocket, "Pocket"),
+                                 (.bifold, "Bifold"), (.sliding, "Sliding"), (.overhead, "Garage")], id: \.0) { s, name in
+                            Button(name) { style = s }
+                                .buttonStyle(.bordered)
+                                .tint(style == s ? .accentColor : .gray)
+                        }
                     }
-                    .pickerStyle(.segmented)
                     Section(style == .swing ? "Swing" : "Which way") {
                         HStack(spacing: 16) {
                             Canvas { ctx, size in
@@ -1390,7 +1397,11 @@ struct DoorSheet: View {
                         .disabled(!custom.isEmpty && typed == nil)
                 }
             }
-            .onAppear { kind = draft.kind; inches = draft.inches; hingeAtB = draft.hingeAtB; side = draft.side; style = draft.style }
+            .onAppear {
+                kind = draft.kind; inches = draft.inches; hingeAtB = draft.hingeAtB; side = draft.side; style = draft.style
+                // A scanned or saved width that isn't one of the buttons shows in the box.
+                if draft.ref != .new && !(Self.widths[draft.kind] ?? []).contains(draft.inches) { custom = Feet.text(draft.inches) }
+            }
         }
     }
 }

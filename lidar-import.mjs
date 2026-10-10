@@ -323,10 +323,13 @@ function interiorDetail(d, story, plan, before, after) {
   return { lines, rooms };
 }
 
-// A scanned door over 6 ft wide is a garage door, whatever older scans say.
+// A scanned door over 6 ft wide is a garage door, and one 4 to 6 ft a pair
+// (closet or French doors), whatever older scans say.
 function doorStyle(s) {
   if (s.style && s.style !== 'swing') return s.style;
-  return !s.type && Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]) > 1.83 ? 'overhead' : 'swing';
+  if (s.type) return 'swing';
+  const m = Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]);
+  return m > 1.83 ? 'overhead' : m >= 1.2 ? 'double' : 'swing';
 }
 
 // RoomPlan counts floors from where scanning began (0); appraisal plans name them.

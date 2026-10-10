@@ -197,7 +197,8 @@ enum PlanExport {
             var d = d
             d.hinge = "a"
             d.side = defaultSide(a: d.a, b: d.b, story: d.story, floors: floors)
-            if hypot(d.b[0] - d.a[0], d.b[1] - d.a[1]) > DoorStyle.overheadMetres { d.style = DoorStyle.overhead.rawValue }
+            let style = DoorStyle.forScanned(metres: hypot(d.b[0] - d.a[0], d.b[1] - d.a[1]))
+            if style != .swing { d.style = style.rawValue }
             return d
         } + added(true)
         let windows = s.windows.map(segment), openings = kept(s.openings) + added(false)
@@ -341,10 +342,15 @@ struct AddedOpening: Equatable {
 // How a door opens. Pocket slides into the wall at the hinge end; bifold
 // folds toward its side; sliding (bypass) panels overlap.
 enum DoorStyle: String, CaseIterable {
-    case swing, pocket, bifold, sliding, overhead
+    case swing, double, pocket, bifold, sliding, overhead
     // Doors wider than this are taken as garage (overhead) doors: nobody hangs
     // a swing door over 6 ft.
     static let overheadMetres = 1.83
+    // A scanned door from 4 to 6 ft wide is a pair (a closet or French door).
+    static let doubleMetres = 1.2
+    static func forScanned(metres: Double) -> DoorStyle {
+        metres > overheadMetres ? .overhead : metres >= doubleMetres ? .double : .swing
+    }
 }
 
 // An added door's type: an exterior (entrance) door, an interior (privacy)
