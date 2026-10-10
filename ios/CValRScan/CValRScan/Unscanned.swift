@@ -57,8 +57,10 @@ enum Unscanned {
 
     // Doors and openings with floor on one side only, 2 ft either side of
     // the middle.
-    static func doors(floors: [CapturedRoom.Surface], doors: [CapturedRoom.Surface], skip: Set<UUID>) -> [UnscannedDoor] {
-        let polys = polygons(floors)
+    // `extra`: more floor per story, e.g. areas filled in from the floor above.
+    static func doors(floors: [CapturedRoom.Surface], doors: [CapturedRoom.Surface], skip: Set<UUID>,
+                      extra: [Int: [[SIMD2<Double>]]] = [:]) -> [UnscannedDoor] {
+        let polys = polygons(floors).merging(extra) { $0 + $1 }
         var out: [UnscannedDoor] = []
         for d in doors where !skip.contains(d.identifier) {
             let s = PlanExport.segment(d)

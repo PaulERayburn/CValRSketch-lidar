@@ -49,6 +49,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     @Published private(set) var areaFills: [AreaFill] = []
     func fillFromAbove(_ a: UnscannedArea) {
         commit { $0.fills.append(AreaFill(story: a.story, centre: a.centre, cell: 0.1524, cells: a.cells)) }
+        refreshChecks()
     }
     // Space nobody scanned (Unscanned.swift), and what the user said about it.
     @Published private(set) var unscannedDoors: [UnscannedDoor] = []
@@ -58,7 +59,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
 
     func refreshChecks() {
         if let s = structure {
-            unscannedDoors = Unscanned.doors(floors: s.floors, doors: s.doors + s.openings, skip: hiddenOpenings.union(outsideDoors))
+            let filled = Dictionary(grouping: areaFills, by: \.story).mapValues { $0.flatMap(\.cells) }
+            unscannedDoors = Unscanned.doors(floors: s.floors, doors: s.doors + s.openings, skip: hiddenOpenings.union(outsideDoors),
+                                             extra: filled)
             unscannedAreas = Unscanned.areas(floors: s.floors, ignored: ignoredAreas + areaFills.map(\.centre), angle: planGeometry.angle)
         } else {
             unscannedDoors = Unscanned.doors(floors: rooms.flatMap(\.floors), doors: rooms.flatMap { $0.doors + $0.openings }, skip: outsideDoors)
