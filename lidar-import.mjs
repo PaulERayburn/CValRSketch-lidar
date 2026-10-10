@@ -15,8 +15,9 @@
 // The outside walk is first lined up with the scan (tracking can re-settle
 // between the two, leaving the walk turned or shifted). Floor the scan carried
 // outdoors through an edge with no wall (an open porch seen through a glass
-// entry) is cut back to where the walk shows the house ends, and the floor the
-// walk went around is the main floor.
+// entry) is cut back to where the walk shows the house ends; floor it never
+// reached inside the walk (a closet behind a door left shut) is added out to
+// the walk; and the floor the walk went around is the main floor.
 
 const FT = 3.28084;
 const SQUARE_DEG = 8;             // sides within this of the house's main directions are squared
@@ -72,12 +73,13 @@ export function readCvalrScan(d, opts = {}) {
       let gaps = (d.gaps || []).filter(g => g.story === story).map(g => ({ a: plan(g.a), b: plan(g.b) }));
       // Floor the scan carried out through an edge with no wall (a porch seen
       // through a glass door) that the outside walk shows is outdoors.
-      if (story === mainStory && walk.lines.length >= 3 && gaps.length) {
+      if (story === mainStory && walk.lines.length >= 3) {
         const cut = cutOutside(poly, d, story, plan, walk.lines, walkThickness(walk.lines, mainSides) ?? DEFAULT_EXTERIOR_IN / 12);
         if (cut) {
           poly = cut.poly;
           gaps = gaps.filter(g => onOutline(poly, { x: (g.a.x + g.b.x) / 2, y: (g.a.y + g.b.y) / 2 }, 0.4));
-          warnings.push(`${floorTitle(story)}: ${Math.round(cut.sf)} sf of scanned floor lies outside the outside walk (an open porch or entry seen through glass?) and was left out. Check it.`);
+          if (cut.sf >= MIN_CUT_SF) warnings.push(`${floorTitle(story)}: ${Math.round(cut.sf)} sf of scanned floor lies outside the outside walk (an open porch or entry seen through glass?) and was left out. Check it.`);
+          if (cut.grownSf >= MIN_CUT_SF) warnings.push(`${floorTitle(story)}: ${Math.round(cut.grownSf)} sf inside the outside walk that the scan didn't reach (a closet, chase or alcove behind a wall it missed) was added, out to the walk. Check it.`);
         }
       }
       let sides = squareSides(poly);
@@ -619,13 +621,17 @@ function cutOutside(poly, d, story, plan, lines, thickFt) {
   // Inside the walk's loop, a straight line from a cell crosses the walk
   // whichever way it runs; outside, at least one way it reaches open ground.
   // A piece is outside when most of a sample of its cells are.
-  const escapes = k => {
-    const i0 = k % W, j0 = (k - i0) / W;
-    return [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([di, dj]) => {
-      for (let i = i0 + di, j = j0 + dj; i >= 0 && j >= 0 && i < W && j < H; i += di, j += dj) if (bar[idx(i, j)] === 2) return false;
-      return true;
-    });
-  };
+  // Walk crossed to the left, right, above and below each cell, in four sweeps.
+  const seenL = new Uint8Array(W * H), seenR = new Uint8Array(W * H), seenU = new Uint8Array(W * H), seenD = new Uint8Array(W * H);
+  for (let j = 0; j < H; j++) {
+    let f = 0; for (let i = 0; i < W; i++) { seenL[idx(i, j)] = f; if (bar[idx(i, j)] === 2) f = 1; }
+    f = 0; for (let i = W - 1; i >= 0; i--) { seenR[idx(i, j)] = f; if (bar[idx(i, j)] === 2) f = 1; }
+  }
+  for (let i = 0; i < W; i++) {
+    let f = 0; for (let j = 0; j < H; j++) { seenU[idx(i, j)] = f; if (bar[idx(i, j)] === 2) f = 1; }
+    f = 0; for (let j = H - 1; j >= 0; j--) { seenD[idx(i, j)] = f; if (bar[idx(i, j)] === 2) f = 1; }
+  }
+  const escapes = k => !(seenL[k] && seenR[k] && seenU[k] && seenD[k]);
   const outsideLoop = piece => {
     const n = Math.min(piece.length, 200);
     let outside = 0;
@@ -664,7 +670,7 @@ function cutOutside(poly, d, story, plan, lines, thickFt) {
       if (piece.every(k => nearWalk[k] !== -1)) { piece.forEach(k => { cut[k] = 1; }); cutCells += piece.length; }
     }
   }
-  if (!cutCells || cutCells > floorCells * 0.3) return null;
+  if (cutCells > floorCells * 0.3) { cut.fill(0); cutCells = 0; }
   // Trim back from the walk by a wall's thickness to the inside face: floor
   // reached from the cut across the walk line (never through a scanned wall).
   const reach = Math.round(thickFt / CELL_FT) + 2;
@@ -681,11 +687,52 @@ function cutOutside(poly, d, story, plan, lines, thickFt) {
   }
   let keep = new Uint8Array(W * H);
   for (let k = 0; k < W * H; k++) keep[k] = floor[k] && dist[k] === -1 ? 1 : 0;
+  // Floor the scan missed inside the walk (a closet, chase or alcove behind a
+  // wall it didn't see): ground inside the walk's loop lying further from the
+  // floor than a wall's thickness. It is added, out to the walk's inside face.
+  const wallCells = Math.round(thickFt / CELL_FT);
+  const far = wallCells + 6;
+  const distFrom = (seed, through, limit) => {
+    const dd = new Int32Array(W * H).fill(-1), q = [];
+    for (let k = 0; k < W * H; k++) if (seed(k)) { dd[k] = 0; q.push(k); }
+    for (let t = 0; t < q.length; t++) {
+      const k0 = q[t];
+      if (dd[k0] >= limit) continue;
+      step8(k0, (i, j) => { const k = idx(i, j); if (dd[k] === -1 && through(k)) { dd[k] = dd[k0] + 1; q.push(k); } });
+    }
+    return dd;
+  };
+  const fromFloor = distFrom(k => keep[k], k => bar[k] !== 2, far);
+  const fromWalk = distFrom(k => bar[k] === 2, () => true, wallCells + 1);
+  const missing = new Uint8Array(W * H), seen2 = new Uint8Array(W * H);
+  let grownCells = 0;
+  for (let k0 = 0; k0 < W * H; k0++) {
+    if (seen2[k0] || keep[k0] || bar[k0] === 2 || fromFloor[k0] !== -1 || escapes(k0)) continue;
+    const piece = [k0];
+    seen2[k0] = 1;
+    let open = false;
+    for (let q = 0; q < piece.length; q++) step(piece[q], (i, j) => {
+      const k = idx(i, j);
+      if (seen2[k] || keep[k] || bar[k] === 2 || fromFloor[k] !== -1) return;
+      if (escapes(k)) { open = true; return; }
+      seen2[k] = 1; piece.push(k);
+    });
+    if (open || piece.length * CELL_FT * CELL_FT < MIN_CUT_SF || piece.length > floorCells * 0.35) continue;
+    // Out from the piece to the floor it lies against, short of the walk by a
+    // wall's thickness.
+    const pieceSet = new Uint8Array(W * H);
+    piece.forEach(k => { pieceSet[k] = 1; });
+    const grow = distFrom(k => pieceSet[k], k => !keep[k] && bar[k] !== 2, far);
+    for (let k = 0; k < W * H; k++) {
+      if (grow[k] !== -1 && !keep[k] && bar[k] !== 2 && fromWalk[k] === -1) { missing[k] = 1; grownCells++; }
+    }
+  }
+  if (grownCells) for (let k = 0; k < W * H; k++) if (missing[k]) keep[k] = 1;
   // Smooth the new edges only (not the rest of the scan): drop nubs under
   // about a foot near where the floor was cut. (Filling nicks too would put
   // back the trimmed wall.)
   const zone = new Uint8Array(W * H);
-  for (let k = 0; k < W * H; k++) if (dist[k] !== -1) {
+  for (let k = 0; k < W * H; k++) if ((dist[k] > 0 || cut[k] || missing[k])) {
     const i = k % W, j = (k - i) / W;
     for (let dj = -8; dj <= 8; dj++) for (let di = -8; di <= 8; di++) {
       const a = i + di, b = j + dj;
@@ -703,15 +750,20 @@ function cutOutside(poly, d, story, plan, lines, thickFt) {
         const c = a >= 0 && b >= 0 && a < W && b < H ? src[idx(a, b)] : 0;
         if (grow ? c : !c) { v = grow ? 1 : 0; break; }
       }
-      dst[k] = v && (grow ? floor[k] : 1) ? v : 0;
+      dst[k] = v && (grow ? before[k] : 1) ? v : 0;
     }
     return dst;
   };
+  const before = keep.slice();
   keep = morph(morph(keep, false), true);   // open: drop nubs
+  if (!cutCells && !grownCells) return null;
+  let removed = 0;
+  for (let k = 0; k < W * H; k++) if (floor[k] && !keep[k]) removed++;
   const traced = traceCells(keep, W, H);
   if (!traced) return null;
   const pts = traced.map(([i, j]) => ({ x: x0 + i * CELL_FT, y: y0 + j * CELL_FT }));
-  return { poly: pts, sf: (floorCells - traced.cells) * CELL_FT * CELL_FT };
+  const sf = c => c * CELL_FT * CELL_FT;
+  return { poly: pts, sf: sf(removed), grownSf: sf(grownCells) };
 }
 
 // The outer boundary of the largest piece of set cells, as corner points.
