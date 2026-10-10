@@ -53,12 +53,15 @@ extension StairChain {
 
     // Each piece's outline and treads, the walking line, and where it ends.
     func layout() -> (pieces: [(outline: [SIMD2<Double>], treads: [(SIMD2<Double>, SIMD2<Double>)])],
-                      path: [SIMD2<Double>], end: SIMD2<Double>, dir: SIMD2<Double>) {
+                      path: [SIMD2<Double>], end: SIMD2<Double>, dir: SIMD2<Double>,
+                      frames: [(start: SIMD2<Double>, dir: SIMD2<Double>)]) {
         var cur = start, u = simd_normalize(dir)
         let w = width
         var out: [(outline: [SIMD2<Double>], treads: [(SIMD2<Double>, SIMD2<Double>)])] = []
         var path = [cur]
+        var frames: [(start: SIMD2<Double>, dir: SIMD2<Double>)] = []
         for p in pieces {
+            frames.append((cur, u))
             let n = Self.left(u)
             switch p.kind {
             case .flight:
@@ -101,7 +104,42 @@ extension StairChain {
                 u = half ? -u : m
             }
         }
-        return (out, path, cur, u)
+        return (out, path, cur, u, frames)
+    }
+
+    // Dots to drag on the plan: the start (moves the stair), the far end of
+    // each flight (its length) and the side of the first piece (the width).
+    enum Handle: Equatable { case move, end(Int), width }
+
+    func handles() -> [(handle: Handle, at: SIMD2<Double>)] {
+        let f = layout().frames
+        guard let first = f.first else { return [] }
+        var out: [(handle: Handle, at: SIMD2<Double>)] = [(.move, start)]
+        for (i, p) in pieces.enumerated() where p.kind == .flight {
+            out.append((.end(i), f[i].start + f[i].dir * p.length))
+        }
+        let along = pieces.first?.kind == .flight ? min(pieces[0].length / 2, 0.6) : width / 2
+        out.append((.width, first.start + first.dir * along + Self.left(first.dir) * width / 2))
+        return out
+    }
+
+    // This stair with a dot dragged from `from` to `to` (world x, z). A
+    // flight's step count follows its length unless it was set by hand.
+    func dragged(_ h: Handle, from: SIMD2<Double>, to: SIMD2<Double>) -> StairChain {
+        var c = self
+        let f = layout().frames
+        switch h {
+        case .move:
+            c.start = start + (to - from)
+        case .end(let i):
+            let len = max(0.15, simd_dot(to - f[i].start, f[i].dir))
+            if pieces[i].steps == Self.defaultSteps(metres: pieces[i].length) { c.pieces[i].steps = Self.defaultSteps(metres: len) }
+            c.pieces[i].length = len
+        case .width:
+            guard let first = f.first else { return c }
+            c.width = max(0.5, 2 * abs(simd_dot(to - first.start, Self.left(first.dir))))
+        }
+        return c
     }
 }
 

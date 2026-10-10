@@ -38,6 +38,7 @@ struct PlanView: View {
     @State private var stairMode = StairMode.flight
     @State private var stairAsk: (kind: String, pick: StairPick)?   // "steps", "width", "length", "run"
     @State private var stairRunText = ""
+    @State private var stairDrag: (id: UUID, handle: StairChain.Handle, base: StairChain, from: SIMD2<Double>, now: StairChain)?
     @State private var lengthKeepA = true
     @State private var wallStart: CGPoint?   // a tap right after a drag is the drag's end
     @State private var panBase: CGSize?
@@ -75,7 +76,7 @@ struct PlanView: View {
                      ? (stairChain == nil
                         ? (stairStart == nil ? "Add stairs: tap where they start on this floor (the bottom going up, or the top going down)."
                                              : "Tap where the first flight ends.")
-                        : stairMode == .flight ? "Tap where this flight ends, or pick Turn for a landing or winders. Done when finished."
+                        : stairMode == .flight ? "Tap where this flight ends, or pick Turn for a landing or winders. Then Finish stair."
                         : "Tap the side the stair turns to. It's a flat landing; tap it afterwards to give it winder steps.")
                      : addingWall && tool == .walls
                      ? (wallStart == nil ? "Add wall: tap where the wall starts. It snaps to a corner or wall end near your finger."
@@ -112,9 +113,12 @@ struct PlanView: View {
                 canvas(geo: geo, story: shown, view: view)
                     .contentShape(Rectangle())
                     .gesture(editMode && tool == .walls ? AnyGesture(editDrag(geo: geo, story: shown, view: view, size: box.size).map { _ in () })
-                                      : AnyGesture(panDrag(geo: geo, story: shown, size: box.size).map { _ in () }))
+                             : editMode && tool == .rooms && !addingStairs
+                                ? AnyGesture(stairsDrag(geo: geo, story: shown, view: view, size: box.size).map { _ in () })
+                                : AnyGesture(panDrag(geo: geo, story: shown, size: box.size).map { _ in () }))
                     .simultaneousGesture(anchoredZoom(geo: geo, story: shown, size: box.size))
                     .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+                        if editMode && tool == .rooms && (stairDrag != nil || Date().timeIntervalSince(dragEnded) < 0.5) { return }
                         if editMode && tool == .rooms && addingStairs {
                             addStairsTap(view.unmap(tap.location), geo: geo, story: shown, view: view)
                             return
@@ -312,7 +316,7 @@ struct PlanView: View {
                         Button("Restore scan") { scan.restoreScan() }
                             .disabled(!scan.hasEdits)
                     } else if tool == .rooms {
-                        Button(addingStairs ? (stairChain == nil ? "Cancel" : "Done") : "＋ Stairs") {
+                        Button(addingStairs ? (stairChain == nil ? "Cancel" : "Finish stair") : "＋ Stairs") {
                             addingStairs.toggle(); stairStart = nil; stairChain = nil; stairMode = .flight
                         }
                         Spacer()
@@ -565,6 +569,47 @@ struct PlanView: View {
         default: return "Bottom tread to top, measured along the floor. A full storey is usually about 10 ft."
         }
     }
+    // In Edit > Rooms: a drag that starts on a drawn stair's dot moves the
+    // stair, stretches a flight or widens it; any other drag pans. Saved (one
+    // Undo step) when the finger lifts.
+    private func stairsDrag(geo: PlanGeometry, story: Int, view: Viewport, size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { v in
+                if stairDrag == nil && panBase == nil {
+                    var best: (id: UUID, handle: StairChain.Handle, chain: StairChain, at: SIMD2<Double>, d: CGFloat)?
+                    for c in scan.addedStairs where c.story == story || c.story + (c.down ? -1 : 1) == story {
+                        for h in c.handles() {
+                            let p = view.map(geo.plan(h.at))
+                            let d = hypot(p.x - v.startLocation.x, p.y - v.startLocation.y)
+                            if d < 24, d < (best?.d ?? .infinity) { best = (c.id, h.handle, c, h.at, d) }
+                        }
+                    }
+                    if let b = best {
+                        stairDrag = (b.id, b.handle, b.chain, b.at, b.chain)
+                        UISelectionFeedbackGenerator().selectionChanged()
+                    } else {
+                        panBase = pan
+                    }
+                }
+                if let d = stairDrag {
+                    let to = geo.world(view.unmap(v.location))
+                    stairDrag?.now = d.base.dragged(d.handle, from: d.from, to: to)
+                } else if let b = panBase {
+                    pan = clamp(CGSize(width: b.width + v.translation.width, height: b.height + v.translation.height),
+                                geo: geo, story: story, size: size, zoom: zoom)
+                }
+            }
+            .onEnded { _ in
+                if let d = stairDrag, d.now != d.base {
+                    let now = d.now
+                    scan.changeStairChain(d.id) { $0 = now }
+                }
+                if stairDrag != nil { dragEnded = Date() }
+                stairDrag = nil
+                panBase = nil
+            }
+    }
+
     private func saveStairAsk() {
         guard let ask = stairAsk else { return }
         let pick = ask.pick
@@ -782,6 +827,23 @@ struct PlanView: View {
         let cornerMode = self.cornerMode, spanStart = self.spanStart, draft = self.spanDraft
         let editMode = self.editMode, endDrag = self.endDrag, picked = self.selectedWalls, moves = self.dragMoves
         let wallStart = self.wallStart
+        // Stairs being resized: the stair as dragged, and every drawn stair's dots on this floor.
+        let stairDragNow = self.stairDrag?.now
+        let stairDots: [(StairChain.Handle, SIMD2<Double>, String?)] = (editMode && tool == .rooms && !addingStairs)
+            ? scan.addedStairs.filter { $0.story == story || $0.story + ($0.down ? -1 : 1) == story }.flatMap { c -> [(StairChain.Handle, SIMD2<Double>, String?)] in
+                let live = stairDrag?.id == c.id ? stairDrag!.now : c
+                return live.handles().map { h in
+                    var text: String?
+                    if stairDrag?.id == c.id, stairDrag?.handle == h.handle {
+                        switch h.handle {
+                        case .end(let i): text = Feet.text(Feet.inches(meters: live.pieces[i].length))
+                        case .width: text = Feet.text(Feet.inches(meters: live.width)) + " wide"
+                        case .move: text = nil
+                        }
+                    }
+                    return (h.handle, h.at, text)
+                }
+            } : []
         // Where the next stair tap starts from: the first tap, or the end of the stair so far.
         let stairStart = self.stairStart ?? self.stairChain.flatMap { id in
             scan.addedStairs.first { $0.id == id }.map { geo.plan($0.layout().end) } }
@@ -911,6 +973,24 @@ struct PlanView: View {
             }
             for p in geo.stairPaths where p.story == story {
                 Self.drawStairPath(ctx, points: p.points.map(view.map), label: p.label, colour: .secondary)
+            }
+            // Drawn stairs' dots, and the stair being dragged as it will be.
+            if let d = stairDragNow {
+                let l = d.layout()
+                for p in l.pieces {
+                    Self.drawStairPiece(ctx, outline: p.outline.map { view.map(geo.plan($0)) },
+                                        treads: p.treads.map { (view.map(geo.plan($0.0)), view.map(geo.plan($0.1))) }, colour: .teal)
+                }
+                Self.drawStairPath(ctx, points: l.path.map { view.map(geo.plan($0)) }, label: "", colour: .teal)
+            }
+            for (h, at, text) in stairDots {
+                let p = view.map(geo.plan(at))
+                let r: CGFloat = h == .move ? 8 : 7
+                let dot = h == .move ? Path(CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r))
+                                     : Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r))
+                ctx.fill(dot, with: .color(.teal))
+                ctx.stroke(dot, with: .color(.white), lineWidth: 1.5)
+                if let text { ctx.draw(Text(text).font(.caption.bold()).foregroundStyle(.teal), at: CGPoint(x: p.x, y: p.y - 18)) }
             }
             // Photo pins: a camera dot with a pointer the way it faced.
             for pin in geo.photos where pin.story == story {
@@ -1434,7 +1514,7 @@ enum EditTool: String, CaseIterable {
     var hint: String {
         switch self {
         case .walls: return "Tap a wall to set its Length or Delete it; tap several to Align them. Drag a wall's end (square) along the wall to lengthen it, or across to slide it."
-        case .rooms: return "Tap a room to name it, or tap a name to change or remove it. Tap stairs to flip or remove them."
+        case .rooms: return "Tap a room to name it. Tap stairs to change them; drag a stair's dots to move it, stretch a flight, or widen it."
         case .doors: return "Tap a wall to add a door or opening; tap any door or opening to change its type or width, or remove it."
         }
     }
