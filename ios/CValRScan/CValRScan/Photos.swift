@@ -70,8 +70,9 @@ extension ScanController {
         guard let dir = photoDirectory else { return .failed }
         let name = "photo-\(photos.count + 1)-\(Int(Date().timeIntervalSince1970)).jpg"
         let url = dir.appendingPathComponent(name)
+        let turn = Self.uprightTurn(camera)
         let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
-            let image = CIImage(cvPixelBuffer: buffer).oriented(.right)
+            let image = CIImage(cvPixelBuffer: buffer).oriented(turn)
             guard let space = CGColorSpace(name: CGColorSpace.sRGB),
                   let data = CIContext().jpegRepresentation(of: image, colorSpace: space,
                       options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.8])
@@ -88,6 +89,17 @@ extension ScanController {
         photoZip = nil
         writeFiles()
         return .saved(fullRes: full)
+    }
+
+    // The camera's picture is landscape, the long side along the phone, with
+    // the camera's +y up when the phone lies sideways with its charging port
+    // on the right. Turn it by how the phone was actually held, so a photo
+    // taken sideways stays landscape and one taken upright stays portrait,
+    // whatever way the screen is locked.
+    nonisolated static func uprightTurn(_ camera: simd_float4x4) -> CGImagePropertyOrientation {
+        let x = camera.columns.0.y, y = camera.columns.1.y   // how far each camera axis points up
+        if abs(y) >= abs(x) { return y >= 0 ? .up : .down }
+        return x <= 0 ? .right : .left
     }
 
     func deletePhoto(_ p: ScanPhoto) {
