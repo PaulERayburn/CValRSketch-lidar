@@ -416,6 +416,7 @@ struct PlanView: View {
             ForEach(["Closet", "Storage", "Unfinished"], id: \.self) { name in
                 Button("Goes to \(name.lowercased()) space") { if let d = doorCheck { scan.markDoorLeadsTo(d, name: name) }; doorCheck = nil }
             }
+            Button("Part of this room (bump-out or alcove)") { if let d = doorCheck { scan.openToRoom(d) }; doorCheck = nil }
             Button("It's a window") {
                 if let d = doorCheck {
                     scan.setOpening(AddedOpening(story: d.story, wall: d.wall, a: d.a, b: d.b, kind: .window), replacing: .scanned(d.id))

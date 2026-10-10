@@ -71,6 +71,26 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     // Doors the user has answered for (outside, or leading to a closet,
     // storage or unfinished space) are no longer flagged.
     func markOutsideDoor(_ id: UUID) { outsideDoors.insert(id); writeFiles(); refreshChecks() }
+    // A false opening at the mouth of a bump-out or alcove: it goes, and the
+    // walls round the bump-out are marked as the user's, so the import closes
+    // their floor into the room ("Drawn walls extend the floor").
+    func openToRoom(_ d: UnscannedDoor) {
+        guard let structure else { return }
+        let u = simd_normalize(d.b - d.a), n = SIMD2(-u.y, u.x)
+        let side = simd_dot(d.beyond - d.at, n) >= 0 ? 1.0 : -1.0
+        let reach = simd_distance(d.a, d.b) / 2 + 1.5
+        var walls: [UUID] = []
+        for w in structure.walls where w.story == d.story {
+            guard let s = edited(PlanExport.segment(w)) else { continue }
+            let a = SIMD2(s.a[0], s.a[1]), b = SIMD2(s.b[0], s.b[1]), m = (a + b) / 2
+            if simd_dot(m - d.at, n) * side > 0.05, min(simd_distance(a, d.at), simd_distance(b, d.at)) < reach { walls.append(w.identifier) }
+        }
+        commit { s in
+            s.hidden.insert(d.id)
+            for id in walls where s.walls[id] == nil { s.walls[id] = WallEdit() }
+        }
+        refreshChecks()
+    }
     func markDoorLeadsTo(_ d: UnscannedDoor, name: String) {
         outsideDoors.insert(d.id)
         setRoomName(name, source: .new, at: d.beyond, story: d.story)
