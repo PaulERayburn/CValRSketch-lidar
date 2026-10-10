@@ -645,7 +645,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             saveWorldMap()
             write3DModel(replace: true)
             if lost > 0 {
-                message = "\(lost == 1 ? "1 edit" : "\(lost) edits") couldn't find \(lost == 1 ? "its wall" : "their walls") in the rebuilt plan. Check them in Measure walls, Edit."
+                message = "\(lost == 1 ? "1 edit" : "\(lost) edits") couldn't find \(lost == 1 ? "its wall" : "their walls") in the rebuilt plan. Check them in Measure & edit plan."
             }
         } catch {
             message = "Export failed: \(error.localizedDescription)"

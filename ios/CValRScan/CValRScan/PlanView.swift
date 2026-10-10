@@ -320,7 +320,7 @@ struct PlanView: View {
             }
             legend
         }
-        .navigationTitle("Measure walls")
+        .navigationTitle("Plan")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {

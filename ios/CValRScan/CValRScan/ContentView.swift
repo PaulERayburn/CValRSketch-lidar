@@ -73,7 +73,7 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     }
                     if !scan.unscannedDoors.isEmpty {
-                        Text("\(scan.unscannedDoors.count == 1 ? "1 door leads" : "\(scan.unscannedDoors.count) doors lead") to space not scanned yet: a closet, room or stairs? Outside doors count too; mark them on Measure walls.")
+                        Text("\(scan.unscannedDoors.count == 1 ? "1 door leads" : "\(scan.unscannedDoors.count) doors lead") to space not scanned yet: a closet, room or stairs? Outside doors count too; mark them on the plan.")
                             .foregroundStyle(.orange)
                     }
                     if !scan.unscannedAreas.isEmpty {
@@ -85,7 +85,7 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     }
                     if !scan.photos.isEmpty {
-                        Text("\(count(scan.photos.count, "photo")), shown as camera pins on Measure walls")
+                        Text("\(count(scan.photos.count, "photo")), shown as camera pins on the plan")
                             .foregroundStyle(.secondary)
                     }
                     let outsideWalls = scan.exteriorWalls.filter { $0.count >= 2 }.count
@@ -126,8 +126,8 @@ struct ContentView: View {
                             measuring = true
                         } label: {
                             Label(!scan.hasReadings
-                                  ? "Measure walls"
-                                  : "Measure walls (\(scan.measurements.count + scan.spans.count) entered)",
+                                  ? "Measure & edit plan"
+                                  : "Measure & edit plan (\(scan.measurements.count + scan.spans.count) readings)",
                                   systemImage: "ruler")
                         }
                         if scan.hasEdits {
@@ -146,7 +146,7 @@ struct ContentView: View {
                         }
                         let gaps = scan.planGeometry.openGaps.count
                         if gaps > 0 {
-                            Text("\(gaps == 1 ? "1 wall is" : "\(gaps) walls are") missing, shown in red on Measure walls. Tap one to see how to fill it.")
+                            Text("\(gaps == 1 ? "1 wall is" : "\(gaps) walls are") missing, shown in red on the plan. Tap one to see how to fill it.")
                                 .font(.footnote)
                                 .foregroundStyle(.red)
                         }
