@@ -117,6 +117,7 @@ struct MarkedPointsOverlay: View {
 struct GapSheet: View {
     let gap: PlanGap
     let geo: PlanGeometry
+    var onDraw: (() -> Void)? = nil
     let onSave: (GapDepth?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
@@ -128,6 +129,13 @@ struct GapSheet: View {
             Form {
                 Section {
                     Text("\(Feet.text(Int((gap.length * 12).rounded()))) of floor edge with no wall along it, probably a closet back or side the scan couldn't see.")
+                }
+                if let onDraw {
+                    Section {
+                        Button("Draw the wall here", systemImage: "line.diagonal") { onDraw(); dismiss() }
+                    } footer: {
+                        Text("When the wall is there but the scan left a gap in it: draws a wall along the red edge. Undo takes it away.")
+                    }
                 }
                 Section("Fix it on site") {
                     Text("Resume this scan, tap Scan a room, and aim at any bare spot on the hidden wall: above the shelf, between hangers or low behind the shoes. Tap Mark wall. One point per hidden wall is enough; the app squares it to the room.")

@@ -276,7 +276,7 @@ struct PlanView: View {
                         .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.55)))
                     }
                     .sheet(item: $selectedGap) { gap in
-                        GapSheet(gap: gap, geo: geo) { scan.setGapDepth($0, for: gap) }
+                        GapSheet(gap: gap, geo: geo, onDraw: { scan.addWall(story: gap.story, a: gap.worldA, b: gap.worldB) }) { scan.setGapDepth($0, for: gap) }
                             .presentationDetents([.fraction(0.55), .large])
                             .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.55)))
                     }

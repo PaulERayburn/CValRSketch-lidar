@@ -431,8 +431,11 @@ extension ScanController {
     // on hidden walls. A point's wall runs square to the house, along
     // whichever main direction is nearer its facing.
     private func addHiddenWalls(to g: inout PlanGeometry, structure: CapturedStructure) {
+        // Walls the user drew close gaps too.
         let segments = (structure.walls + structure.doors + structure.windows + structure.openings)
             .map(PlanExport.segment)
+            + addedWalls.map { PlanExport.Segment(id: $0.id.uuidString, story: $0.story, a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y],
+                                                  height: 2.4, bottom: 0, wall: nil, curved: false) }
         let found = PlanExport.gaps(floors: structure.floors.map(PlanExport.floor), segments: segments)
         g.gaps = found.enumerated().map { i, gap in
             let a = SIMD2(gap.a[0], gap.a[1]), b = SIMD2(gap.b[0], gap.b[1])
