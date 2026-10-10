@@ -372,7 +372,7 @@ struct AddedOpening: Equatable {
 // How a door opens. Pocket slides into the wall at the hinge end; bifold
 // folds toward its side; sliding (bypass) panels overlap.
 enum DoorStyle: String, CaseIterable {
-    case swing, double, pocket, bifold, sliding, overhead
+    case swing, double, pocket, bifold, sliding, doubleSliding, overhead
     // Doors wider than this are taken as garage (overhead) doors: nobody hangs
     // a swing door over 6 ft.
     static let overheadMetres = 1.83

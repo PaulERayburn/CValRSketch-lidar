@@ -1274,6 +1274,8 @@ function renderDetail(sh, W) {
         // Garage door: rolled up overhead, dashed just inside the opening.
         const o = Math.min(L * 0.12, 14);
         d = `M${P(0, o)} L${P(L, o)}`; dash = '6,4';
+      } else if (l.style === 'doubleSliding') {
+        d = `M${P(0, 2.5)} L${P(L * 0.3, 2.5)} M${P(L * 0.25, -2.5)} L${P(L * 0.75, -2.5)} M${P(L * 0.7, 2.5)} L${P(L, 2.5)}`;
       } else if (l.style === 'sliding') {
         d = `M${P(0, 2.5)} L${P(L * 0.55, 2.5)} M${P(L * 0.45, -2.5)} L${P(L, -2.5)}`;
       } else {
@@ -6093,7 +6095,7 @@ document.getElementById('import-pdf').addEventListener('change', async (e) => {
 // ===== LIDAR SCAN IMPORT =====
 // A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
 // lidar-import.mjs loads only when a scan is picked.
-const LIDAR_IMPORT_VERSION = '0.11.0';
+const LIDAR_IMPORT_VERSION = '0.11.1';
 async function importScan(file) {
   let d;
   try { d = JSON.parse(await file.text()); }

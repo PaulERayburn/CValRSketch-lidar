@@ -1272,6 +1272,14 @@ struct PlanView: View {
             p.move(to: at(0, off)); p.addLine(to: at(L * 0.55, off))
             p.move(to: at(L * 0.45, -off)); p.addLine(to: at(L, -off))
             return (p, false)
+        case .doubleSliding:
+            // Four panels: the two end panels slide in, past fixed middle panels.
+            let off: CGFloat = 3
+            p.move(to: at(0, off)); p.addLine(to: at(L * 0.3, off))
+            p.move(to: at(L * 0.25, -off)); p.addLine(to: at(L * 0.5, -off))
+            p.move(to: at(L * 0.5, -off)); p.addLine(to: at(L * 0.75, -off))
+            p.move(to: at(L * 0.7, off)); p.addLine(to: at(L, off))
+            return (p, false)
         case .overhead:
             // The door rolled up overhead, dashed just inside the opening.
             let off = min(L * 0.12, 14)
@@ -1778,7 +1786,8 @@ struct DoorSheet: View {
                     // Buttons rather than a segmented control: six names don't fit one row.
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
                         ForEach([(DoorStyle.swing, "Swing"), (.double, "Double"), (.pocket, "Pocket"),
-                                 (.bifold, "Bifold"), (.sliding, "Sliding"), (.overhead, "Garage")], id: \.0) { s, name in
+                                 (.bifold, "Bifold"), (.sliding, "Sliding"), (.doubleSliding, "Double slider"),
+                                 (.overhead, "Garage")], id: \.0) { s, name in
                             Button(name) { style = s }
                                 .buttonStyle(.bordered)
                                 .tint(style == s ? .accentColor : .gray)
