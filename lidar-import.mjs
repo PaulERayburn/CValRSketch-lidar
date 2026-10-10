@@ -135,16 +135,36 @@ export function readCvalrScan(d, opts = {}) {
       }
       checkSpans(d, story, plan, inside, outer, warnings);
       const [floor, type] = classifyStory(story, stories);
+      const detail = interiorDetail(d, story, plan, scanned, fit.sides);
+      // Garages and carports aren't living area: each named one comes off as
+      // its own area, with its outside walls; the wall it shares stays with the house.
+      let house = outer, houseCalc = calcWalls;
+      const garages = [];
+      for (const room of detail.rooms.filter(r => /garage|carport/i.test(r.name))) {
+        const cut = splitRoom(house, detail.lines, room);
+        if (!cut) { warnings.push(`${floorTitle(story)}: couldn't close off the ${room.name.toLowerCase()} from its walls; it stays in the floor. Split it by hand.`); continue; }
+        houseCalc = remapCalc(house, houseCalc, cut.rest);
+        house = cut.rest;
+        garages.push({ name: room.name, points: cut.room });
+        warnings.push(`${floorTitle(story)}: the ${room.name.toLowerCase()} (${Math.round(Math.abs(signedArea(cut.room)))} sf) comes in as its own area, not living area.`);
+      }
       floors.push({
         page: story + 1, building: null, kind: 'floor', floor, type,
         title: floorTitle(story) + (d.floors.filter(g => g.story === story).length > 1 ? ` (${floors.filter(g => g.page === story + 1).length + 1})` : ''),
-        points: outer, traced: Math.abs(signedArea(outer)),
+        points: house, traced: Math.abs(signedArea(house)),
         interior: Math.abs(signedArea(inside)), interiorPoints: tidy(inside),
         sides: thick.map(t => ({ inches: +t.inches.toFixed(1), measured: t.measured })),
-        scanTraced: Math.abs(signedArea(tidy(outline(scanned)))), walls: fit.walls, calcWalls,
-        detail: interiorDetail(d, story, plan, scanned, fit.sides),
+        scanTraced: Math.abs(signedArea(tidy(outline(scanned)))), walls: fit.walls, calcWalls: houseCalc,
+        detail,
         areas: {}, stated: null, excludedTraced: null, placement: 'reference', turned: 0,
       });
+      for (const g of garages) {
+        floors.push({
+          page: story + 1, building: null, kind: 'excluded', floor, type: /carport/i.test(g.name) ? 'carport' : 'garage',
+          title: g.name, points: g.points, traced: Math.abs(signedArea(g.points)),
+          areas: {}, stated: null, excludedTraced: null, placement: 'reference', turned: 0,
+        });
+      }
     }
   }
   if (!floors.length) return { ok: false, reason: 'no-floors', message: 'The scan has no floor outline to import.', warnings };
@@ -928,6 +948,120 @@ function addFills(poly, fills, plan) {
   const traced = traceCells(solid, W, H);
   if (!traced) return null;
   return { poly: traced.map(([i, j]) => ({ x: x0 + i * CELL_FT, y: y0 + j * CELL_FT })), sf: added * CELL_FT * CELL_FT };
+}
+
+// Splits one room off an outline (feet): the room is flooded from its label,
+// bounded by the interior walls, doors and windows of the detail plan and the
+// outline itself (walls on the outline don't bound it, so the room keeps its
+// outside walls). Returns { room, rest } as outlines, or null when the room
+// isn't closed in.
+function splitRoom(outer, lines, label) {
+  const pts = outer;
+  const x0 = Math.min(...pts.map(p => p.x)) - 1, y0 = Math.min(...pts.map(p => p.y)) - 1;
+  const W = Math.ceil((Math.max(...pts.map(p => p.x)) + 1 - x0) / CELL_FT), H = Math.ceil((Math.max(...pts.map(p => p.y)) + 1 - y0) / CELL_FT);
+  if (W * H > 4e6) return null;
+  const idx = (i, j) => j * W + i;
+  const inside = new Uint8Array(W * H);
+  for (let j = 0; j < H; j++) {
+    const y = y0 + (j + 0.5) * CELL_FT, xs = [];
+    for (let k = 0; k < pts.length; k++) {
+      const a = pts[k], b = pts[(k + 1) % pts.length];
+      if ((a.y <= y) !== (b.y <= y)) xs.push(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2)
+      for (let i = Math.max(0, Math.ceil((xs[k] - x0) / CELL_FT - 0.5)); i < W && x0 + (i + 0.5) * CELL_FT < xs[k + 1]; i++) inside[idx(i, j)] = 1;
+  }
+  const isIn = p => { const i = Math.floor((p.x - x0) / CELL_FT), j = Math.floor((p.y - y0) / CELL_FT); return i >= 0 && j >= 0 && i < W && j < H && inside[idx(i, j)]; };
+  const bar = new Uint8Array(W * H);
+  for (const l of lines) {
+    const L = Math.hypot(l.b.x - l.a.x, l.b.y - l.a.y);
+    if (L < 0.2) continue;
+    // 1 an inside wall, 2 an outside wall (outside within 1.5 ft of one side).
+    const nx = -(l.b.y - l.a.y) / L, ny = (l.b.x - l.a.x) / L, m = { x: (l.a.x + l.b.x) / 2, y: (l.a.y + l.b.y) / 2 };
+    const v = !isIn({ x: m.x + nx * 1.5, y: m.y + ny * 1.5 }) || !isIn({ x: m.x - nx * 1.5, y: m.y - ny * 1.5 }) ? 2 : 1;
+    const n = Math.ceil(L / (CELL_FT / 2)) + 1;
+    for (let k = 0; k <= n; k++) {
+      const ci = Math.floor((l.a.x + (l.b.x - l.a.x) * k / n - x0) / CELL_FT), cj = Math.floor((l.a.y + (l.b.y - l.a.y) * k / n - y0) / CELL_FT);
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const i = ci + di, j = cj + dj;
+        if (i >= 0 && j >= 0 && i < W && j < H && bar[idx(i, j)] !== 1) bar[idx(i, j)] = v;
+      }
+    }
+  }
+  const si = Math.floor((label.x - x0) / CELL_FT), sj = Math.floor((label.y - y0) / CELL_FT);
+  if (si < 0 || sj < 0 || si >= W || sj >= H || !inside[idx(si, sj)] || bar[idx(si, sj)]) return null;
+  const room = new Uint8Array(W * H), crossed = new Uint8Array(W * H), q = [idx(si, sj)];
+  room[q[0]] = 1;
+  let total = 0;
+  for (let k = 0; k < W * H; k++) total += inside[k];
+  for (let t = 0; t < q.length; t++) {
+    const k = q[t], i = k % W, j = (k - i) / W;
+    for (const [a, b] of [[i + 1, j], [i - 1, j], [i, j + 1], [i, j - 1]]) {
+      if (a < 0 || b < 0 || a >= W || b >= H) continue;
+      const m = idx(a, b);
+      if (!room[m] && inside[m] && !bar[m]) { room[m] = 1; q.push(m); }
+    }
+    if (q.length > total * 0.6) return null;   // leaked into the house
+  }
+  // The room's outside walls go with it: out across them to the outline, up
+  // to a wall's thickness and a little.
+  const reach = Math.round(1.4 / CELL_FT), dist = new Int32Array(W * H).fill(-1), q2 = [];
+  for (let k = 0; k < W * H; k++) if (room[k]) { dist[k] = 0; q2.push(k); }
+  for (let t = 0; t < q2.length; t++) {
+    const k = q2[t], i = k % W, j = (k - i) / W;
+    if (dist[k] >= reach) continue;
+    for (const [a, b] of [[i + 1, j], [i - 1, j], [i, j + 1], [i, j - 1]]) {
+      if (a < 0 || b < 0 || a >= W || b >= H) continue;
+      const m = idx(a, b);
+      if (dist[m] !== -1 || !inside[m] || bar[m] === 1) continue;
+      if (!room[k] && !bar[k] && !bar[m] && dist[k] > 0 && !crossed[k]) continue;
+      dist[m] = dist[k] + 1; crossed[m] = crossed[k] || bar[m] === 2 ? 1 : 0; q2.push(m);
+    }
+  }
+  for (let k = 0; k < W * H; k++) if (dist[k] > 0 && crossed[k]) room[k] = 1;
+  const rest = new Uint8Array(W * H);
+  for (let k = 0; k < W * H; k++) rest[k] = inside[k] && !room[k] ? 1 : 0;
+  const tr = m => { const c = traceCells(m, W, H); return c ? squareUp(c.map(([i, j]) => ({ x: x0 + i * CELL_FT, y: y0 + j * CELL_FT }))) : null; };
+  const r = tr(room), h = tr(rest);
+  return r && h ? { room: r, rest: h } : null;
+}
+
+// A traced outline squared: grid steps and jogs under 8 inches go, leaving
+// straight sides square to the house.
+function squareUp(pts, tol = 0.7) {
+  // Runs of tiny steps become one side each way.
+  let sides = squareSides(pts).filter(s => s.kind !== 'free' || s.len >= tol);
+  for (let changed = true; changed && sides.length > 4;) {
+    changed = false;
+    for (let i = 0; i < sides.length && sides.length > 4; i++) {
+      const p = sides[(i + sides.length - 1) % sides.length], s = sides[i], n = sides[(i + 1) % sides.length];
+      if (s.len < tol && p.kind !== 'free' && p.kind === n.kind) {
+        p.c = (p.c * p.len + n.c * n.len) / (p.len + n.len); p.len += n.len + s.len; p.b = n.b;
+        sides.splice(i, 1);
+        sides.splice(sides.indexOf(n), 1);
+        changed = true;
+      } else if (s.kind !== 'free' && s.kind === n.kind) {
+        s.c = (s.c * s.len + n.c * n.len) / (s.len + n.len); s.len += n.len; s.b = n.b;
+        sides.splice((i + 1) % sides.length, 1);
+        changed = true;
+      }
+    }
+  }
+  return tidy(outline(sides));
+}
+
+// Calculated-wall flags follow their edges onto a changed outline: a new edge
+// lying along an old calculated one is calculated.
+function remapCalc(oldPts, calc, newPts) {
+  const out = [];
+  newPts.forEach((a, i) => {
+    const b = newPts[(i + 1) % newPts.length], m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    if (calc.some(k => { const p = oldPts[k], q = oldPts[(k + 1) % oldPts.length];
+      const dx = q.x - p.x, dy = q.y - p.y, L2 = dx * dx + dy * dy || 1, t = ((m.x - p.x) * dx + (m.y - p.y) * dy) / L2;
+      return t > 0 && t < 1 && Math.hypot(p.x + dx * t - m.x, p.y + dy * t - m.y) < 0.15; })) out.push(i);
+  });
+  return out;
 }
 
 // Floor closed in by walls the user drew or moved: on a grid, open ground is

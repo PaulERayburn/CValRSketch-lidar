@@ -6095,7 +6095,7 @@ document.getElementById('import-pdf').addEventListener('change', async (e) => {
 // ===== LIDAR SCAN IMPORT =====
 // A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
 // lidar-import.mjs loads only when a scan is picked.
-const LIDAR_IMPORT_VERSION = '0.12.0';
+const LIDAR_IMPORT_VERSION = '0.13.0';
 async function importScan(file) {
   let d;
   try { d = JSON.parse(await file.text()); }
@@ -6170,7 +6170,7 @@ function openPdfImportModal(res, fname) {
     return `<tr>
       <td><input type="checkbox" id="pdfimp-on-${i}" checked></td>
       ${multi ? `<td>${escapeHtml(f.building || '—')}</td>` : ''}
-      <td>${escapeHtml(f.title)}<div class="help" style="margin:0;">${scan ? `inside the walls ${Math.round(f.interior)} sf` : `page ${f.page}`}${kind ? ' · ' + kind : ''}${place ? ' · ' + place : ''}</div></td>
+      <td>${escapeHtml(f.title)}<div class="help" style="margin:0;">${scan ? (f.interior ? `inside the walls ${Math.round(f.interior)} sf` : '') : `page ${f.page}`}${kind ? (scan && !f.interior ? '' : ' · ') + kind : ''}${place ? ' · ' + place : ''}</div></td>
       <td><select id="pdfimp-floor-${i}">${floorOpts(f.floor)}</select></td>
       <td><select id="pdfimp-type-${i}">${typeOpts(f.type)}</select></td>
       <td style="text-align:right;">${Math.round(f.traced)} sf</td>
