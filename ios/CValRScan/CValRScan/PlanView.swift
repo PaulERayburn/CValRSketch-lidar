@@ -23,6 +23,7 @@ struct PlanView: View {
     @State private var editMode = false
     @State private var endDrag: (from: CGPoint, to: CGPoint)?
     @State private var dragMoves: [(from: CGPoint, to: CGPoint)] = []
+    @State private var soloWall: UUID?   // dragging the end of the one selected wall only
     @State private var dragEnded = Date.distantPast
     @State private var shownPhoto: ScanPhoto?
     @State private var doorCheck: UnscannedDoor?
@@ -575,6 +576,16 @@ struct PlanView: View {
         DragGesture(minimumDistance: 4)
             .onChanged { v in
                 if endDrag == nil && panBase == nil {
+                    // One wall selected and the drag starts on one of its ends:
+                    // that end moves alone.
+                    if selectedWalls.count == 1, let w = geo.wall(selectedWalls.first!),
+                       let e = [w.a, w.b].first(where: { hypot(view.map($0).x - v.startLocation.x, view.map($0).y - v.startLocation.y) < 22 }) {
+                        soloWall = w.id
+                        endDrag = (e, e)
+                        UISelectionFeedbackGenerator().selectionChanged()
+                    }
+                }
+                if endDrag == nil && panBase == nil {
                     let ends = geo.walls.filter { $0.story == story }.flatMap { [$0.a, $0.b] }
                     if let e = ends.min(by: { hypot(view.map($0).x - v.startLocation.x, view.map($0).y - v.startLocation.y)
                             < hypot(view.map($1).x - v.startLocation.x, view.map($1).y - v.startLocation.y) }),
@@ -585,7 +596,12 @@ struct PlanView: View {
                         panBase = pan
                     }
                 }
-                if let d = endDrag {
+                if let d = endDrag, soloWall != nil {
+                    // Free, snapping to corners and square to the wall's other end.
+                    let to = snap(view.unmap(v.location), from: d.from, geo: geo, story: story, view: view)
+                    endDrag = (d.from, to)
+                    dragMoves = [(d.from, to)]
+                } else if let d = endDrag {
                     let to = squareDrag(view.unmap(v.location), from: d.from, geo: geo, story: story, view: view)
                     endDrag = (d.from, to)
                     dragMoves = squareMoves(from: d.from, to: to, geo: geo, story: story)
@@ -596,8 +612,13 @@ struct PlanView: View {
             }
             .onEnded { _ in
                 if let d = endDrag, hypot(d.to.x - d.from.x, d.to.y - d.from.y) > 0.02 {
-                    scan.moveWallEnds(dragMoves.map { (geo.world($0.from), geo.world($0.to)) })
+                    if let id = soloWall {
+                        scan.moveOneEnd(id, from: geo.world(d.from), to: geo.world(d.to))
+                    } else {
+                        scan.moveWallEnds(dragMoves.map { (geo.world($0.from), geo.world($0.to)) })
+                    }
                 }
+                soloWall = nil
                 if endDrag != nil { dragEnded = Date() }
                 endDrag = nil
                 dragMoves = []
@@ -908,6 +929,7 @@ struct PlanView: View {
         let reference = selectedGap.flatMap { geo.referenceWall(for: $0)?.wall.id }
         let cornerMode = self.cornerMode, spanStart = self.spanStart, draft = self.spanDraft
         let editMode = self.editMode, endDrag = self.endDrag, picked = self.selectedWalls, moves = self.dragMoves
+        let soloWall = self.soloWall
         let wallStart = self.wallStart
         let unscannedDoors = scan.unscannedDoors, unscannedAreas = scan.unscannedAreas, areaFills = scan.areaFills
         // Stairs being resized: the stair as dragged, and every drawn stair's dots on this floor.
@@ -1060,7 +1082,7 @@ struct PlanView: View {
                 }
                 if let d = endDrag {
                     func moved(_ e: CGPoint) -> CGPoint? { moves.first { hypot($0.from.x - e.x, $0.from.y - e.y) < 0.1 }?.to }
-                    for w in walls {
+                    for w in walls where soloWall == nil || w.id == soloWall {
                         let a = moved(w.a), b = moved(w.b)
                         guard a != nil || b != nil else { continue }
                         var p = Path()
@@ -1625,7 +1647,7 @@ enum EditTool: String, CaseIterable {
     case walls = "Walls", rooms = "Rooms", doors = "Doors"
     var hint: String {
         switch self {
-        case .walls: return "Tap a wall to set its Length or Delete it; tap several to Align them. Drag a wall's end (square) along the wall to lengthen it, or across to slide it."
+        case .walls: return "Drag a corner (square) to move it with every wall joined there. To move one wall's end alone, tap the wall first, then drag its end. Tap several walls to Align them."
         case .rooms: return "Tap a room to name it. Tap stairs to change them; drag a stair's dots to move it, stretch a flight, or widen it."
         case .doors: return "Tap a wall to add a door or opening; tap any door or opening to change its type or width, or remove it."
         }

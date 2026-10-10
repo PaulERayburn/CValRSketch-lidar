@@ -360,6 +360,22 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         commit { $0.walls = e; $0.added = drawn + links }
     }
 
+    // Moves one end of one wall only, leaving walls joined there where they are.
+    func moveOneEnd(_ id: UUID, from: SIMD2<Double>, to: SIMD2<Double>) {
+        if let i = addedWalls.firstIndex(where: { $0.id == id }) {
+            var w = addedWalls[i]
+            if simd_distance(w.a, from) <= simd_distance(w.b, from) { w.a = to } else { w.b = to }
+            commit { $0.added[i] = w }
+            return
+        }
+        guard let structure, let wall = structure.walls.first(where: { $0.identifier == id }),
+              let s = edited(PlanExport.segment(wall)) else { return }
+        let a = SIMD2(s.a[0], s.a[1]), b = SIMD2(s.b[0], s.b[1])
+        var e = wallEdits
+        if simd_distance(a, from) <= simd_distance(b, from) { e[id, default: WallEdit()].a = to } else { e[id, default: WallEdit()].b = to }
+        commitEdits(e)
+    }
+
     // A wall drawn where the scan saw none (world x, z).
     func addWall(story: Int, a: SIMD2<Double>, b: SIMD2<Double>) {
         commit { $0.added.append(AddedWall(story: story, a: a, b: b)) }
