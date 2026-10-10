@@ -82,6 +82,16 @@ export function readCvalrScan(d, opts = {}) {
           if (cut.grownSf >= MIN_CUT_SF) warnings.push(`${floorTitle(story)}: ${Math.round(cut.grownSf)} sf inside the outside walk that the scan didn't reach (a closet, chase or alcove behind a wall it missed) was added, out to the walk. Check it.`);
         }
       }
+      // Walls the user drew or moved can close in floor the scan never reached
+      // (a closet behind a shut door). Unless turned off for the scan.
+      if (d.wallsShapeFloor !== false) {
+        const grown = growToWalls(poly, d, story, plan);
+        if (grown) {
+          poly = grown.poly;
+          gaps = gaps.filter(g => onOutline(poly, { x: (g.a.x + g.b.x) / 2, y: (g.a.y + g.b.y) / 2 }, 0.4));
+          warnings.push(`${floorTitle(story)}: ${Math.round(grown.sf)} sf the scan didn't reach, closed in by walls drawn or moved in CValRScan, was added. Check it.`);
+        }
+      }
       let sides = squareSides(poly);
       const filled = fillHidden(sides, gaps, hidden.filter(h => h.story === story));
       const open = gaps.length - filled;
@@ -827,6 +837,83 @@ function walkThickness(lines, sides) {
   if (!gaps.length) return null;
   gaps.sort((a, b) => a - b);
   return gaps[Math.floor(gaps.length / 2)] / 12;
+}
+
+// Floor closed in by walls the user drew or moved: on a grid, open ground is
+// flooded in from the edge, stopped by the floor and every wall, door and
+// window. Ground the flood can't reach that touches a drawn or moved wall is
+// a pocket the scan missed; it joins the floor, up to the walls around it.
+function growToWalls(poly, d, story, plan) {
+  const mineIds = new Set([...(d.addedWalls || []).map(w => w.id), ...(d.wallEdits || []).filter(e => !e.hidden).map(e => e.wall)]);
+  const all = ['walls', 'doors', 'windows', 'openings'].flatMap(k => (d[k] || []).filter(w => w.story === story));
+  const mine = all.filter(w => mineIds.has(w.id));
+  if (!mine.length) return null;
+  const segs = all.map(w => ({ a: plan(w.a), b: plan(w.b), mine: mineIds.has(w.id) }));
+  const pts = [...poly, ...segs.flatMap(s => [s.a, s.b])];
+  const x0 = Math.min(...pts.map(p => p.x)) - 2, y0 = Math.min(...pts.map(p => p.y)) - 2;
+  const W = Math.ceil((Math.max(...pts.map(p => p.x)) + 2 - x0) / CELL_FT), H = Math.ceil((Math.max(...pts.map(p => p.y)) + 2 - y0) / CELL_FT);
+  if (W * H > 4e6) return null;
+  const idx = (i, j) => j * W + i;
+  const floor = new Uint8Array(W * H);
+  for (let j = 0; j < H; j++) {
+    const y = y0 + (j + 0.5) * CELL_FT, xs = [];
+    for (let k = 0; k < poly.length; k++) {
+      const a = poly[k], b = poly[(k + 1) % poly.length];
+      if ((a.y <= y) !== (b.y <= y)) xs.push(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2)
+      for (let i = Math.max(0, Math.ceil((xs[k] - x0) / CELL_FT - 0.5)); i < W && x0 + (i + 0.5) * CELL_FT < xs[k + 1]; i++) floor[idx(i, j)] = 1;
+  }
+  // 1 a wall, 2 a drawn or moved wall.
+  const bar = new Uint8Array(W * H);
+  for (const s of segs) {
+    const n = Math.ceil(Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) / (CELL_FT / 2)) + 1;
+    for (let k = 0; k <= n; k++) {
+      const ci = Math.floor((s.a.x + (s.b.x - s.a.x) * k / n - x0) / CELL_FT), cj = Math.floor((s.a.y + (s.b.y - s.a.y) * k / n - y0) / CELL_FT);
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const i = ci + di, j = cj + dj;
+        if (i >= 0 && j >= 0 && i < W && j < H) bar[idx(i, j)] = Math.max(bar[idx(i, j)], s.mine ? 2 : 1);
+      }
+    }
+  }
+  const open = k => !floor[k] && !bar[k];
+  const step = (k, f) => { const i = k % W, j = (k - i) / W; if (i > 0) f(i - 1, j); if (i < W - 1) f(i + 1, j); if (j > 0) f(i, j - 1); if (j < H - 1) f(i, j + 1); };
+  const out = new Uint8Array(W * H), q = [];
+  const push = (i, j) => { const k = idx(i, j); if (!out[k] && open(k)) { out[k] = 1; q.push(k); } };
+  for (let i = 0; i < W; i++) { push(i, 0); push(i, H - 1); }
+  for (let j = 0; j < H; j++) { push(0, j); push(W - 1, j); }
+  for (let t = 0; t < q.length; t++) step(q[t], push);
+  let floorCells = 0;
+  for (let k = 0; k < W * H; k++) floorCells += floor[k];
+  const keep = floor.slice(), seen = new Uint8Array(W * H);
+  let added = 0;
+  for (let k0 = 0; k0 < W * H; k0++) {
+    if (seen[k0] || !open(k0) || out[k0]) continue;
+    const piece = [k0];
+    seen[k0] = 1;
+    let byMine = false, byFloor = false;
+    for (let t = 0; t < piece.length; t++) step(piece[t], (i, j) => {
+      const k = idx(i, j);
+      if (bar[k] === 2) byMine = true;
+      if (floor[k] || bar[k]) byFloor = byFloor || bar[k] === 1 || floor[k] === 1;
+      if (!seen[k] && open(k) && !out[k]) { seen[k] = 1; piece.push(k); }
+    });
+    if (!byMine || !byFloor || piece.length * CELL_FT * CELL_FT < MIN_CUT_SF || piece.length > floorCells * 0.3) continue;
+    // The piece, and the wall cells between it and the floor.
+    const mark = new Uint8Array(W * H);
+    piece.forEach(k => { mark[k] = 1; });
+    for (let r = 0; r < 3; r++) {
+      const grow = [];
+      for (let k = 0; k < W * H; k++) if (mark[k]) step(k, (i, j) => { const m = idx(i, j); if (!mark[m] && bar[m] && !out[m]) grow.push(m); });
+      grow.forEach(m => { mark[m] = 1; });
+    }
+    for (let k = 0; k < W * H; k++) if (mark[k] && !keep[k]) { keep[k] = 1; added++; }
+  }
+  if (!added) return null;
+  const traced = traceCells(keep, W, H);
+  if (!traced) return null;
+  return { poly: traced.map(([i, j]) => ({ x: x0 + i * CELL_FT, y: y0 + j * CELL_FT })), sf: added * CELL_FT * CELL_FT };
 }
 
 function onOutline(poly, p, tol) {

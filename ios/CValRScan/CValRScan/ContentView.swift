@@ -113,6 +113,15 @@ struct ContentView: View {
                                   : "Measure walls (\(scan.measurements.count + scan.spans.count) entered)",
                                   systemImage: "ruler")
                         }
+                        if scan.hasEdits {
+                            Toggle(isOn: Binding(get: { scan.wallsShapeFloor }, set: { scan.setWallsShapeFloor($0) })) {
+                                VStack(alignment: .leading) {
+                                    Text("Drawn walls extend the floor")
+                                    Text("Floor the scan missed, closed in by walls you drew or moved, counts in the area.")
+                                        .font(.footnote).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                         if !scan.hasReadings {
                             Text("No laser reading yet. Enter at least one so the plan can be checked.")
                                 .font(.footnote)

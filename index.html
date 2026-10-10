@@ -6073,7 +6073,7 @@ document.getElementById('import-pdf').addEventListener('change', async (e) => {
 // ===== LIDAR SCAN IMPORT =====
 // A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
 // lidar-import.mjs loads only when a scan is picked.
-const LIDAR_IMPORT_VERSION = '0.7.3';
+const LIDAR_IMPORT_VERSION = '0.8.0';
 async function importScan(file) {
   let d;
   try { d = JSON.parse(await file.text()); }

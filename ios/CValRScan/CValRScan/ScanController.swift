@@ -35,6 +35,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     var canUndoEdit: Bool { !editHistory.isEmpty }
     var hasEdits: Bool { !wallEdits.isEmpty || !roomLabels.isEmpty || !addedOpenings.isEmpty || !hiddenOpenings.isEmpty || !addedWalls.isEmpty }
     @Published private(set) var addedWalls: [AddedWall] = []
+    // Walls drawn or moved in Edit extend the floor outline the import uses.
+    @Published private(set) var wallsShapeFloor = true
+    func setWallsShapeFloor(_ on: Bool) { wallsShapeFloor = on; writeFiles() }
     private struct EditSnapshot {
         var walls: [UUID: WallEdit]; var rooms: [RoomLabel]; var openings: [AddedOpening]; var hidden: Set<UUID>
         var added: [AddedWall] = []
@@ -688,7 +691,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                 roomLabels: roomLabels, addedOpenings: addedOpenings,
                                 rooms: resolvedRooms(structure), hiddenOpenings: hiddenOpenings,
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd,
-                                name: scanName, photos: photos, photoFolder: photoFolder, addedWalls: addedWalls)
+                                name: scanName, photos: photos, photoFolder: photoFolder, addedWalls: addedWalls,
+                                wallsShapeFloor: wallsShapeFloor)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
             exportURLs = [planURL, rawURL] + (FileManager.default.fileExists(atPath: modelURL.path) ? [modelURL] : [])
@@ -791,6 +795,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         scanName = ""
         photos = []
         addedWalls = []
+        wallsShapeFloor = true
         photoFolder = ""
         photoZip = nil
         message = nil
@@ -839,6 +844,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                     style: DoorStyle(rawValue: o.style ?? "") ?? .swing)
             }
             hiddenOpenings = Set((saved?.hiddenOpenings ?? []).compactMap(UUID.init(uuidString:)))
+            wallsShapeFloor = saved?.wallsShapeFloor ?? true
             addedWalls = (saved?.addedWalls ?? []).compactMap { w in
                 guard w.a.count == 2, w.b.count == 2 else { return nil }
                 return AddedWall(id: UUID(uuidString: w.id) ?? UUID(), story: w.story, a: SIMD2(w.a[0], w.a[1]), b: SIMD2(w.b[0], w.b[1]))
@@ -940,6 +946,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         let photoFolder: String?
         let photos: [PlanExport.PhotoOut]?
         let addedWalls: [PlanExport.AddedWallOut]?
+        let wallsShapeFloor: Bool?
         let corners: [Point]?
         let wallPoints: [WallPointIn]?
         let gapDepths: [GapDepthIn]?

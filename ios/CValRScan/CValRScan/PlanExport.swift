@@ -20,6 +20,7 @@ enum PlanExport {
         var photoFolder: String?
         var photos: [PhotoOut]?
         var addedWalls: [AddedWallOut]?
+        var wallsShapeFloor: Bool?      // false: drawn or moved walls don't change the floor outline
         let createdAt: String
         let walls: [Segment]
         let doors: [Segment]
@@ -169,7 +170,8 @@ enum PlanExport {
                      hiddenOpenings: Set<UUID>,
                      exterior: [[SIMD3<Float>]],
                      anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?, name: String = "",
-                     photos: [ScanPhoto] = [], photoFolder: String = "", addedWalls: [AddedWall] = []) throws -> Data {
+                     photos: [ScanPhoto] = [], photoFolder: String = "", addedWalls: [AddedWall] = [],
+                     wallsShapeFloor: Bool = true) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
         // Drawn walls go in with the scanned ones, at the height of that floor's walls.
         let drawn = addedWalls.map { w -> Segment in
@@ -247,6 +249,7 @@ enum PlanExport {
                                anchorStart: anchorStart.map(corner), anchorEnd: anchorEnd.map(corner)))
         if !name.isEmpty { plan.name = name }
         if !photos.isEmpty { plan.photos = photos.map(photoOut); plan.photoFolder = photoFolder }
+        if !wallsShapeFloor { plan.wallsShapeFloor = false }
         if !addedWalls.isEmpty {
             plan.addedWalls = addedWalls.map { AddedWallOut(id: $0.id.uuidString, story: $0.story, a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y]) }
         }
