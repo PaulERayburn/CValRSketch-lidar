@@ -693,7 +693,7 @@ struct PlanView: View {
                 let run = geo.run(from: w, sign: m.sideSign, outside: m.face == .outside)
                 labelled.formUnion(run.walls.map(\.id))
                 drawDimension(ctx, view: view, a: run.start, b: run.end, side: w.sideVector(m.sideSign),
-                              text: "\(Feet.text(m.inches)) ✓", colour: .green, force: true, placed: &placed)
+                              text: "\(Feet.text(m.inches))\(m.face == .outside ? " out" : "") ✓", colour: .green, force: true, placed: &placed)
             }
             let order = walls.filter { !labelled.contains($0.id) }.sorted {
                 ($0.id == selectedID ? 1_000_000 : 0) + $0.scanInches > ($1.id == selectedID ? 1_000_000 : 0) + $1.scanInches
