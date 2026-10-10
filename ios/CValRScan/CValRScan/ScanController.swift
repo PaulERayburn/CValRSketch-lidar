@@ -33,7 +33,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     @Published private(set) var hiddenOpenings: Set<UUID> = []      // the scan's doors and openings removed or replaced
     private var editHistory: [EditSnapshot] = []
     var canUndoEdit: Bool { !editHistory.isEmpty }
-    var hasEdits: Bool { !wallEdits.isEmpty || !roomLabels.isEmpty || !addedOpenings.isEmpty || !hiddenOpenings.isEmpty || !addedWalls.isEmpty || !stairEdits.isEmpty }
+    var hasEdits: Bool { !wallEdits.isEmpty || !roomLabels.isEmpty || !addedOpenings.isEmpty || !hiddenOpenings.isEmpty || !addedWalls.isEmpty || !stairEdits.isEmpty || !addedStairs.isEmpty }
     @Published private(set) var addedWalls: [AddedWall] = []
     // Walls drawn or moved in Edit extend the floor outline the import uses.
     @Published private(set) var wallsShapeFloor = true
@@ -42,7 +42,14 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         var walls: [UUID: WallEdit]; var rooms: [RoomLabel]; var openings: [AddedOpening]; var hidden: Set<UUID>
         var added: [AddedWall] = []
         var stairs: [UUID: StairEdit] = [:]
+        var addedStairs: [AddedStair] = []
     }
+    @Published private(set) var addedStairs: [AddedStair] = []
+
+    func addStairs(_ st: AddedStair) { commit { $0.addedStairs.append(st) } }
+    func flipAddedStairs(_ id: UUID) { commit { if let i = $0.addedStairs.firstIndex(where: { $0.id == id }) { $0.addedStairs[i].a = $0.addedStairs[i].b; $0.addedStairs[i].b = self.addedStairs[i].a } } }
+    func setAddedStairsWidth(_ id: UUID, inches: Int) { commit { if let i = $0.addedStairs.firstIndex(where: { $0.id == id }) { $0.addedStairs[i].width = Double(inches) * 0.0254 } } }
+    func removeAddedStairs(_ id: UUID) { commit { $0.addedStairs.removeAll { $0.id == id } } }
     @Published private(set) var stairEdits: [UUID: StairEdit] = [:]
 
     func flipStairs(_ id: UUID) { commit { $0.stairs[id, default: StairEdit()].flip.toggle() } }
@@ -197,7 +204,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     }
 
     private func commit(_ change: (inout EditSnapshot) -> Void) {
-        var s = EditSnapshot(walls: wallEdits, rooms: roomLabels, openings: addedOpenings, hidden: hiddenOpenings, added: addedWalls, stairs: stairEdits)
+        var s = EditSnapshot(walls: wallEdits, rooms: roomLabels, openings: addedOpenings, hidden: hiddenOpenings, added: addedWalls, stairs: stairEdits, addedStairs: addedStairs)
         editHistory.append(s)
         change(&s)
         wallEdits = s.walls
@@ -206,6 +213,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         hiddenOpenings = s.hidden
         addedWalls = s.added
         stairEdits = s.stairs
+        addedStairs = s.addedStairs
         writeFiles()
     }
 
@@ -306,6 +314,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         hiddenOpenings = last.hidden
         addedWalls = last.added
         stairEdits = last.stairs
+        addedStairs = last.addedStairs
         writeFiles()
     }
 
@@ -701,7 +710,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                 rooms: resolvedRooms(structure), hiddenOpenings: hiddenOpenings,
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd,
                                 name: scanName, photos: photos, photoFolder: photoFolder, addedWalls: addedWalls,
-                                wallsShapeFloor: wallsShapeFloor, stairEdits: stairEdits)
+                                wallsShapeFloor: wallsShapeFloor, stairEdits: stairEdits,
+                                addedStairs: addedStairs)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
             exportURLs = [planURL, rawURL] + (FileManager.default.fileExists(atPath: modelURL.path) ? [modelURL] : [])
@@ -806,6 +816,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         addedWalls = []
         wallsShapeFloor = true
         stairEdits = [:]
+        addedStairs = []
         photoFolder = ""
         photoZip = nil
         message = nil
@@ -855,6 +866,10 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             }
             hiddenOpenings = Set((saved?.hiddenOpenings ?? []).compactMap(UUID.init(uuidString:)))
             wallsShapeFloor = saved?.wallsShapeFloor ?? true
+            addedStairs = (saved?.addedStairs ?? []).compactMap { s in
+                guard s.a.count == 2, s.b.count == 2 else { return nil }
+                return AddedStair(id: UUID(uuidString: s.id) ?? UUID(), story: s.story, a: SIMD2(s.a[0], s.a[1]), b: SIMD2(s.b[0], s.b[1]), width: s.width)
+            }
             stairEdits = Dictionary(uniqueKeysWithValues: (saved?.stairEdits ?? []).compactMap { e in
                 UUID(uuidString: e.id).map { ($0, StairEdit(flip: e.flip, hidden: e.hidden, turn: e.turn ?? false, run: e.run)) }
             })
@@ -962,6 +977,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         let wallsShapeFloor: Bool?
         struct StairEditIn: Decodable { let id: String; let flip: Bool; let hidden: Bool; let turn: Bool?; let run: Double? }
         let stairEdits: [StairEditIn]?
+        let addedStairs: [PlanExport.AddedStairOut]?
         let corners: [Point]?
         let wallPoints: [WallPointIn]?
         let gapDepths: [GapDepthIn]?

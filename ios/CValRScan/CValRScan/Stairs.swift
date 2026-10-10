@@ -14,7 +14,25 @@ struct StairEdit: Equatable {
     var run: Double?             // metres, when set by the user; kept centred
 }
 
+// A flight the user drew: bottom to top (world x, z), on the floor it rises from.
+struct AddedStair: Equatable {
+    var id = UUID()
+    var story: Int
+    var a: SIMD2<Double>          // bottom
+    var b: SIMD2<Double>          // top
+    var width = 0.914             // 36 in
+
+    var corners: [SIMD2<Double>] {
+        let d = b - a, len = max(simd_length(d), 0.001)
+        let n = SIMD2(-d.y, d.x) / len * width / 2
+        return [a - n, a + n, b + n, b - n]
+    }
+    var up: SIMD2<Double> { simd_normalize(b - a) }
+}
+
 extension PlanExport {
+    struct AddedStairOut: Codable { let id: String; let story: Int; let a: [Double]; let b: [Double]; let width: Double }
+
     struct StairOut: Encodable {
         let id: String
         let story: Int
@@ -40,10 +58,12 @@ extension PlanExport {
         return (corners, up)
     }
 
-    static func stairs(_ s: CapturedStructure, edits: [UUID: StairEdit]) -> [StairOut] {
-        s.objects.filter { $0.category == .stairs && edits[$0.identifier]?.hidden != true }.map { o in
+    static func stairs(_ s: CapturedStructure, edits: [UUID: StairEdit], added: [AddedStair] = []) -> [StairOut] {
+        func r(_ v: Double) -> Double { (v * 1000).rounded() / 1000 }
+        return added.map { st in
+            StairOut(id: st.id.uuidString, story: st.story, corners: st.corners.map { [r($0.x), r($0.y)] }, up: [r(st.up.x), r(st.up.y)])
+        } + s.objects.filter { $0.category == .stairs && edits[$0.identifier]?.hidden != true }.map { o in
             let f = flight(o, edit: edits[o.identifier])
-            func r(_ v: Double) -> Double { (v * 1000).rounded() / 1000 }
             return StairOut(id: o.identifier.uuidString, story: o.story, corners: f.corners.map { [r($0.x), r($0.y)] },
                             up: [r(f.up.x), r(f.up.y)])
         }

@@ -402,6 +402,13 @@ extension ScanController {
         }
         addHiddenWalls(to: &g, structure: structure)
         let stories = Set(structure.floors.map(\.story))
+        for st in addedStairs {
+            let corners = st.corners.map { g.plan($0) }
+            let c = g.plan(SIMD2(0, 0)), u = g.plan(st.up)
+            let up = CGVector(dx: u.x - c.x, dy: u.y - c.y)
+            g.stairs.append((st.id, st.story, corners, up, "UP"))
+            if stories.contains(st.story + 1) { g.stairs.append((st.id, st.story + 1, corners, CGVector(dx: -up.dx, dy: -up.dy), "DN")) }
+        }
         for o in structure.objects where o.category == .stairs && stairEdits[o.identifier]?.hidden != true {
             let f = PlanExport.flight(o, edit: stairEdits[o.identifier])
             let corners = f.corners.map { g.plan($0) }
