@@ -283,7 +283,7 @@ struct PlanView: View {
         }
         .sheet(item: $lengthWall) { w in
             let geo = scan.planGeometry
-            WallLengthSheet(wall: w, keepA: $lengthKeepA) { inches, keepA in
+            WallLengthSheet(wall: w, keepA: $lengthKeepA, outsideExtra: outsideExtra(w, geo: geo)) { inches, keepA in
                 let fixed = keepA ? w.a : w.b, moving = keepA ? w.b : w.a
                 let d = keepA ? w.direction : CGVector(dx: -w.direction.dx, dy: -w.direction.dy)
                 let ft = CGFloat(inches) / 12
@@ -452,6 +452,21 @@ struct PlanView: View {
                 dragMoves = []
                 panBase = nil
             }
+    }
+
+    // How much longer a wall measures on its outside face than along its line
+    // here: a wall's thickness for each corner it turns outward at, less one
+    // for each it turns inward at.
+    private func outsideExtra(_ w: PlanWall, geo: PlanGeometry) -> Int {
+        func closer(_ e: CGPoint) -> PlanWall? {
+            geo.walls.filter { $0.story == w.story && $0.id != w.id
+                && (hypot($0.a.x - e.x, $0.a.y - e.y) < 0.1 || hypot($0.b.x - e.x, $0.b.y - e.y) < 0.1)
+                && abs($0.direction.dx * w.direction.dx + $0.direction.dy * w.direction.dy) < 0.5 }
+                .max { $0.length < $1.length }
+        }
+        let run = WallRun(walls: [w], start: w.a, end: w.b, startWall: closer(w.a), endWall: closer(w.b),
+                          sign: -w.labelSign, outside: true)
+        return geo.estimateInches(run) - Int((w.length * 12).rounded())
     }
 
     // Add wall: the first tap starts it, the second ends it. Each end snaps to
@@ -966,8 +981,11 @@ struct MeasureSheet: View {
             return [Place(sign: wall.labelSign, outside: false, title: "Inside, \(here)", room: here),
                     Place(sign: -wall.labelSign, outside: true, title: "Outside", room: "outside")]
         }
+        // Floor on both sides as scanned (a deck or porch the scan took for a
+        // room), but it may still be an outside wall.
         return [Place(sign: wall.labelSign, outside: false, title: "In \(here)", room: here),
-                Place(sign: -wall.labelSign, outside: false, title: "In \(there)", room: there)]
+                Place(sign: -wall.labelSign, outside: false, title: "In \(there)", room: there),
+                Place(sign: -wall.labelSign, outside: true, title: "Outside", room: "outside")]
     }
 
     var body: some View {
@@ -1064,7 +1082,11 @@ struct MeasureSheet: View {
             .onAppear {
                 if let existing {
                     text = existing.entered.isEmpty ? "\(existing.inches / 12) \(existing.inches % 12)" : existing.entered
-                    choice = places.firstIndex { $0.sign == existing.sideSign && $0.outside == (existing.face == .outside) } ?? 0
+                    // Outside first: which side a wall's label sits on can change after
+                    // edits, but whether the reading was outside can't.
+                    let out = existing.face == .outside
+                    choice = places.firstIndex { $0.sign == existing.sideSign && $0.outside == out }
+                        ?? places.firstIndex { $0.outside == out } ?? 0
                     move = existing.move
                     onlyThis = existing.walls == [wall.id] && geo.run(from: wall, sign: existing.sideSign, outside: existing.face == .outside).walls.count > 1
                 }
@@ -1628,9 +1650,11 @@ enum RoomNames {
 struct WallLengthSheet: View {
     let wall: PlanWall
     @Binding var keepA: Bool
+    let outsideExtra: Int        // outside face minus the wall line, inches
     let onSave: (Int, Bool) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
+    @State private var outside = false
     @FocusState private var typing: Bool
 
     // Ends named as they sit on screen.
@@ -1641,22 +1665,30 @@ struct WallLengthSheet: View {
     }
 
     var body: some View {
-        let parsed = LengthParser.inches(from: text)
+        let typed = LengthParser.inches(from: text)
+        let parsed = typed.map { outside ? $0 - outsideExtra : $0 }
         NavigationStack {
             Form {
                 Section {
-                    LabeledContent("Now", value: Feet.text(Int((wall.length * 12).rounded())))
+                    Picker("Measured", selection: $outside) {
+                        Text("Inside face").tag(false)
+                        Text("Outside face").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    LabeledContent("Now", value: Feet.text(Int((wall.length * 12).rounded()) + (outside ? outsideExtra : 0)))
                     HStack {
                         TextField("e.g. 6 5  or  77 in", text: $text)
                             .keyboardType(.numbersAndPunctuation)
                             .autocorrectionDisabled()
                             .focused($typing)
-                        if let parsed { Text("= \(Feet.text(parsed))").bold() }
+                        if let typed { Text("= \(Feet.text(typed))").bold() }
                     }
                 } header: {
-                    Text("Wall length, end to end on the plan")
+                    Text("Wall length")
                 } footer: {
-                    Text("This sets the wall line's length, not a laser reading. For a reading taken face to face, tap the wall with Edit off.")
+                    Text(outside
+                         ? "Outside face, corner to corner. The plan's line runs on the inside face, so the wall's thickness at each corner is allowed for (\(outsideExtra >= 0 ? "−" : "+")\(abs(outsideExtra))″, assuming \(Int(Assume.exteriorInches))″ walls). The import fits to laser readings; enter those with Edit off."
+                         : "Inside face, end to end, as the plan's line runs. The import fits to laser readings; enter those with Edit off.")
                 }
                 Section("Keep fixed") {
                     Picker("Keep fixed", selection: $keepA) {
