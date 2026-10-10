@@ -20,6 +20,8 @@ enum PlanExport {
         var photoFolder: String?
         var photos: [PhotoOut]?
         var addedWalls: [AddedWallOut]?
+        var stairs: [StairOut]?
+        var stairEdits: [StairEditOut]?
         var wallsShapeFloor: Bool?      // false: drawn or moved walls don't change the floor outline
         let createdAt: String
         let walls: [Segment]
@@ -130,6 +132,7 @@ enum PlanExport {
 
     // A scanned wall the user deleted or whose ends they moved (world x, z),
     // already applied to `walls`; kept so the app can reopen and undo it.
+    struct StairEditOut: Encodable { let id: String; let flip: Bool; let hidden: Bool; let turn: Bool; let run: Double? }
     struct AddedWallOut: Codable { let id: String; let story: Int; let a: [Double]; let b: [Double] }
     struct WallEditOut: Encodable {
         let wall: String
@@ -171,7 +174,7 @@ enum PlanExport {
                      exterior: [[SIMD3<Float>]],
                      anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?, name: String = "",
                      photos: [ScanPhoto] = [], photoFolder: String = "", addedWalls: [AddedWall] = [],
-                     wallsShapeFloor: Bool = true) throws -> Data {
+                     wallsShapeFloor: Bool = true, stairEdits: [UUID: StairEdit] = [:]) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
         // Drawn walls go in with the scanned ones, at the height of that floor's walls.
         let drawn = addedWalls.map { w -> Segment in
@@ -250,6 +253,13 @@ enum PlanExport {
         if !name.isEmpty { plan.name = name }
         if !photos.isEmpty { plan.photos = photos.map(photoOut); plan.photoFolder = photoFolder }
         if !wallsShapeFloor { plan.wallsShapeFloor = false }
+        let flights = stairs(s, edits: stairEdits)
+        if !flights.isEmpty { plan.stairs = flights }
+        if !stairEdits.isEmpty {
+            plan.stairEdits = stairEdits.map { StairEditOut(id: $0.key.uuidString, flip: $0.value.flip, hidden: $0.value.hidden,
+                             turn: $0.value.turn, run: $0.value.run) }
+                .sorted { $0.id < $1.id }
+        }
         if !addedWalls.isEmpty {
             plan.addedWalls = addedWalls.map { AddedWallOut(id: $0.id.uuidString, story: $0.story, a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y]) }
         }

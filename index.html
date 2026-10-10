@@ -1287,6 +1287,31 @@ function renderDetail(sh, W) {
       sw.style.pointerEvents = 'none';
     }
   }
+  // Stairs: outline, treads, and an arrow from where you'd start, UP or DN.
+  for (const st of sh.detail.stairs || []) {
+    const c = st.corners.map(at);
+    if (c.length !== 4) continue;
+    const e0 = { x: c[1].x - c[0].x, y: c[1].y - c[0].y }, e1 = { x: c[3].x - c[0].x, y: c[3].y - c[0].y };
+    // The climb on screen: W turns plan directions the same way it turns points.
+    const o = W({ x: 0, y: 0 }), u1 = W({ x: st.up.x, y: st.up.y });
+    const up = { x: u1.x - o.x, y: u1.y - o.y };
+    const along0 = Math.abs(e0.x * up.x + e0.y * up.y) >= Math.abs(e1.x * up.x + e1.y * up.y);
+    const run = along0 ? e0 : e1, across = along0 ? e1 : e0, len = Math.hypot(run.x, run.y);
+    if (len < 4) continue;
+    const g = [addEl('polygon', { points: c.map(p => `${p.x},${p.y}`).join(' '), fill: 'rgba(107,114,128,0.08)', stroke: '#6b7280', 'stroke-width': 1.2 })];
+    const steps = Math.max(3, Math.min(16, Math.round(len / 9)));
+    let d = '';
+    for (let i = 1; i < steps; i++) { const f = i / steps, p = { x: c[0].x + run.x * f, y: c[0].y + run.y * f }; d += `M${p.x} ${p.y} l${across.x} ${across.y} `; }
+    g.push(addEl('path', { d, stroke: '#9ca3af', 'stroke-width': 0.8, fill: 'none' }));
+    const mid = { x: c[0].x + across.x / 2, y: c[0].y + across.y / 2 }, fwd = run.x * up.x + run.y * up.y >= 0;
+    const s0 = fwd ? mid : { x: mid.x + run.x, y: mid.y + run.y }, s1 = fwd ? { x: mid.x + run.x, y: mid.y + run.y } : mid;
+    const ux = (s1.x - s0.x) / len, uy = (s1.y - s0.y) / len, h = Math.min(7, len * 0.15);
+    const a = { x: s0.x + ux * len * 0.12, y: s0.y + uy * len * 0.12 }, b = { x: s1.x - ux * len * 0.08, y: s1.y - uy * len * 0.08 };
+    g.push(addEl('path', { d: `M${a.x} ${a.y} L${b.x} ${b.y} M${b.x - ux * h - uy * h * 0.6} ${b.y - uy * h + ux * h * 0.6} L${b.x} ${b.y} L${b.x - ux * h + uy * h * 0.6} ${b.y - uy * h - ux * h * 0.6}`,
+      stroke: '#4b5563', 'stroke-width': 1.3, fill: 'none', 'stroke-linecap': 'round' }));
+    g.push(addEl('text', { x: a.x - ux * 8, y: a.y - uy * 8 + 3, 'text-anchor': 'middle', 'font-size': 9, 'font-weight': 700, fill: '#4b5563' }, st.label));
+    g.forEach(el => { el.style.pointerEvents = 'none'; });
+  }
   // Room names wrap to fit between the walls either side of them: the
   // scanned walls, doors and windows, and the outline.
   const segs = (sh.detail.lines || []).map(l => [at(l.a), at(l.b)]);
@@ -6073,7 +6098,7 @@ document.getElementById('import-pdf').addEventListener('change', async (e) => {
 // ===== LIDAR SCAN IMPORT =====
 // A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
 // lidar-import.mjs loads only when a scan is picked.
-const LIDAR_IMPORT_VERSION = '0.8.0';
+const LIDAR_IMPORT_VERSION = '0.9.0';
 async function importScan(file) {
   let d;
   try { d = JSON.parse(await file.text()); }
@@ -6233,7 +6258,8 @@ function pdfImportToSketch(res, picked) {
       if (r.f.detail) {
         const rel = p => ({ x: +(p.x - ox + nextX - pts[0].x).toFixed(4), y: +(p.y - oy - pts[0].y).toFixed(4) });
         sh.detail = { lines: r.f.detail.lines.map(l => ({ a: rel(l.a), b: rel(l.b), kind: l.kind, ...(l.hinge ? { hinge: l.hinge, side: l.side, style: l.style } : {}) })),
-                      rooms: r.f.detail.rooms.map(rm => ({ ...rel(rm), name: rm.name })) };
+                      rooms: r.f.detail.rooms.map(rm => ({ ...rel(rm), name: rm.name })),
+                      stairs: (r.f.detail.stairs || []).map(st => ({ corners: st.corners.map(rel), up: st.up, label: st.label })) };
       }
       // Walls a scan's fit calculated rather than measured.
       if ((r.f.calcWalls || []).length) sh.calc = Object.fromEntries(r.f.calcWalls.map(i => [i, true]));

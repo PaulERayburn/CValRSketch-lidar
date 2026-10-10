@@ -27,6 +27,9 @@ struct PlanView: View {
     @State private var shownPhoto: ScanPhoto?
     @State private var addingWall = false
     @State private var lengthWall: PlanWall?
+    @State private var stairChoice: UUID?
+    @State private var stairRunFor: UUID?
+    @State private var stairRunText = ""
     @State private var lengthKeepA = true
     @State private var wallStart: CGPoint?   // a tap right after a drag is the drag's end
     @State private var panBase: CGSize?
@@ -89,6 +92,12 @@ struct PlanView: View {
                                       : AnyGesture(panDrag(geo: geo, story: shown, size: box.size).map { _ in () }))
                     .simultaneousGesture(anchoredZoom(geo: geo, story: shown, size: box.size))
                     .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+                        if editMode && tool == .rooms,
+                           let st = geo.stairs.first(where: { $0.story == shown
+                               && ScanController.inside(view.unmap(tap.location), $0.corners) }) {
+                            stairChoice = st.id
+                            return
+                        }
                         if editMode && tool == .rooms {
                             let near = geo.rooms.filter { $0.story == shown }
                                 .min { hypot(view.map($0.center).x - tap.location.x, view.map($0.center).y - tap.location.y)
@@ -280,6 +289,26 @@ struct PlanView: View {
                     }
                 }
             }
+        }
+        .confirmationDialog("Stairs", isPresented: Binding(get: { stairChoice != nil }, set: { if !$0 { stairChoice = nil } }),
+                            titleVisibility: .visible) {
+            Button("Flip direction") { if let id = stairChoice { scan.flipStairs(id) }; stairChoice = nil }
+            Button("Turn 90°") { if let id = stairChoice { scan.turnStairs(id) }; stairChoice = nil }
+            Button("Run length…") { stairRunFor = stairChoice; stairRunText = ""; stairChoice = nil }
+            Button("Not stairs: remove", role: .destructive) { if let id = stairChoice { scan.hideStairs(id) }; stairChoice = nil }
+            Button("Cancel", role: .cancel) { stairChoice = nil }
+        } message: {
+            Text("The scan finds stairs but not which way they climb, and often only part of the flight. UP marks the floor they rise from, DN the floor above.")
+        }
+        .alert("Run length", isPresented: Binding(get: { stairRunFor != nil }, set: { if !$0 { stairRunFor = nil } })) {
+            TextField("e.g. 10 0", text: $stairRunText).keyboardType(.numbersAndPunctuation)
+            Button("Save") {
+                if let id = stairRunFor, let n = LengthParser.inches(from: stairRunText), n >= 12 { scan.setStairRun(id, inches: n) }
+                stairRunFor = nil
+            }
+            Button("Cancel", role: .cancel) { stairRunFor = nil }
+        } message: {
+            Text("Bottom tread to top, measured along the floor. A full storey is usually about 10 ft.")
         }
         .sheet(item: $lengthWall) { w in
             let geo = scan.planGeometry
@@ -747,6 +776,9 @@ struct PlanView: View {
             if let w = wallStart {
                 let p = view.map(w)
                 ctx.fill(Path(ellipseIn: CGRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16)), with: .color(.teal))
+            }
+            for st in geo.stairs where st.story == story {
+                Self.drawStairs(ctx, corners: st.corners.map(view.map), up: st.up, label: st.label, colour: .secondary)
             }
             // Photo pins: a camera dot with a pointer the way it faced.
             for pin in geo.photos where pin.story == story {
@@ -1270,7 +1302,7 @@ enum EditTool: String, CaseIterable {
     var hint: String {
         switch self {
         case .walls: return "Tap a wall to set its Length or Delete it; tap several to Align them. Drag a wall's end (square) along the wall to lengthen it, or across to slide it."
-        case .rooms: return "Tap a room to name it, or tap a name to change or remove it."
+        case .rooms: return "Tap a room to name it, or tap a name to change or remove it. Tap stairs to flip or remove them."
         case .doors: return "Tap a wall to add a door or opening; tap any door or opening to change its type or width, or remove it."
         }
     }

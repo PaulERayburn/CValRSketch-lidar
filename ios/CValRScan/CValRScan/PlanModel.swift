@@ -82,6 +82,8 @@ struct PlanGeometry {
     var features: [PlanFeature] = []
     var floors: [(story: Int, points: [CGPoint])] = []
     var photos: [(id: String, story: Int, at: CGPoint, dir: CGVector)] = []
+    // Stairs on each floor they touch: UP where they rise from, DN above.
+    var stairs: [(id: UUID, story: Int, corners: [CGPoint], up: CGVector, label: String)] = []
     var sections: [(story: Int, label: String, center: CGPoint)] = []
     var exteriorLines: [(a: CGPoint, b: CGPoint)] = []
     var gaps: [PlanGap] = []
@@ -399,6 +401,17 @@ extension ScanController {
             (rot([line.a.x, line.a.y]), rot([line.b.x, line.b.y]))
         }
         addHiddenWalls(to: &g, structure: structure)
+        let stories = Set(structure.floors.map(\.story))
+        for o in structure.objects where o.category == .stairs && stairEdits[o.identifier]?.hidden != true {
+            let f = PlanExport.flight(o, edit: stairEdits[o.identifier])
+            let corners = f.corners.map { g.plan($0) }
+            let c = g.plan(SIMD2(0, 0)), u = g.plan(f.up)
+            let up = CGVector(dx: u.x - c.x, dy: u.y - c.y)
+            g.stairs.append((o.identifier, o.story, corners, up, "UP"))
+            if stories.contains(o.story + 1) {
+                g.stairs.append((o.identifier, o.story + 1, corners, CGVector(dx: -up.dx, dy: -up.dy), "DN"))
+            }
+        }
         // Photos go on the floor the phone stood over.
         let levels = structure.floors.map { ($0.story, $0.transform.columns.3.y) }
         g.photos = photos.map { p in

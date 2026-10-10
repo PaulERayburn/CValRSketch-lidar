@@ -330,7 +330,17 @@ function interiorDetail(d, story, plan, before, after) {
     ? d.rooms.filter(r => r.story === story && r.name).map(r => ({ ...map(r.center), name: r.name }))
     : (d.sections || []).filter(s => s.story === story && ROOM_NAMES[s.label])
         .map(s => ({ ...map(s.center), name: ROOM_NAMES[s.label] }));
-  return { lines, rooms };
+  // Stairs: UP on the floor they rise from, DN on the floor above.
+  const floorsHere = new Set((d.floors || []).map(f => f.story));
+  const stairs = (d.stairs || []).filter(st => st.story === story || (st.story + 1 === story && floorsHere.has(story)))
+    .map(st => {
+      const corners = st.corners.map(map);
+      const cx = st.corners.reduce((t, c) => t + c[0], 0) / 4, cz = st.corners.reduce((t, c) => t + c[1], 0) / 4;
+      const c0 = map([cx, cz]), c1 = map([cx + st.up[0], cz + st.up[1]]);
+      const L = Math.hypot(c1.x - c0.x, c1.y - c0.y) || 1, down = st.story !== story;
+      return { corners, up: { x: (c1.x - c0.x) / L * (down ? -1 : 1), y: (c1.y - c0.y) / L * (down ? -1 : 1) }, label: down ? 'DN' : 'UP' };
+    });
+  return { lines, rooms, stairs };
 }
 
 // A scanned door over 6 ft wide is a garage door, and one 4 to 6 ft a pair
