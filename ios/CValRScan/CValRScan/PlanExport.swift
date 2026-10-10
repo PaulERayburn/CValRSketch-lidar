@@ -24,6 +24,8 @@ enum PlanExport {
         var stairPaths: [StairPathOut]?       // walking line, UP or DN at its start
         var stairEdits: [StairEditOut]?
         var stairChains: [StairChainOut]?     // stairs the user drew
+        var outsideDoors: [String]?           // doors the user says open to outside
+        var ignoredAreas: [[Double]]?         // unscanned areas the user says aren't rooms
         var wallsShapeFloor: Bool?      // false: drawn or moved walls don't change the floor outline
         let createdAt: String
         let walls: [Segment]
@@ -177,7 +179,8 @@ enum PlanExport {
                      anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?, name: String = "",
                      photos: [ScanPhoto] = [], photoFolder: String = "", addedWalls: [AddedWall] = [],
                      wallsShapeFloor: Bool = true, stairEdits: [UUID: StairEdit] = [:],
-                     stairChains: [StairChain] = []) throws -> Data {
+                     stairChains: [StairChain] = [], outsideDoors: Set<UUID> = [],
+                     ignoredAreas: [SIMD2<Double>] = []) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
         // Drawn walls go in with the scanned ones, at the height of that floor's walls.
         let drawn = addedWalls.map { w -> Segment in
@@ -259,6 +262,8 @@ enum PlanExport {
         let stairDrawn = stairOut(StairDrawing(chains: stairChains, structure: s, edits: stairEdits))
         if !stairDrawn.pieces.isEmpty { plan.stairs = stairDrawn.pieces; plan.stairPaths = stairDrawn.paths }
         if !stairChains.isEmpty { plan.stairChains = stairChains.map(chainOut) }
+        if !outsideDoors.isEmpty { plan.outsideDoors = outsideDoors.map(\.uuidString).sorted() }
+        if !ignoredAreas.isEmpty { plan.ignoredAreas = ignoredAreas.map { [$0.x, $0.y] } }
         if !stairEdits.isEmpty {
             plan.stairEdits = stairEdits.map { StairEditOut(id: $0.key.uuidString, flip: $0.value.flip, hidden: $0.value.hidden,
                              turn: $0.value.turn, run: $0.value.run) }

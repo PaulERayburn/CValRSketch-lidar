@@ -23,6 +23,14 @@ struct ContentView: View {
         if gaps > 0 {
             lines.append("\(gaps == 1 ? "1 wall" : "\(gaps) walls") the scan couldn't see, often a closet back, \(gaps == 1 ? "is" : "are") shown in red. Fix them while you're here.")
         }
+        let doors = scan.unscannedDoors.count
+        if doors > 0 {
+            lines.append("\(doors == 1 ? "1 door leads" : "\(doors) doors lead") to space that wasn't scanned: a closet, room or stairs? Shown with an orange ?. Scan it now, or mark outside doors.")
+        }
+        let area = scan.unscannedAreas.reduce(0) { $0 + $1.squareFeet }
+        if area > 0 {
+            lines.append("About \(area) sf under the floor above wasn't scanned, shaded orange: a missed room, or slab or crawlspace?")
+        }
         return lines.joined(separator: "\n\n")
     }
 
@@ -64,6 +72,14 @@ struct ContentView: View {
                         Text("\(count(scan.corners.count, "corner")) marked")
                             .foregroundStyle(.secondary)
                     }
+                    if !scan.unscannedDoors.isEmpty {
+                        Text("\(scan.unscannedDoors.count == 1 ? "1 door leads" : "\(scan.unscannedDoors.count) doors lead") to space not scanned yet: a closet, room or stairs? Outside doors count too; mark them on Measure walls.")
+                            .foregroundStyle(.orange)
+                    }
+                    if !scan.unscannedAreas.isEmpty {
+                        Text("About \(scan.unscannedAreas.reduce(0) { $0 + $1.squareFeet }) sf under the floor above not scanned yet.")
+                            .foregroundStyle(.orange)
+                    }
                     if !scan.wallPoints.isEmpty {
                         Text("\(count(scan.wallPoints.count, "hidden-wall point")) marked")
                             .foregroundStyle(.secondary)
@@ -91,7 +107,8 @@ struct ContentView: View {
                         Task {
                             await scan.export()
                             // The importer needs a tape reading to check the scan against.
-                            if scan.structure != nil && (!scan.hasReadings || !scan.planGeometry.openGaps.isEmpty) {
+                            if scan.structure != nil && (!scan.hasReadings || !scan.planGeometry.openGaps.isEmpty
+                                                        || !scan.unscannedDoors.isEmpty || !scan.unscannedAreas.isEmpty) {
                                 askReading = true
                             }
                         }

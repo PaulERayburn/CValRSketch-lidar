@@ -25,6 +25,8 @@ struct PlanView: View {
     @State private var dragMoves: [(from: CGPoint, to: CGPoint)] = []
     @State private var dragEnded = Date.distantPast
     @State private var shownPhoto: ScanPhoto?
+    @State private var doorCheck: UnscannedDoor?
+    @State private var areaCheck: UnscannedArea?
     @State private var addingWall = false
     @State private var lengthWall: PlanWall?
     // Stairs: the one tapped (a drawn piece, or a scanned flight at index -1),
@@ -220,6 +222,19 @@ struct PlanView: View {
                             }
                             return
                         }
+                        // Unscanned-space marks win when the tap is on them.
+                        if !editMode && !cornerMode {
+                            if let d = scan.unscannedDoors.first(where: { $0.story == shown
+                                && hypot(view.map(geo.plan($0.beyond)).x - tap.location.x, view.map(geo.plan($0.beyond)).y - tap.location.y) < 22 }) {
+                                doorCheck = d
+                                return
+                            }
+                            if let a = scan.unscannedAreas.first(where: { $0.story == shown
+                                && hypot(view.map(geo.plan($0.centre)).x - tap.location.x, view.map(geo.plan($0.centre)).y - tap.location.y) < 30 }) {
+                                areaCheck = a
+                                return
+                            }
+                        }
                         // A photo pin wins when the tap is right on it.
                         if let pin = geo.photos.filter({ $0.story == shown })
                             .min(by: { hypot(view.map($0.at).x - tap.location.x, view.map($0.at).y - tap.location.y)
@@ -367,6 +382,20 @@ struct PlanView: View {
             Button("Cancel", role: .cancel) { stairAsk = nil }
         } message: {
             Text(stairAskMessage)
+        }
+        .confirmationDialog("Door to unscanned space", isPresented: Binding(get: { doorCheck != nil }, set: { if !$0 { doorCheck = nil } }),
+                            titleVisibility: .visible) {
+            Button("It's an outside door") { if let d = doorCheck { scan.markOutsideDoor(d.id) }; doorCheck = nil }
+            Button("Cancel", role: .cancel) { doorCheck = nil }
+        } message: {
+            Text("Nothing was scanned past this door: a closet, room or stairs? Resume on site and scan it with the door open. If it's an outside door, say so and the warning goes.")
+        }
+        .confirmationDialog("Not scanned under the floor above", isPresented: Binding(get: { areaCheck != nil }, set: { if !$0 { areaCheck = nil } }),
+                            titleVisibility: .visible) {
+            Button("Slab, crawlspace or unexcavated: ignore") { if let a = areaCheck { scan.ignoreArea(a) }; areaCheck = nil }
+            Button("Cancel", role: .cancel) { areaCheck = nil }
+        } message: {
+            Text("About \(areaCheck?.squareFeet ?? 0) sf under the floor above has no floor scanned here. A missed room? Resume on site and scan it, or draw its walls in Edit. If it's slab (a garage), crawlspace or unexcavated, ignore it.")
         }
         .sheet(item: $lengthWall) { w in
             let geo = scan.planGeometry
@@ -768,6 +797,9 @@ struct PlanView: View {
             if !scan.planGeometry.hiddenLines.isEmpty {
                 Label("hidden", systemImage: "line.diagonal").foregroundStyle(.brown)
             }
+            if !scan.unscannedDoors.isEmpty || !scan.unscannedAreas.isEmpty {
+                Label("not scanned?", systemImage: "questionmark.circle.fill").foregroundStyle(.orange)
+            }
         }
         .font(.caption2)
         .lineLimit(1)
@@ -827,6 +859,7 @@ struct PlanView: View {
         let cornerMode = self.cornerMode, spanStart = self.spanStart, draft = self.spanDraft
         let editMode = self.editMode, endDrag = self.endDrag, picked = self.selectedWalls, moves = self.dragMoves
         let wallStart = self.wallStart
+        let unscannedDoors = scan.unscannedDoors, unscannedAreas = scan.unscannedAreas
         // Stairs being resized: the stair as dragged, and every drawn stair's dots on this floor.
         let stairDragNow = self.stairDrag?.now
         let stairDots: [(StairChain.Handle, SIMD2<Double>, String?)] = (editMode && tool == .rooms && !addingStairs)
@@ -907,6 +940,22 @@ struct PlanView: View {
                     ctx.stroke(sym.path, with: .color(colour.opacity(0.75)),
                                style: StrokeStyle(lineWidth: 1.4, dash: sym.dashed ? [4, 3] : []))
                 }
+            }
+            // Unscanned space: shaded areas under the floor above, and an
+            // orange ? past each door that leads nowhere scanned.
+            for a in unscannedAreas where a.story == story {
+                var p = Path()
+                for c in a.cells { p.addLines(c.map { view.map(geo.plan($0)) }); p.closeSubpath() }
+                ctx.fill(p, with: .color(.orange.opacity(0.22)))
+                ctx.draw(Text("not scanned? ≈\(a.squareFeet) sf").font(.caption2.bold()).foregroundStyle(.orange),
+                         at: view.map(geo.plan(a.centre)))
+            }
+            for d in unscannedDoors where d.story == story {
+                let a = view.map(geo.plan(d.at)), b = view.map(geo.plan(d.beyond))
+                var l = Path(); l.move(to: a); l.addLine(to: b)
+                ctx.stroke(l, with: .color(.orange), style: StrokeStyle(lineWidth: 2, dash: [3, 3]))
+                ctx.fill(Path(ellipseIn: CGRect(x: b.x - 10, y: b.y - 10, width: 20, height: 20)), with: .color(.orange))
+                ctx.draw(Text("?").font(.caption.bold()).foregroundStyle(.white), at: b)
             }
             for gap in geo.gaps where gap.story == story {
                 var p = Path()

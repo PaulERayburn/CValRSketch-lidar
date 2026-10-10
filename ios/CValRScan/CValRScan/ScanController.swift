@@ -44,6 +44,24 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         var stairs: [UUID: StairEdit] = [:]
         var addedStairs: [StairChain] = []
     }
+    // Space nobody scanned (Unscanned.swift), and what the user said about it.
+    @Published private(set) var unscannedDoors: [UnscannedDoor] = []
+    @Published private(set) var unscannedAreas: [UnscannedArea] = []
+    @Published private(set) var outsideDoors: Set<UUID> = []
+    @Published private(set) var ignoredAreas: [SIMD2<Double>] = []
+
+    func refreshChecks() {
+        if let s = structure {
+            unscannedDoors = Unscanned.doors(floors: s.floors, doors: s.doors + s.openings, skip: hiddenOpenings.union(outsideDoors))
+            unscannedAreas = Unscanned.areas(floors: s.floors, ignored: ignoredAreas)
+        } else {
+            unscannedDoors = Unscanned.doors(floors: rooms.flatMap(\.floors), doors: rooms.flatMap { $0.doors + $0.openings }, skip: outsideDoors)
+            unscannedAreas = Unscanned.areas(floors: rooms.flatMap(\.floors), ignored: ignoredAreas)
+        }
+    }
+    func markOutsideDoor(_ id: UUID) { outsideDoors.insert(id); writeFiles(); refreshChecks() }
+    func ignoreArea(_ a: UnscannedArea) { ignoredAreas.append(a.centre); writeFiles(); refreshChecks() }
+
     // Stairs the user drew (Stairs.swift).
     @Published private(set) var addedStairs: [StairChain] = []
 
@@ -150,12 +168,14 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         }
         rooms.append(processedResult)
         message = "Room \(rooms.count) added"
+        refreshChecks()
     }
 
     func removeLastRoom() {
         if !rooms.isEmpty { rooms.removeLast() }
         exportURLs = []
         structure = nil
+        refreshChecks()
     }
 
     // The camera keeps tracking with the torch on, which is what dark
@@ -719,11 +739,12 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd,
                                 name: scanName, photos: photos, photoFolder: photoFolder, addedWalls: addedWalls,
                                 wallsShapeFloor: wallsShapeFloor, stairEdits: stairEdits,
-                                stairChains: addedStairs)
+                                stairChains: addedStairs, outsideDoors: outsideDoors, ignoredAreas: ignoredAreas)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
             exportURLs = [planURL, rawURL] + (FileManager.default.fileExists(atPath: modelURL.path) ? [modelURL] : [])
             message = "Saved and ready to share"
+            refreshChecks()
             refreshSaved()
         } catch {
             message = "Export failed: \(error.localizedDescription)"
@@ -825,6 +846,10 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         wallsShapeFloor = true
         stairEdits = [:]
         addedStairs = []
+        outsideDoors = []
+        ignoredAreas = []
+        unscannedDoors = []
+        unscannedAreas = []
         photoFolder = ""
         photoZip = nil
         message = nil
@@ -888,6 +913,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                 guard w.a.count == 2, w.b.count == 2 else { return nil }
                 return AddedWall(id: UUID(uuidString: w.id) ?? UUID(), story: w.story, a: SIMD2(w.a[0], w.a[1]), b: SIMD2(w.b[0], w.b[1]))
             }
+            outsideDoors = Set((saved?.outsideDoors ?? []).compactMap(UUID.init(uuidString:)))
+            ignoredAreas = (saved?.ignoredAreas ?? []).filter { $0.count == 2 }.map { SIMD2($0[0], $0[1]) }
             editHistory = []
             spans = (saved?.spans ?? []).compactMap { r in
                 guard r.a.count == 2, r.b.count == 2 else { return nil }
@@ -917,6 +944,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             resumed = false
             canResume = FileManager.default.fileExists(atPath: worldMapURL.path)
             write3DModel(replace: false)
+            refreshChecks()
             exportURLs = (FileManager.default.fileExists(atPath: planURL.path) ? [planURL, rawURL] : [rawURL])
                 + (FileManager.default.fileExists(atPath: modelURL.path) ? [modelURL] : [])
             writeFiles()
@@ -991,6 +1019,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         struct OldStairIn: Decodable { let id: String; let story: Int; let a: [Double]; let b: [Double]; let width: Double }
         let addedStairs: [OldStairIn]?                 // 0.15.0: single flights
         let stairChains: [PlanExport.StairChainOut]?
+        let outsideDoors: [String]?
+        let ignoredAreas: [[Double]]?
         let corners: [Point]?
         let wallPoints: [WallPointIn]?
         let gapDepths: [GapDepthIn]?
