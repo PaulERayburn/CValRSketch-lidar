@@ -26,6 +26,7 @@ struct PlanView: View {
     @State private var soloWall: UUID?   // dragging the end of the one selected wall only
     // A drag finished but not yet applied: shown as a teal preview until Apply or Cancel.
     @State private var confirming = false
+    @State private var confirmRestore = false
     @State private var dragEnded = Date.distantPast
     @State private var shownPhoto: ScanPhoto?
     @State private var doorCheck: UnscannedDoor?
@@ -354,17 +355,17 @@ struct PlanView: View {
                     } else if tool == .walls {
                         Button(addingWall ? "Cancel" : "＋ Add wall") { addingWall.toggle(); wallStart = nil }
                         Spacer()
-                        Button("Restore scan") { scan.restoreScan() }
+                        Button("Restore scan") { confirmRestore = true }
                             .disabled(!scan.hasEdits)
                     } else if tool == .rooms {
                         Button(addingStairs ? (stairChain == nil ? "Cancel" : "Finish stair") : "＋ Stairs") {
                             addingStairs.toggle(); stairStart = nil; stairChain = nil; stairMode = .flight
                         }
                         Spacer()
-                        Button("Restore scan") { scan.restoreScan() }
+                        Button("Restore scan") { confirmRestore = true }
                             .disabled(!scan.hasEdits)
                     } else {
-                        Button("Restore scan") { scan.restoreScan() }
+                        Button("Restore scan") { confirmRestore = true }
                             .disabled(!scan.hasEdits)
                     }
                 }
@@ -456,6 +457,12 @@ struct PlanView: View {
             Button("Cancel", role: .cancel) { moveWall = nil }
         } message: {
             Text("Slides the whole wall, square. Walls across its ends stretch to follow; a wall carrying on in line stays put, joined by a short new wall. Tap a wall again to deselect it.")
+        }
+        .confirmationDialog("Restore the scan?", isPresented: $confirmRestore, titleVisibility: .visible) {
+            Button("Restore scan", role: .destructive) { scan.restoreScan() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Every wall, door, room name, stair and fill you changed goes back to how it was scanned. Your laser readings stay. Undo brings your changes back until the app is closed.")
         }
         .sheet(item: $lengthWall) { w in
             let geo = scan.planGeometry
