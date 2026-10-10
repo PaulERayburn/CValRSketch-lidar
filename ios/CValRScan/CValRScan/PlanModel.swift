@@ -437,7 +437,22 @@ extension ScanController {
             + (structure.doors + structure.windows + structure.openings).map(PlanExport.segment)
             + addedWalls.map { PlanExport.Segment(id: $0.id.uuidString, story: $0.story, a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y],
                                                   height: 2.4, bottom: 0, wall: nil, curved: false) }
-        let found = PlanExport.gaps(floors: structure.floors.map(PlanExport.floor), segments: segments)
+        // Edges where the floor meets an area filled from the floor above are a
+        // seam, not a missing wall.
+        let fills = areaFills
+        let found = PlanExport.gaps(floors: structure.floors.map(PlanExport.floor), segments: segments).filter { gap in
+            let a = SIMD2(gap.a[0], gap.a[1]), b = SIMD2(gap.b[0], gap.b[1])
+            guard simd_distance(a, b) > 0.01 else { return true }
+            let u = simd_normalize(b - a), n = SIMD2(-u.y, u.x)
+            let samples = [0.25, 0.5, 0.75].flatMap { t -> [SIMD2<Double>] in
+                let m = a + (b - a) * t
+                return [m + n * 0.25, m - n * 0.25]
+            }
+            let touchesFill = samples.contains { p in
+                fills.contains { $0.story == gap.story && $0.cells.contains { Unscanned.inside(p, $0) } }
+            }
+            return !touchesFill
+        }
         g.gaps = found.enumerated().map { i, gap in
             let a = SIMD2(gap.a[0], gap.a[1]), b = SIMD2(gap.b[0], gap.b[1])
             let depth = gapDepths.first { simd_distance($0.middle, (a + b) / 2) < 0.5 }
