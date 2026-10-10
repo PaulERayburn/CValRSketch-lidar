@@ -1043,6 +1043,9 @@ struct MeasureSheet: View {
                         }
                     } else if !text.isEmpty {
                         Text("Not understood. Try feet then inches, like 10 9.").foregroundStyle(.red)
+                    } else {
+                        Text("Inside or Outside is saved with a reading: type your laser number, then Save.")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 Section {
