@@ -26,6 +26,7 @@ enum PlanExport {
         var stairChains: [StairChainOut]?     // stairs the user drew
         var outsideDoors: [String]?           // doors the user says open to outside
         var ignoredAreas: [[Double]]?         // unscanned areas the user says aren't rooms
+        var fillsFromAbove: [FillOut]?        // unscanned areas filled in from the floor above
         var wallsShapeFloor: Bool?      // false: drawn or moved walls don't change the floor outline
         let createdAt: String
         let walls: [Segment]
@@ -136,6 +137,7 @@ enum PlanExport {
 
     // A scanned wall the user deleted or whose ends they moved (world x, z),
     // already applied to `walls`; kept so the app can reopen and undo it.
+    struct FillOut: Encodable { let story: Int; let centre: [Double]; let cell: Double; let cells: [[[Double]]] }
     struct StairEditOut: Encodable { let id: String; let flip: Bool; let hidden: Bool; let turn: Bool; let run: Double? }
     struct AddedWallOut: Codable { let id: String; let story: Int; let a: [Double]; let b: [Double] }
     struct WallEditOut: Encodable {
@@ -180,7 +182,7 @@ enum PlanExport {
                      photos: [ScanPhoto] = [], photoFolder: String = "", addedWalls: [AddedWall] = [],
                      wallsShapeFloor: Bool = true, stairEdits: [UUID: StairEdit] = [:],
                      stairChains: [StairChain] = [], outsideDoors: Set<UUID> = [],
-                     ignoredAreas: [SIMD2<Double>] = []) throws -> Data {
+                     ignoredAreas: [SIMD2<Double>] = [], areaFills: [AreaFill] = []) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
         // Drawn walls go in with the scanned ones, at the height of that floor's walls.
         let drawn = addedWalls.map { w -> Segment in
@@ -264,6 +266,11 @@ enum PlanExport {
         if !stairChains.isEmpty { plan.stairChains = stairChains.map(chainOut) }
         if !outsideDoors.isEmpty { plan.outsideDoors = outsideDoors.map(\.uuidString).sorted() }
         if !ignoredAreas.isEmpty { plan.ignoredAreas = ignoredAreas.map { [$0.x, $0.y] } }
+        if !areaFills.isEmpty {
+            func r(_ v: Double) -> Double { (v * 10000).rounded() / 10000 }
+            plan.fillsFromAbove = areaFills.map { FillOut(story: $0.story, centre: [r($0.centre.x), r($0.centre.y)], cell: $0.cell,
+                                                          cells: $0.cells.map { $0.map { [r($0.x), r($0.y)] } }) }
+        }
         if !stairEdits.isEmpty {
             plan.stairEdits = stairEdits.map { StairEditOut(id: $0.key.uuidString, flip: $0.value.flip, hidden: $0.value.hidden,
                              turn: $0.value.turn, run: $0.value.run) }

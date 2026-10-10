@@ -43,6 +43,12 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         var added: [AddedWall] = []
         var stairs: [UUID: StairEdit] = [:]
         var addedStairs: [StairChain] = []
+        var fills: [AreaFill] = []
+    }
+    // Unscanned areas the user filled in from the floor above.
+    @Published private(set) var areaFills: [AreaFill] = []
+    func fillFromAbove(_ a: UnscannedArea) {
+        commit { $0.fills.append(AreaFill(story: a.story, centre: a.centre, cell: 0.1524, cells: a.cells)) }
     }
     // Space nobody scanned (Unscanned.swift), and what the user said about it.
     @Published private(set) var unscannedDoors: [UnscannedDoor] = []
@@ -53,7 +59,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     func refreshChecks() {
         if let s = structure {
             unscannedDoors = Unscanned.doors(floors: s.floors, doors: s.doors + s.openings, skip: hiddenOpenings.union(outsideDoors))
-            unscannedAreas = Unscanned.areas(floors: s.floors, ignored: ignoredAreas)
+            unscannedAreas = Unscanned.areas(floors: s.floors, ignored: ignoredAreas + areaFills.map(\.centre), angle: planGeometry.angle)
         } else {
             unscannedDoors = Unscanned.doors(floors: rooms.flatMap(\.floors), doors: rooms.flatMap { $0.doors + $0.openings }, skip: outsideDoors)
             unscannedAreas = Unscanned.areas(floors: rooms.flatMap(\.floors), ignored: ignoredAreas)
@@ -232,7 +238,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     }
 
     private func commit(_ change: (inout EditSnapshot) -> Void) {
-        var s = EditSnapshot(walls: wallEdits, rooms: roomLabels, openings: addedOpenings, hidden: hiddenOpenings, added: addedWalls, stairs: stairEdits, addedStairs: addedStairs)
+        var s = EditSnapshot(walls: wallEdits, rooms: roomLabels, openings: addedOpenings, hidden: hiddenOpenings, added: addedWalls, stairs: stairEdits, addedStairs: addedStairs, fills: areaFills)
         editHistory.append(s)
         change(&s)
         wallEdits = s.walls
@@ -242,6 +248,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         addedWalls = s.added
         stairEdits = s.stairs
         addedStairs = s.addedStairs
+        areaFills = s.fills
         writeFiles()
     }
 
@@ -343,6 +350,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         addedWalls = last.added
         stairEdits = last.stairs
         addedStairs = last.addedStairs
+        areaFills = last.fills
         writeFiles()
     }
 
@@ -739,7 +747,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd,
                                 name: scanName, photos: photos, photoFolder: photoFolder, addedWalls: addedWalls,
                                 wallsShapeFloor: wallsShapeFloor, stairEdits: stairEdits,
-                                stairChains: addedStairs, outsideDoors: outsideDoors, ignoredAreas: ignoredAreas)
+                                stairChains: addedStairs, outsideDoors: outsideDoors, ignoredAreas: ignoredAreas,
+                                areaFills: areaFills)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
             exportURLs = [planURL, rawURL] + (FileManager.default.fileExists(atPath: modelURL.path) ? [modelURL] : [])
@@ -848,6 +857,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         addedStairs = []
         outsideDoors = []
         ignoredAreas = []
+        areaFills = []
         unscannedDoors = []
         unscannedAreas = []
         photoFolder = ""
@@ -915,6 +925,10 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             }
             outsideDoors = Set((saved?.outsideDoors ?? []).compactMap(UUID.init(uuidString:)))
             ignoredAreas = (saved?.ignoredAreas ?? []).filter { $0.count == 2 }.map { SIMD2($0[0], $0[1]) }
+            areaFills = (saved?.fillsFromAbove ?? []).filter { $0.centre.count == 2 }.map {
+                AreaFill(story: $0.story, centre: SIMD2($0.centre[0], $0.centre[1]), cell: $0.cell,
+                         cells: $0.cells.map { $0.filter { $0.count == 2 }.map { SIMD2($0[0], $0[1]) } }.filter { $0.count == 4 })
+            }
             editHistory = []
             spans = (saved?.spans ?? []).compactMap { r in
                 guard r.a.count == 2, r.b.count == 2 else { return nil }
@@ -1021,6 +1035,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         let stairChains: [PlanExport.StairChainOut]?
         let outsideDoors: [String]?
         let ignoredAreas: [[Double]]?
+        struct FillIn: Decodable { let story: Int; let centre: [Double]; let cell: Double; let cells: [[[Double]]] }
+        let fillsFromAbove: [FillIn]?
         let corners: [Point]?
         let wallPoints: [WallPointIn]?
         let gapDepths: [GapDepthIn]?

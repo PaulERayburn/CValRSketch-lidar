@@ -25,6 +25,15 @@ struct UnscannedArea: Identifiable, Equatable {
     let cells: [[SIMD2<Double>]] // squares to shade, corners
 }
 
+// An unscanned area filled in from the floor above: the grid squares
+// (lower-left corners, world) that make it up.
+struct AreaFill: Equatable {
+    var story: Int
+    var centre: SIMD2<Double>
+    var cell: Double
+    var cells: [[SIMD2<Double>]]   // squares, corners (world), square to the house
+}
+
 enum Unscanned {
     private static func polygons(_ floors: [CapturedRoom.Surface]) -> [Int: [[SIMD2<Double>]]] {
         var out: [Int: [[SIMD2<Double>]]] = [:]
@@ -66,8 +75,13 @@ enum Unscanned {
 
     // Under each floor above, ground the floor below has none of, on a 6 in
     // grid; slivers along the walls are dropped, and pieces under 16 sf.
-    static func areas(floors: [CapturedRoom.Surface], ignored: [SIMD2<Double>]) -> [UnscannedArea] {
-        let polys = polygons(floors)
+    // `angle` turns world into the house's square frame (PlanGeometry.angle),
+    // so the squares, and any outline made from them, run square to the house.
+    static func areas(floors: [CapturedRoom.Surface], ignored: [SIMD2<Double>], angle: Double = 0) -> [UnscannedArea] {
+        let c = cos(angle), s = sin(angle)
+        func toHouse(_ p: SIMD2<Double>) -> SIMD2<Double> { SIMD2(p.x * c - p.y * s, p.x * s + p.y * c) }
+        func toWorld(_ p: SIMD2<Double>) -> SIMD2<Double> { SIMD2(p.x * c + p.y * s, -p.x * s + p.y * c) }
+        let polys = polygons(floors).mapValues { $0.map { $0.map(toHouse) } }
         let cell = 0.1524
         var out: [UnscannedArea] = []
         for (story, below) in polys.sorted(by: { $0.key < $1.key }) {
@@ -111,13 +125,13 @@ enum Unscanned {
                 }
                 let sf = Int((Double(piece.count) * cell * cell * 10.7639).rounded())
                 guard sf >= 16 else { continue }
-                let centre = piece.reduce(SIMD2<Double>(0, 0)) { t, k in
+                let centre = toWorld(piece.reduce(SIMD2<Double>(0, 0)) { t, k in
                     t + SIMD2(x0 + (Double(k % W) + 0.5) * cell, y0 + (Double(k / W) + 0.5) * cell)
-                } / Double(piece.count)
+                } / Double(piece.count))
                 if ignored.contains(where: { simd_distance($0, centre) < 1 }) { continue }
                 let cells = piece.map { k -> [SIMD2<Double>] in
                     let x = x0 + Double(k % W) * cell, y = y0 + Double(k / W) * cell
-                    return [SIMD2(x, y), SIMD2(x + cell, y), SIMD2(x + cell, y + cell), SIMD2(x, y + cell)]
+                    return [SIMD2(x, y), SIMD2(x + cell, y), SIMD2(x + cell, y + cell), SIMD2(x, y + cell)].map(toWorld)
                 }
                 out.append(UnscannedArea(id: out.count, story: story, centre: centre, squareFeet: sf, cells: cells))
             }

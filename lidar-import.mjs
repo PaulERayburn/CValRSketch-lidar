@@ -82,6 +82,16 @@ export function readCvalrScan(d, opts = {}) {
           if (cut.grownSf >= MIN_CUT_SF) warnings.push(`${floorTitle(story)}: ${Math.round(cut.grownSf)} sf inside the outside walk that the scan didn't reach (a closet, chase or alcove behind a wall it missed) was added, out to the walk. Check it.`);
         }
       }
+      // Areas the user filled in from the floor above (a room nobody scanned).
+      const fills = (d.fillsFromAbove || []).filter(f => f.story === story);
+      if (fills.length) {
+        const merged = addFills(poly, fills, plan);
+        if (merged) {
+          poly = merged.poly;
+          gaps = gaps.filter(g => onOutline(poly, { x: (g.a.x + g.b.x) / 2, y: (g.a.y + g.b.y) / 2 }, 0.4));
+          warnings.push(`${floorTitle(story)}: ${Math.round(merged.sf)} sf filled in from the floor above in CValRScan (not scanned). Check it.`);
+        }
+      }
       // Walls the user drew or moved can close in floor the scan never reached
       // (a closet behind a shut door). Unless turned off for the scan.
       if (d.wallsShapeFloor !== false) {
@@ -844,6 +854,70 @@ function walkThickness(lines, sides) {
   if (!gaps.length) return null;
   gaps.sort((a, b) => a - b);
   return gaps[Math.floor(gaps.length / 2)] / 12;
+}
+
+// The floor outline with filled-in squares (world, from CValRScan) added.
+function addFills(poly, fills, plan) {
+  const squares = fills.flatMap(f => f.cells.map(c => c.length === 4 && Array.isArray(c[0]) ? c.map(plan)
+    : [plan(c), plan([c[0] + f.cell, c[1]]), plan([c[0] + f.cell, c[1] + f.cell]), plan([c[0], c[1] + f.cell])]));
+  const all = [...poly, ...squares.flat()];
+  const x0 = Math.min(...all.map(p => p.x)) - 1, y0 = Math.min(...all.map(p => p.y)) - 1;
+  const W = Math.ceil((Math.max(...all.map(p => p.x)) + 1 - x0) / CELL_FT), H = Math.ceil((Math.max(...all.map(p => p.y)) + 1 - y0) / CELL_FT);
+  if (W * H > 4e6) return null;
+  const keep = new Uint8Array(W * H);
+  const raster = (pg, v) => {
+    for (let j = 0; j < H; j++) {
+      const y = y0 + (j + 0.5) * CELL_FT, xs = [];
+      for (let k = 0; k < pg.length; k++) {
+        const a = pg[k], b = pg[(k + 1) % pg.length];
+        if ((a.y <= y) !== (b.y <= y)) xs.push(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
+      }
+      xs.sort((p, q) => p - q);
+      for (let k = 0; k + 1 < xs.length; k += 2)
+        for (let i = Math.max(0, Math.ceil((xs[k] - x0) / CELL_FT - 0.5)); i < W && x0 + (i + 0.5) * CELL_FT < xs[k + 1]; i++) keep[j * W + i] |= v;
+    }
+  };
+  raster(poly, 1);
+  // Squares slightly enlarged so neighbours join without hairline seams.
+  for (const sq of squares) {
+    const c = sq.reduce((t, p) => ({ x: t.x + p.x / 4, y: t.y + p.y / 4 }), { x: 0, y: 0 });
+    raster(sq.map(p => ({ x: c.x + (p.x - c.x) * 1.15, y: c.y + (p.y - c.y) * 1.15 })), 2);
+  }
+  let added = 0;
+  for (let k = 0; k < W * H; k++) if (keep[k] === 2) added++;
+  if (!added) return null;
+  // Close the seam between the fill and the floor (the wall between them,
+  // and the margin the app leaves along walls): grow both by a foot, then
+  // shrink back, near the fill only.
+  const R = Math.round(1 / CELL_FT);
+  const near = new Uint8Array(W * H);
+  for (let k = 0; k < W * H; k++) if (keep[k] & 2) {
+    const i = k % W, j = (k - i) / W;
+    for (let dj = -2 * R; dj <= 2 * R; dj++) for (let di = -2 * R; di <= 2 * R; di++) {
+      const a = i + di, b = j + dj;
+      if (a >= 0 && b >= 0 && a < W && b < H) near[b * W + a] = 1;
+    }
+  }
+  const morph = (src, grow) => {
+    const dst = src.slice();
+    for (let k = 0; k < W * H; k++) {
+      if (!near[k]) continue;
+      const i = k % W, j = (k - i) / W;
+      let hit = false;
+      for (let dj = -R; dj <= R && !hit; dj++) for (let di = -R; di <= R; di++) {
+        const a = i + di, b = j + dj;
+        const v = a >= 0 && b >= 0 && a < W && b < H ? src[b * W + a] : 0;
+        if (grow ? v : !v) { hit = true; break; }
+      }
+      dst[k] = grow ? (hit ? 1 : src[k]) : (hit ? 0 : src[k]);
+    }
+    return dst;
+  };
+  const solid = morph(morph(keep.map(v => v ? 1 : 0), true), false);
+  for (let k = 0; k < W * H; k++) if (solid[k] && !keep[k]) added++;
+  const traced = traceCells(solid, W, H);
+  if (!traced) return null;
+  return { poly: traced.map(([i, j]) => ({ x: x0 + i * CELL_FT, y: y0 + j * CELL_FT })), sf: added * CELL_FT * CELL_FT };
 }
 
 // Floor closed in by walls the user drew or moved: on a grid, open ground is

@@ -392,10 +392,11 @@ struct PlanView: View {
         }
         .confirmationDialog("Not scanned under the floor above", isPresented: Binding(get: { areaCheck != nil }, set: { if !$0 { areaCheck = nil } }),
                             titleVisibility: .visible) {
+            Button("Fill from the floor above") { if let a = areaCheck { scan.fillFromAbove(a) }; areaCheck = nil }
             Button("Slab, crawlspace or unexcavated: ignore") { if let a = areaCheck { scan.ignoreArea(a) }; areaCheck = nil }
             Button("Cancel", role: .cancel) { areaCheck = nil }
         } message: {
-            Text("About \(areaCheck?.squareFeet ?? 0) sf under the floor above has no floor scanned here. A missed room? Resume on site and scan it, or draw its walls in Edit. If it's slab (a garage), crawlspace or unexcavated, ignore it.")
+            Text("About \(areaCheck?.squareFeet ?? 0) sf under the floor above has no floor scanned here. A missed room? Fill it from the floor above (its outline is shown faintly in Edit), draw its walls in Edit, or Resume on site and scan it. If it's slab (a garage), crawlspace or unexcavated, ignore it.")
         }
         .sheet(item: $lengthWall) { w in
             let geo = scan.planGeometry
@@ -703,20 +704,36 @@ struct PlanView: View {
     // a corner or wall end near the finger; the far end is squared to the
     // house from the start.
     private func addWallTap(_ p: CGPoint, geo: PlanGeometry, story: Int, view: Viewport) {
-        let corners = geo.corners(story: story)
+        let corners = geo.corners(story: story) + geo.aboveCorners(story: story)
+        let aboveLines = geo.aboveLines(story: story)
+        func screen(_ q: CGPoint) -> CGPoint { view.map(q) }
+        // Onto a line of the floor above near the finger.
+        func ontoAbove(_ q: CGPoint) -> CGPoint? {
+            var best: (CGPoint, CGFloat)?
+            for (a, b) in aboveLines {
+                let dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy
+                guard L2 > 0.01 else { continue }
+                let t = max(0, min(1, ((q.x - a.x) * dx + (q.y - a.y) * dy) / L2))
+                let r = CGPoint(x: a.x + dx * t, y: a.y + dy * t)
+                let d = hypot(screen(r).x - screen(q).x, screen(r).y - screen(q).y)
+                if d < 14, d < (best?.1 ?? .infinity) { best = (r, d) }
+            }
+            return best?.0
+        }
         func nearCorner(_ q: CGPoint) -> CGPoint? {
             corners.min(by: { hypot(view.map($0).x - view.map(q).x, view.map($0).y - view.map(q).y)
                             < hypot(view.map($1).x - view.map(q).x, view.map($1).y - view.map(q).y) })
                 .flatMap { hypot(view.map($0).x - view.map(q).x, view.map($0).y - view.map(q).y) < 18 ? $0 : nil }
         }
         guard let start = wallStart else {
-            wallStart = nearCorner(p) ?? p
+            wallStart = nearCorner(p) ?? ontoAbove(p) ?? p
             UISelectionFeedbackGenerator().selectionChanged()
             return
         }
         let across = abs(p.x - start.x) >= abs(p.y - start.y)
         var end = across ? CGPoint(x: p.x, y: start.y) : CGPoint(x: start.x, y: p.y)
         if let c = nearCorner(end) { if across { end.x = c.x } else { end.y = c.y } }
+        else if let r = ontoAbove(end) { if across { end.x = r.x } else { end.y = r.y } }
         guard hypot(end.x - start.x, end.y - start.y) > 0.3 else { return }
         scan.addWall(story: story, a: geo.world(start), b: geo.world(end))
         UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -763,7 +780,7 @@ struct PlanView: View {
     // A dragged end lands on a corner near it, or lines up square with the
     // far end of a wall it belongs to.
     private func snap(_ p: CGPoint, from: CGPoint, geo: PlanGeometry, story: Int, view: Viewport) -> CGPoint {
-        let others = geo.corners(story: story).filter { hypot($0.x - from.x, $0.y - from.y) > 0.3 }
+        let others = (geo.corners(story: story) + geo.aboveCorners(story: story)).filter { hypot($0.x - from.x, $0.y - from.y) > 0.3 }
         if let c = others.min(by: { hypot(view.map($0).x - view.map(p).x, view.map($0).y - view.map(p).y)
                 < hypot(view.map($1).x - view.map(p).x, view.map($1).y - view.map(p).y) }),
            hypot(view.map(c).x - view.map(p).x, view.map(c).y - view.map(p).y) < 14 { return c }
@@ -859,7 +876,7 @@ struct PlanView: View {
         let cornerMode = self.cornerMode, spanStart = self.spanStart, draft = self.spanDraft
         let editMode = self.editMode, endDrag = self.endDrag, picked = self.selectedWalls, moves = self.dragMoves
         let wallStart = self.wallStart
-        let unscannedDoors = scan.unscannedDoors, unscannedAreas = scan.unscannedAreas
+        let unscannedDoors = scan.unscannedDoors, unscannedAreas = scan.unscannedAreas, areaFills = scan.areaFills
         // Stairs being resized: the stair as dragged, and every drawn stair's dots on this floor.
         let stairDragNow = self.stairDrag?.now
         let stairDots: [(StairChain.Handle, SIMD2<Double>, String?)] = (editMode && tool == .rooms && !addingStairs)
@@ -887,6 +904,19 @@ struct PlanView: View {
                 p.addLines(f.points.map(view.map))
                 p.closeSubpath()
                 ctx.fill(p, with: .color(.gray.opacity(0.22)))
+            }
+            // Areas filled in from the floor above: floor, outlined dashed.
+            for f in areaFills where f.story == story {
+                var p = Path()
+                for c in f.cells { p.addLines(c.map { view.map(geo.plan($0)) }); p.closeSubpath() }
+                ctx.fill(p, with: .color(.gray.opacity(0.22)))
+                ctx.draw(Text("from floor above").font(.caption2).foregroundStyle(.secondary), at: view.map(geo.plan(f.centre)))
+            }
+            // The floor above, faint, to line walls up with while editing.
+            if editMode {
+                var above = Path()
+                for (a, b) in geo.aboveLines(story: story) { above.move(to: view.map(a)); above.addLine(to: view.map(b)) }
+                ctx.stroke(above, with: .color(.purple.opacity(0.45)), style: StrokeStyle(lineWidth: 1.2, dash: [6, 4]))
             }
             // Room names wrap to fit between the walls either side of them.
             let wallLines = walls.map { (view.map($0.a), view.map($0.b)) }

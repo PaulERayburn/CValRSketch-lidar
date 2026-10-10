@@ -112,6 +112,14 @@ struct PlanGeometry {
     // The corners a reading can run between: where scanned walls end, and where
     // two walls cross or meet partway along. RoomPlan often runs a wall past the
     // corner it turns at, so the real corner is only where the two lines cross.
+    // The floor above, to draw faintly under this one and snap to: its walls
+    // and the edges and corners of its floor.
+    func aboveLines(story: Int) -> [(CGPoint, CGPoint)] {
+        walls.filter { $0.story == story + 1 }.map { ($0.a, $0.b) }
+            + floors.filter { $0.story == story + 1 }.flatMap { f in f.points.indices.map { (f.points[$0], f.points[($0 + 1) % f.points.count]) } }
+    }
+    func aboveCorners(story: Int) -> [CGPoint] { aboveLines(story: story).flatMap { [$0.0, $0.1] } }
+
     func corners(story: Int) -> [CGPoint] {
         var out: [CGPoint] = []
         func add(_ p: CGPoint) {
