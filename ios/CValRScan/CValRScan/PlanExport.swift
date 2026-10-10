@@ -19,6 +19,7 @@ enum PlanExport {
         var name: String?
         var photoFolder: String?
         var photos: [PhotoOut]?
+        var addedWalls: [AddedWallOut]?
         let createdAt: String
         let walls: [Segment]
         let doors: [Segment]
@@ -128,6 +129,7 @@ enum PlanExport {
 
     // A scanned wall the user deleted or whose ends they moved (world x, z),
     // already applied to `walls`; kept so the app can reopen and undo it.
+    struct AddedWallOut: Codable { let id: String; let story: Int; let a: [Double]; let b: [Double] }
     struct WallEditOut: Encodable {
         let wall: String
         let hidden: Bool
@@ -167,9 +169,16 @@ enum PlanExport {
                      hiddenOpenings: Set<UUID>,
                      exterior: [[SIMD3<Float>]],
                      anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?, name: String = "",
-                     photos: [ScanPhoto] = [], photoFolder: String = "") throws -> Data {
+                     photos: [ScanPhoto] = [], photoFolder: String = "", addedWalls: [AddedWall] = []) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
-        let walls = s.walls.compactMap { WallEdit.apply(wallEdits, to: segment($0)) }
+        // Drawn walls go in with the scanned ones, at the height of that floor's walls.
+        let drawn = addedWalls.map { w -> Segment in
+            let same = s.walls.filter { $0.story == w.story }
+            let bottom = same.isEmpty ? 0 : Double(same.map { $0.transform.columns.3.y - $0.dimensions.y / 2 }.sorted()[same.count / 2])
+            return Segment(id: w.id.uuidString, story: w.story, a: [w.a.x, w.a.y], b: [w.b.x, w.b.y],
+                           height: 2.4, bottom: (bottom * 1000).rounded() / 1000, wall: nil, curved: false)
+        }
+        let walls = s.walls.compactMap { WallEdit.apply(wallEdits, to: segment($0)) } + drawn
         // Added doors and openings take their height from a standard door and
         // sit on the floor of the wall they are in.
         func added(_ door: Bool) -> [Segment] {
@@ -236,6 +245,9 @@ enum PlanExport {
                                anchorStart: anchorStart.map(corner), anchorEnd: anchorEnd.map(corner)))
         if !name.isEmpty { plan.name = name }
         if !photos.isEmpty { plan.photos = photos.map(photoOut); plan.photoFolder = photoFolder }
+        if !addedWalls.isEmpty {
+            plan.addedWalls = addedWalls.map { AddedWallOut(id: $0.id.uuidString, story: $0.story, a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y]) }
+        }
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try enc.encode(plan)
@@ -300,6 +312,15 @@ struct RoomLabel: Equatable {
     var point: SIMD2<Double>
     var name: String
     var replaces: Int?
+}
+
+// A wall the user drew where the scan saw none (world x, z ends): a closet
+// back behind a door left shut, say.
+struct AddedWall: Equatable {
+    var id = UUID()
+    var story: Int
+    var a: SIMD2<Double>
+    var b: SIMD2<Double>
 }
 
 // A door or opening the user added on a wall (world x, z ends).

@@ -384,6 +384,16 @@ extension ScanController {
                             labelSign: labelSign, exterior: exterior, rooms: rooms,
                             scanInches: Feet.inches(meters: Double(surface.dimensions.x)))
         }
+        // Walls the user drew, alongside the scanned ones.
+        for w in addedWalls {
+            let a = rot([w.a.x, w.a.y]), b = rot([w.b.x, w.b.y])
+            let len = max(hypot(b.x - a.x, b.y - a.y), 0.001)
+            let n = CGVector(dx: -(b.y - a.y) / len, dy: (b.x - a.x) / len)
+            let (labelSign, exterior, rooms) = Self.sides(a: a, b: b, n: n, story: w.story, geometry: g)
+            g.walls.append(PlanWall(id: w.id, story: w.story, a: a, b: b, normal: n, labelSign: labelSign,
+                                    exterior: exterior, rooms: rooms,
+                                    scanInches: Feet.inches(meters: simd_distance(w.a, w.b))))
+        }
         g.exteriorLines = exteriorPlanLines.map { line in
             (rot([line.a.x, line.a.y]), rot([line.b.x, line.b.y]))
         }

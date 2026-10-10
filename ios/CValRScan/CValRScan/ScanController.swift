@@ -33,9 +33,11 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     @Published private(set) var hiddenOpenings: Set<UUID> = []      // the scan's doors and openings removed or replaced
     private var editHistory: [EditSnapshot] = []
     var canUndoEdit: Bool { !editHistory.isEmpty }
-    var hasEdits: Bool { !wallEdits.isEmpty || !roomLabels.isEmpty || !addedOpenings.isEmpty || !hiddenOpenings.isEmpty }
+    var hasEdits: Bool { !wallEdits.isEmpty || !roomLabels.isEmpty || !addedOpenings.isEmpty || !hiddenOpenings.isEmpty || !addedWalls.isEmpty }
+    @Published private(set) var addedWalls: [AddedWall] = []
     private struct EditSnapshot {
         var walls: [UUID: WallEdit]; var rooms: [RoomLabel]; var openings: [AddedOpening]; var hidden: Set<UUID>
+        var added: [AddedWall] = []
     }
     var hasReadings: Bool { !measurements.isEmpty || !spans.isEmpty }
     @Published private(set) var structure: CapturedStructure?
@@ -185,13 +187,14 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     }
 
     private func commit(_ change: (inout EditSnapshot) -> Void) {
-        var s = EditSnapshot(walls: wallEdits, rooms: roomLabels, openings: addedOpenings, hidden: hiddenOpenings)
+        var s = EditSnapshot(walls: wallEdits, rooms: roomLabels, openings: addedOpenings, hidden: hiddenOpenings, added: addedWalls)
         editHistory.append(s)
         change(&s)
         wallEdits = s.walls
         roomLabels = s.rooms
         addedOpenings = s.openings
         hiddenOpenings = s.hidden
+        addedWalls = s.added
         writeFiles()
     }
 
@@ -243,13 +246,25 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             if simd_distance(SIMD2(s.a[0], s.a[1]), from) < 0.1 { e[w.identifier, default: WallEdit()].a = to }
             if simd_distance(SIMD2(s.b[0], s.b[1]), from) < 0.1 { e[w.identifier, default: WallEdit()].b = to }
         }
-        commitEdits(e)
+        let drawn = addedWalls.map { w -> AddedWall in
+            var w = w
+            if simd_distance(w.a, from) < 0.1 { w.a = to }
+            if simd_distance(w.b, from) < 0.1 { w.b = to }
+            return w
+        }
+        commit { $0.walls = e; $0.added = drawn }
     }
 
     func deleteWalls(_ ids: Set<UUID>) {
         var e = wallEdits
-        for id in ids { e[id, default: WallEdit()].hidden = true }
-        commitEdits(e)
+        let drawn = Set(addedWalls.map(\.id))
+        for id in ids where !drawn.contains(id) { e[id, default: WallEdit()].hidden = true }
+        commit { $0.walls = e; $0.added.removeAll { ids.contains($0.id) } }
+    }
+
+    // A wall drawn where the scan saw none (world x, z).
+    func addWall(story: Int, a: SIMD2<Double>, b: SIMD2<Double>) {
+        commit { $0.added.append(AddedWall(story: story, a: a, b: b)) }
     }
 
     // Moves several wall ends at once (world x, z), each from where it is now;
@@ -263,7 +278,13 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             if let m = moves.first(where: { simd_distance(a, $0.from) < 0.1 }) { e[w.identifier, default: WallEdit()].a = m.to }
             if let m = moves.first(where: { simd_distance(b, $0.from) < 0.1 }) { e[w.identifier, default: WallEdit()].b = m.to }
         }
-        commitEdits(e)
+        let drawn = addedWalls.map { w -> AddedWall in
+            var w = w
+            if let m = moves.first(where: { simd_distance(w.a, $0.from) < 0.1 }) { w.a = m.to }
+            if let m = moves.first(where: { simd_distance(w.b, $0.from) < 0.1 }) { w.b = m.to }
+            return w
+        }
+        commit { $0.walls = e; $0.added = drawn }
     }
 
     func undoEdit() {
@@ -272,12 +293,13 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         roomLabels = last.rooms
         addedOpenings = last.openings
         hiddenOpenings = last.hidden
+        addedWalls = last.added
         writeFiles()
     }
 
     func restoreScan() {
         guard hasEdits else { return }
-        commit { $0 = EditSnapshot(walls: [:], rooms: [], openings: [], hidden: []) }
+        commit { $0 = EditSnapshot(walls: [:], rooms: [], openings: [], hidden: [], added: []) }
     }
 
     func removeWallPoint(at index: Int) {
@@ -666,7 +688,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                 roomLabels: roomLabels, addedOpenings: addedOpenings,
                                 rooms: resolvedRooms(structure), hiddenOpenings: hiddenOpenings,
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd,
-                                name: scanName, photos: photos, photoFolder: photoFolder)
+                                name: scanName, photos: photos, photoFolder: photoFolder, addedWalls: addedWalls)
                 .write(to: planURL)
             try JSONEncoder().encode(structure).write(to: rawURL)
             exportURLs = [planURL, rawURL] + (FileManager.default.fileExists(atPath: modelURL.path) ? [modelURL] : [])
@@ -768,6 +790,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         stamp = ""
         scanName = ""
         photos = []
+        addedWalls = []
         photoFolder = ""
         photoZip = nil
         message = nil
@@ -816,6 +839,10 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                     style: DoorStyle(rawValue: o.style ?? "") ?? .swing)
             }
             hiddenOpenings = Set((saved?.hiddenOpenings ?? []).compactMap(UUID.init(uuidString:)))
+            addedWalls = (saved?.addedWalls ?? []).compactMap { w in
+                guard w.a.count == 2, w.b.count == 2 else { return nil }
+                return AddedWall(id: UUID(uuidString: w.id) ?? UUID(), story: w.story, a: SIMD2(w.a[0], w.a[1]), b: SIMD2(w.b[0], w.b[1]))
+            }
             editHistory = []
             spans = (saved?.spans ?? []).compactMap { r in
                 guard r.a.count == 2, r.b.count == 2 else { return nil }
@@ -912,6 +939,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         let name: String?
         let photoFolder: String?
         let photos: [PlanExport.PhotoOut]?
+        let addedWalls: [PlanExport.AddedWallOut]?
         let corners: [Point]?
         let wallPoints: [WallPointIn]?
         let gapDepths: [GapDepthIn]?

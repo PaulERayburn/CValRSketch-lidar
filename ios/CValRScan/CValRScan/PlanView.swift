@@ -24,7 +24,9 @@ struct PlanView: View {
     @State private var endDrag: (from: CGPoint, to: CGPoint)?
     @State private var dragMoves: [(from: CGPoint, to: CGPoint)] = []
     @State private var dragEnded = Date.distantPast
-    @State private var shownPhoto: ScanPhoto?   // a tap right after a drag is the drag's end
+    @State private var shownPhoto: ScanPhoto?
+    @State private var addingWall = false
+    @State private var wallStart: CGPoint?   // a tap right after a drag is the drag's end
     @State private var panBase: CGSize?
     @State private var deleting: EditTarget?
     @State private var tool = EditTool.walls
@@ -56,7 +58,10 @@ struct PlanView: View {
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
-                Text(tool.hint)
+                Text(addingWall && tool == .walls
+                     ? (wallStart == nil ? "Add wall: tap where the wall starts. It snaps to a corner or wall end near your finger."
+                                         : "Now tap where it ends. The wall stays square to the house.")
+                     : tool.hint)
                     .font(.footnote.bold())
                     .foregroundStyle(.teal)
                     .padding(.horizontal)
@@ -132,6 +137,10 @@ struct PlanView: View {
                                     .contains { ScanController.inside(CGPoint(x: at.x + n.dx, y: at.y + n.dy), $0.points) }
                                 doorDraft = DoorDraft(wall: w, at: at, ref: .new, kind: .interior, inches: 32, side: into ? 1 : -1)
                             }
+                            return
+                        }
+                        if editMode && tool == .walls && addingWall {
+                            addWallTap(view.unmap(tap.location), geo: geo, story: shown, view: view)
                             return
                         }
                         if editMode {
@@ -224,7 +233,7 @@ struct PlanView: View {
                 }
                 if !cornerMode {
                     Button(editMode ? "Done" : "Edit") {
-                        editMode.toggle(); tool = .walls; selectedWalls = []
+                        editMode.toggle(); tool = .walls; selectedWalls = []; addingWall = false; wallStart = nil
                         selected = nil; selectedGap = nil   // a reading sheet would hide Undo
                     }
                 }
@@ -247,6 +256,14 @@ struct PlanView: View {
                         }
                         Spacer()
                         Button("Clear") { selectedWalls = [] }
+                    } else if tool == .walls {
+                        Button { addingWall.toggle(); wallStart = nil } label: {
+                            Label(addingWall ? "Cancel" : "Add wall", systemImage: addingWall ? "xmark" : "plus")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        Spacer()
+                        Button("Restore scan") { scan.restoreScan() }
+                            .disabled(!scan.hasEdits)
                     } else {
                         Button("Restore scan") { scan.restoreScan() }
                             .disabled(!scan.hasEdits)
@@ -412,6 +429,31 @@ struct PlanView: View {
             }
     }
 
+    // Add wall: the first tap starts it, the second ends it. Each end snaps to
+    // a corner or wall end near the finger; the far end is squared to the
+    // house from the start.
+    private func addWallTap(_ p: CGPoint, geo: PlanGeometry, story: Int, view: Viewport) {
+        let corners = geo.corners(story: story)
+        func nearCorner(_ q: CGPoint) -> CGPoint? {
+            corners.min(by: { hypot(view.map($0).x - view.map(q).x, view.map($0).y - view.map(q).y)
+                            < hypot(view.map($1).x - view.map(q).x, view.map($1).y - view.map(q).y) })
+                .flatMap { hypot(view.map($0).x - view.map(q).x, view.map($0).y - view.map(q).y) < 18 ? $0 : nil }
+        }
+        guard let start = wallStart else {
+            wallStart = nearCorner(p) ?? p
+            UISelectionFeedbackGenerator().selectionChanged()
+            return
+        }
+        let across = abs(p.x - start.x) >= abs(p.y - start.y)
+        var end = across ? CGPoint(x: p.x, y: start.y) : CGPoint(x: start.x, y: p.y)
+        if let c = nearCorner(end) { if across { end.x = c.x } else { end.y = c.y } }
+        guard hypot(end.x - start.x, end.y - start.y) > 0.3 else { return }
+        scan.addWall(story: story, a: geo.world(start), b: geo.world(end))
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        wallStart = nil
+        addingWall = false
+    }
+
     // A dragged end moves straight across or straight along the house, never
     // at a slant: whichever way the finger has gone further. It still snaps to
     // a corner or square with a far end on that line.
@@ -543,6 +585,7 @@ struct PlanView: View {
         let reference = selectedGap.flatMap { geo.referenceWall(for: $0)?.wall.id }
         let cornerMode = self.cornerMode, spanStart = self.spanStart, draft = self.spanDraft
         let editMode = self.editMode, endDrag = self.endDrag, picked = self.selectedWalls, moves = self.dragMoves
+        let wallStart = self.wallStart
         return Canvas { ctx, _ in
             for f in geo.floors where f.story == story {
                 var p = Path()
@@ -654,6 +697,10 @@ struct PlanView: View {
                     let t = view.map(d.to)
                     ctx.fill(Path(ellipseIn: CGRect(x: t.x - 7, y: t.y - 7, width: 14, height: 14)), with: .color(.teal))
                 }
+            }
+            if let w = wallStart {
+                let p = view.map(w)
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16)), with: .color(.teal))
             }
             // Photo pins: a camera dot with a pointer the way it faced.
             for pin in geo.photos where pin.story == story {
