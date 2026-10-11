@@ -50,6 +50,7 @@ final class Laser: NSObject, ObservableObject, @preconcurrency CBCentralManagerD
 
     func connect() {
         UserDefaults.standard.set(true, forKey: Self.rememberKey)
+        if let laser, laser.state != .connected { central?.cancelPeripheralConnection(laser); self.laser = nil }
         if let central { centralManagerDidUpdateState(central) } else { central = CBCentralManager(delegate: self, queue: nil) }
     }
 
@@ -111,6 +112,15 @@ final class Laser: NSObject, ObservableObject, @preconcurrency CBCentralManagerD
         laser = p
         c.stopScan()
         c.connect(p)
+        // CoreBluetooth never gives up on a connection; a laser that switched off
+        // just after advertising would leave it waiting for good.
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(10))
+            guard self.laser == p, p.state != .connected else { return }
+            c.cancelPeripheralConnection(p)
+            self.laser = nil
+            self.scan()
+        }
     }
 
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
