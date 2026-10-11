@@ -142,22 +142,6 @@ final class SketchHost: NSObject, WKScriptMessageHandler {
           this.pending = true;
         }
       };
-      // The green start-point arrows sit right above the entry and look like the
-      // way to give a direction. With a length waiting in the entry, they draw
-      // that wall instead of nudging the start point.
-      document.addEventListener('click', (e) => {
-        const b = e.target.closest && e.target.closest('[data-startsnap]');
-        const a = window.SketchEntryAdapter;
-        const dir = b && b.dataset.startsnap;
-        if (!a || !'lrud'.includes(dir || 'x')) return;
-        const entry = (a.getEntry() || '').trim();
-        if (!/\d/.test(entry) || /[a-z]\s*$/i.test(entry)) return;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        window.CValRLaser.pending = false;
-        a.setEntry(entry + ' ' + dir);
-        a.commit();
-      }, true);
       document.addEventListener('click', (e) => {
         const b = e.target.closest && e.target.closest('[data-k]');
         const L = window.CValRLaser;

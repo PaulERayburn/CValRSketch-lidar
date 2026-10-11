@@ -142,7 +142,8 @@
   .start-panel { display: none; padding: 8px 12px; background: #eef7f0; border-top: 1px solid #cfe6d6; flex-direction: column; gap: 6px; }
   .start-panel.show { display: flex; }
   .start-panel .hint { font-size: 11px; color: #2e6b46; line-height: 1.3; margin: 0; }
-  .start-panel .dirs { display: grid; grid-template-columns: repeat(4, 1fr) auto; gap: 6px; }
+  .start-panel .dirs { display: flex; align-items: center; gap: 8px; }
+  .start-panel .dirs .hint { flex: 1; }
   .start-panel .dirs button { padding: 12px 0; font-size: 17px; font-weight: bold; background: #2e8b57; color: #fff; border: none; border-radius: 8px; }
   .start-panel .dirs button.origin { background: #fff; color: #2e8b57; border: 1px solid #2e8b57; padding: 12px 12px; font-size: 18px; }
   .start-panel .dirs button:active { background: #1f6b40; }
@@ -200,9 +201,17 @@
   .keypad button.unit { background: #f4f0e6; font-size: 15px; }
   .keypad button.dir  { background: #e8f0fa; color: #2b3a4a; font-size: 17px; }
   .keypad button.dir:active { background: #2b6cb0; color: #fff; }
-  .keypad button.dir.diag { background: #f1f5fb; font-size: 19px; }
   .keypad button.back { background: #f8d7da; color: #721c24; font-size: 22px; }
-  .keypad button.add  { background: #2e8b57; color: #fff; border-color: #1d6a3e; font-size: 17px; grid-column: 4; grid-row: span 3; }
+  .keypad button.add  { background: #2e8b57; color: #fff; border-color: #1d6a3e; font-size: 17px; grid-column: 4; grid-row: span 2; }
+  .keypad .rose-cell { grid-column: 1 / span 3; grid-row: span 3; display: flex; justify-content: center; align-items: center; }
+  .rose-cell svg { width: 100%; max-width: 190px; height: auto; touch-action: manipulation; }
+  .rose-wedge { fill: #f1f5fb; stroke: #fff; stroke-width: 2; }
+  .rose-wedge.cardinal { fill: #e1ebf8; }
+  .rose-wedge.tap { fill: #2b6cb0; }
+  .rose-label { font: bold 17px sans-serif; fill: #2b3a4a; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+  .rose-label.fine { font-size: 10px; font-weight: normal; fill: #556; }
+  .rose-hub { fill: #fff; stroke: #c0c8d0; }
+  .rose-hub-text { font: bold 11px sans-serif; fill: #2b6cb0; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
   .keypad button.add.disabled { background: #b9c7b8; border-color: #b9c7b8; color: #f0f0f0; }
   .keypad button.connect { background: #d946ef; color: #fff; border-color: #a126b8; font-size: 14px; min-height: 52px; }
   .keypad button.connect.hidden { background: #f0f0f0; color: #ccc; border-color: #e5e5e5; }
@@ -315,12 +324,9 @@
 </div>
 
 <div class="start-panel" id="start-panel">
-  <div class="hint" id="start-panel-info">Start point</div>
+  <!-- No arrows here: beside the compass they read as the way to draw a wall. -->
   <div class="dirs">
-    <button data-startsnap="l" aria-label="Align start to next vertex left">←</button>
-    <button data-startsnap="u" aria-label="Align start to next vertex up">↑</button>
-    <button data-startsnap="d" aria-label="Align start to next vertex down">↓</button>
-    <button data-startsnap="r" aria-label="Align start to next vertex right">→</button>
+    <div class="hint" id="start-panel-info">Start point</div>
     <button class="origin" data-startsnap="origin" aria-label="Reset start to origin">⌂</button>
   </div>
 </div>
@@ -342,12 +348,12 @@
     <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button><button data-k="ft" class="unit">ft</button>
     <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button><button data-k="in" class="unit">in</button>
     <button data-k="0">0</button><button data-k="." aria-label="decimal"><span style="font-size:24px;line-height:1;">·</span></button><button data-k="+" class="unit">+</button><button data-k="clear" class="back" aria-label="clear entry">×</button>
-    <!-- Compass: the four cardinals add a direction to the entry (an angle can
-         follow: 10 r 45); the diagonals add the wall at once, like the desktop compass. -->
-    <button data-k="ul" class="dir diag" aria-label="Up-left">↖</button><button data-k="u" class="dir" aria-label="Up">↑</button><button data-k="ur" class="dir diag" aria-label="Up-right">↗</button>
+    <!-- Compass, as on the desktop: 8 or 16 directions (tap the centre to switch).
+         The four cardinals add a direction to the entry (an angle can follow:
+         10 r 45); any other heading adds the wall at once. -->
+    <div class="rose-cell" id="rose-cell"></div>
     <button data-k="add" id="btn-add" class="add">✓ Add Wall</button>
-    <button data-k="l" class="dir" aria-label="Left">←</button><button data-k="connect" id="btn-connect" class="connect hidden" title="Join the chain into one diagonal wall">Join</button><button data-k="r" class="dir" aria-label="Right">→</button>
-    <button data-k="dl" class="dir diag" aria-label="Down-left">↙</button><button data-k="d" class="dir" aria-label="Down">↓</button><button data-k="dr" class="dir diag" aria-label="Down-right">↘</button>
+    <button data-k="connect" id="btn-connect" class="connect hidden" title="Join the chain into one diagonal wall">Join</button>
   </div>
   <div class="fence-panel">
     <div class="status" id="fence-status">Drag on the canvas to select vertices inside a rectangle.</div>
@@ -1481,8 +1487,8 @@ function renderStartPanel() {
   if (!show) return;
   const sp = getStart();
   $('start-panel-info').textContent = state.startPoint
-    ? `Start (${sp.x.toFixed(1)}, ${sp.y.toFixed(1)}) ft — tap a vertex or the canvas, or use the arrows to align.`
-    : `Start at origin (0, 0) — tap a vertex or the canvas, or use the arrows to align.`;
+    ? `Start (${sp.x.toFixed(1)}, ${sp.y.toFixed(1)}) ft — tap a vertex or the canvas to move it.`
+    : `Start at origin (0, 0) — tap a vertex or the canvas to move it.`;
 }
 
 function renderInProgress(W) {
@@ -1614,22 +1620,65 @@ function pressKey(k) {
     case 'l': case 'r': case 'u': case 'd':
       pressDirection(k);
       return;
-    case 'ul': case 'ur': case 'dl': case 'dr':
-      pressDiagonal(k);
-      return;
     default:
       if (/^\d$/.test(k)) { cancelChainPreview(); appendEntry(k); }
   }
 }
 
-// Diagonal compass keys, written as the desktop compass writes them: an
-// absolute heading from up or down (u 45 = up-right), whatever the last wall.
-const DIAGONALS = { ur: 'u 45', dr: 'd -45', dl: 'd 45', ul: 'u -45' };
-function pressDiagonal(k) {
+// ----- Compass rose (the desktop's, sized for a thumb) -----
+// Headings are degrees clockwise from up. Off the cardinals a heading is written
+// as the desktop writes it, absolute from up or down (u 45 = up-right, d 22.5 =
+// a little left of down), whatever the last wall.
+let roseStep = 45;
+try { if (localStorage.getItem('cvalrsketchRoseStep') === '22.5') roseStep = 22.5; } catch (e) {}
+const ROSE_CARDINAL = { 0: 'u', 90: 'r', 180: 'd', 270: 'l' };
+function headingToCmd(deg) {
+  deg = ((deg % 360) + 360) % 360;
+  if (ROSE_CARDINAL[deg]) return ROSE_CARDINAL[deg];
+  const fmt = x => (Math.round(x * 100) / 100).toString();
+  const th = deg - 90;
+  return th < 0 || th > 180 ? 'u ' + fmt(deg > 270 ? deg - 360 : deg) : 'd ' + fmt(deg - 180);
+}
+function renderRose() {
+  const W = 190, C = W / 2, R = C - 2, hub = 22;
+  const rad = a => (a - 90) * Math.PI / 180;
+  const pt = (a, r) => [C + Math.cos(rad(a)) * r, C + Math.sin(rad(a)) * r];
+  const arrows = { 0: '↑', 45: '↗', 90: '→', 135: '↘', 180: '↓', 225: '↙', 270: '←', 315: '↖' };
+  let out = `<svg viewBox="0 0 ${W} ${W}" aria-label="Compass: tap a direction">`;
+  for (let d = 0; d < 360; d += roseStep) {
+    const [x0, y0] = pt(d - roseStep / 2, R), [x1, y1] = pt(d + roseStep / 2, R);
+    const [i0x, i0y] = pt(d - roseStep / 2, hub), [i1x, i1y] = pt(d + roseStep / 2, hub);
+    const path = `M ${i0x} ${i0y} L ${x0} ${y0} A ${R} ${R} 0 0 1 ${x1} ${y1} L ${i1x} ${i1y} A ${hub} ${hub} 0 0 0 ${i0x} ${i0y} Z`;
+    const k = ROSE_CARDINAL[d] ? ` data-k="${ROSE_CARDINAL[d]}"` : '';
+    out += `<path class="rose-wedge${d % 90 === 0 ? ' cardinal' : ''}" d="${path}" data-deg="${d}"${k}/>`;
+  }
+  for (let d = 0; d < 360; d += roseStep) {
+    const fine = d % 45 !== 0;
+    const [lx, ly] = pt(d, fine ? R * 0.74 : R * 0.68);
+    out += `<text class="rose-label${fine ? ' fine' : ''}" x="${lx}" y="${ly}">${fine ? (Math.round(d * 10) / 10) : arrows[d]}</text>`;
+  }
+  out += `<circle class="rose-hub" cx="${C}" cy="${C}" r="${hub - 2}" data-rose-step="1"/>`;
+  out += `<text class="rose-hub-text" x="${C}" y="${C}">${roseStep === 45 ? '45°' : '22.5°'}</text></svg>`;
+  $('rose-cell').innerHTML = out;
+}
+function roseTap(e) {
+  if (e.target.closest('[data-rose-step]')) {
+    roseStep = roseStep === 45 ? 22.5 : 45;
+    try { localStorage.setItem('cvalrsketchRoseStep', String(roseStep)); } catch (err) {}
+    renderRose();
+    toast(roseStep === 45 ? 'Compass: 8 directions' : 'Compass: 16 directions (22.5°)');
+    return;
+  }
+  const w = e.target.closest('[data-deg]');
+  if (!w) return;
+  w.classList.add('tap');
+  setTimeout(() => w.classList.remove('tap'), 150);
+  const deg = parseFloat(w.dataset.deg);
+  if (ROSE_CARDINAL[deg]) { pressDirection(ROSE_CARDINAL[deg]); return; }
   cancelChainPreview();
   const v = entryText.trim();
-  if (!/\d/.test(v) || /[a-z]/i.test(v)) { toast('Enter a length, then tap a diagonal'); return; }
-  entryText = v + ' ' + DIAGONALS[k];
+  if (!/\d/.test(v) || /[a-z]/i.test(v)) { toast('Enter a length, then tap a direction'); return; }
+  entryText = v + ' ' + headingToCmd(deg);
   commitEntry();
 }
 
@@ -2655,6 +2704,8 @@ svg.addEventListener('pointerdown', (e) => {
 document.querySelectorAll('#keypad button').forEach(b => {
   b.addEventListener('click', () => pressKey(b.dataset.k));
 });
+renderRose();
+$('rose-cell').addEventListener('click', roseTap);
 // Measurement fields (class "measure") open the on-screen number pad instead of
 // the system keyboard. Delegated so it covers inputs created inside modals/panels.
 document.addEventListener('click', (e) => {
