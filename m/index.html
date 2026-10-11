@@ -200,8 +200,9 @@
   .keypad button.unit { background: #f4f0e6; font-size: 15px; }
   .keypad button.dir  { background: #e8f0fa; color: #2b3a4a; font-size: 17px; }
   .keypad button.dir:active { background: #2b6cb0; color: #fff; }
+  .keypad button.dir.diag { background: #f1f5fb; font-size: 19px; }
   .keypad button.back { background: #f8d7da; color: #721c24; font-size: 22px; }
-  .keypad button.add  { background: #2e8b57; color: #fff; border-color: #1d6a3e; font-size: 17px; grid-column: span 3; min-height: 52px; }
+  .keypad button.add  { background: #2e8b57; color: #fff; border-color: #1d6a3e; font-size: 17px; grid-column: 4; grid-row: span 3; }
   .keypad button.add.disabled { background: #b9c7b8; border-color: #b9c7b8; color: #f0f0f0; }
   .keypad button.connect { background: #d946ef; color: #fff; border-color: #a126b8; font-size: 14px; min-height: 52px; }
   .keypad button.connect.hidden { background: #f0f0f0; color: #ccc; border-color: #e5e5e5; }
@@ -341,9 +342,12 @@
     <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button><button data-k="ft" class="unit">ft</button>
     <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button><button data-k="in" class="unit">in</button>
     <button data-k="0">0</button><button data-k="." aria-label="decimal"><span style="font-size:24px;line-height:1;">·</span></button><button data-k="+" class="unit">+</button><button data-k="clear" class="back" aria-label="clear entry">×</button>
-    <button data-k="l" class="dir">L</button><button data-k="u" class="dir">U</button><button data-k="d" class="dir">D</button><button data-k="r" class="dir">R</button>
+    <!-- Compass: the four cardinals add a direction to the entry (an angle can
+         follow: 10 r 45); the diagonals add the wall at once, like the desktop compass. -->
+    <button data-k="ul" class="dir diag" aria-label="Up-left">↖</button><button data-k="u" class="dir" aria-label="Up">↑</button><button data-k="ur" class="dir diag" aria-label="Up-right">↗</button>
     <button data-k="add" id="btn-add" class="add">✓ Add Wall</button>
-    <button data-k="connect" id="btn-connect" class="connect hidden" title="Connect chain as one diagonal wall">↗</button>
+    <button data-k="l" class="dir" aria-label="Left">←</button><button data-k="connect" id="btn-connect" class="connect hidden" title="Join the chain into one diagonal wall">Join</button><button data-k="r" class="dir" aria-label="Right">→</button>
+    <button data-k="dl" class="dir diag" aria-label="Down-left">↙</button><button data-k="d" class="dir" aria-label="Down">↓</button><button data-k="dr" class="dir diag" aria-label="Down-right">↘</button>
   </div>
   <div class="fence-panel">
     <div class="status" id="fence-status">Drag on the canvas to select vertices inside a rectangle.</div>
@@ -1610,9 +1614,23 @@ function pressKey(k) {
     case 'l': case 'r': case 'u': case 'd':
       pressDirection(k);
       return;
+    case 'ul': case 'ur': case 'dl': case 'dr':
+      pressDiagonal(k);
+      return;
     default:
       if (/^\d$/.test(k)) { cancelChainPreview(); appendEntry(k); }
   }
+}
+
+// Diagonal compass keys, written as the desktop compass writes them: an
+// absolute heading from up or down (u 45 = up-right), whatever the last wall.
+const DIAGONALS = { ur: 'u 45', dr: 'd -45', dl: 'd 45', ul: 'u -45' };
+function pressDiagonal(k) {
+  cancelChainPreview();
+  const v = entryText.trim();
+  if (!/\d/.test(v) || /[a-z]/i.test(v)) { toast('Enter a length, then tap a diagonal'); return; }
+  entryText = v + ' ' + DIAGONALS[k];
+  commitEntry();
 }
 
 function pressDirection(d) {
@@ -1762,7 +1780,7 @@ function updateEntryDisplay() {
     const conn = $('btn-connect');
     if (conn) conn.classList.toggle('hidden', legs.length < 2);
     p.textContent = legs.length > 1
-      ? `${legs.length} legs · ⌫ undo last · ✓ adds as ${legs.length} walls · ↗ Connect = 1 diagonal`
+      ? `${legs.length} legs · ⌫ undo last · ✓ adds as ${legs.length} walls · Join = 1 diagonal`
       : `1 leg · tap another direction to chain · ✓ commits as one wall`;
     return;
   }
