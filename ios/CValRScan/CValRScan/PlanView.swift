@@ -1507,9 +1507,11 @@ struct MeasureSheet: View {
                             .keyboardType(.numbersAndPunctuation)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
+                            .laserInput($text)
                         Button("Paste") { text = UIPasteboard.general.string ?? text }
                             .buttonStyle(.bordered)
                     }
+                    LaserRow()
                     if text.isEmpty {
                         Button("Use \(Feet.text(estimate)) and edit") { text = "\(estimate / 12) \(estimate % 12)" }
                     }
@@ -1663,9 +1665,11 @@ struct SpanSheet: View {
                             .keyboardType(.numbersAndPunctuation)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
+                            .laserInput($text)
                         Button("Paste") { text = UIPasteboard.general.string ?? text }
                             .buttonStyle(.bordered)
                     }
+                    LaserRow()
                     if let reading {
                         let diff = reading.total - estimate
                         HStack {

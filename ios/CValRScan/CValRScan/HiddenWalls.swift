@@ -153,11 +153,13 @@ struct GapSheet: View {
                                 .keyboardType(.numbersAndPunctuation)
                                 .autocorrectionDisabled()
                                 .textInputAutocapitalization(.never)
+                                .laserInput($text, pieces: false)
                             if let parsed { Text("= \(Feet.text(parsed))").bold() }
                         }
                         if parsed == nil && !text.isEmpty {
                             Text("Not understood. Try feet then inches, like 2 0, or 24 in.").foregroundStyle(.red)
                         }
+                        LaserRow()
                     } header: {
                         Text("Or enter a laser depth")
                     } footer: {
