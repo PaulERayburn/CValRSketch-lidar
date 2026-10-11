@@ -170,6 +170,19 @@
     are: 'r', our: 'r', el: 'l', you: 'u'
   };
 
+  // Words a measuring command can contain once transform() has run: lengths
+  // ("12'4", "6\"", "10 6"), directions, angles, pieces, and auto-extend.
+  const COMMAND_WORDS = new Set(['right', 'left', 'up', 'down', 'r', 'l', 'u', 'd',
+    'next', 'last', 'far', 'farthest', 'end', 'plus', 'minus', 'degrees', 'degree', 'deg',
+    'feet', 'foot', 'ft', 'inch', 'inches', 'in']);
+  function isCommand(text) {
+    const s = (text || '').toLowerCase().trim();
+    // "enter" alone. Not the bare-direction mishears ("you", "are"): said in
+    // passing they would draw a wall.
+    if (!s) return true;
+    return s.split(/\s+/).every(w => /^[\d'".\/+\-&]+$/.test(w) || COMMAND_WORDS.has(w));
+  }
+
   let recognition = null;
   let listening = false;
   let wantListening = false;   // sticky: continuous mode auto-restarts on onend until user toggles off
@@ -224,6 +237,12 @@
     setStatus('Heard: "' + transcript.trim() + '" → ' + (text || '(empty)') + (submit ? '  [enter]' : ''));
 
     // Mobile path: the touch UI has no #cmd input. It exposes window.SketchEntryAdapter.
+    // On a phone left listening on site, only measuring commands get through:
+    // chatter ("sure, what did you say") would otherwise land in the entry.
+    if (window.SketchEntryAdapter && !isCommand(text)) {
+      setStatus('Ignored: "' + transcript.trim() + '" (not a length or direction)');
+      return;
+    }
     // For auto-extend we drive the page's native chainPreview (the orange dashed line
     // the L/U/D/R buttons use) via adapter.previewCandidate, so there's a visual cue —
     // and "next"/"last" swap which candidate the preview points at. "enter" commits.
