@@ -95,6 +95,13 @@ struct ContentView: View {
                     }
                 }
                 Section {
+                    NavigationLink { SketchView() } label: {
+                        Label("Sketch with laser", systemImage: "pencil.and.ruler")
+                    }
+                } footer: {
+                    Text("Draw a plan from scratch, no scan needed: laser a wall, then tap or say its direction.")
+                }
+                Section {
                     Button("Scan a room", systemImage: "camera.viewfinder") { scan.startRoom() }
                         .disabled(!ScanController.isSupported || scan.isBusy)
                     Button("Remove last room", systemImage: "arrow.uturn.backward", role: .destructive) {

@@ -55,6 +55,7 @@
 				5C0A00000000000000000007 /* Sources */,
 				5C0A00000000000000000003 /* Frameworks */,
 				5C0A00000000000000000008 /* Resources */,
+				5C0A00000000000000000010 /* Bundle CValRSketch */,
 			);
 			buildRules = (
 			);
@@ -107,6 +108,24 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		5C0A00000000000000000010 /* Bundle CValRSketch */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle CValRSketch";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# The mobile sketch app (m/index.html and the files it loads), copied from the repo root so the Sketch screen always ships the current version and works offline.\nSRC=\"${PROJECT_DIR}/../..\"\nDEST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Sketch\"\nrm -rf \"$DEST\"\nmkdir -p \"$DEST/m\"\ncp \"$SRC/m/index.html\" \"$SRC/m/manifest.webmanifest\" \"$DEST/m/\"\ncp \"$SRC/core.js\" \"$SRC/dictation.js\" \"$SRC/icon.svg\" \"$SRC/icon-192.png\" \"$SRC/icon-512.png\" \"$DEST/\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		5C0A00000000000000000007 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -157,6 +176,8 @@
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "CValRScan connects to your Bluetooth laser measure to fill in readings.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "CValRScan uses the camera and LiDAR scanner to measure rooms.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "CValRScan listens when you dictate sketch walls, like twelve four right.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "CValRScan turns dictated lengths and directions into sketch walls.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIFileSharingEnabled = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -167,7 +188,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.21.1;
+				MARKETING_VERSION = 0.22.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.paulrayburn.CValRScan;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = iphoneos;
@@ -189,6 +210,8 @@
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "CValRScan connects to your Bluetooth laser measure to fill in readings.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "CValRScan uses the camera and LiDAR scanner to measure rooms.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "CValRScan listens when you dictate sketch walls, like twelve four right.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "CValRScan turns dictated lengths and directions into sketch walls.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIFileSharingEnabled = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -199,7 +222,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.21.1;
+				MARKETING_VERSION = 0.22.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.paulrayburn.CValRScan;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = iphoneos;

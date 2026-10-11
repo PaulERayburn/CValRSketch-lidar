@@ -237,6 +237,19 @@
       const sBare = s.replace(/\bnext\b/g, () => { nextCount++; return ' '; }).replace(/\s+/g, ' ').trim();
       const bare = BARE_DIR[sBare];
 
+      // A bare direction after a length (typed, or from a laser in CValRScan)
+      // finishes that wall rather than discarding the length for an
+      // auto-extend. After a laser reading it is added at once.
+      const pendingLength = (adapter.getEntry() || '').trim();
+      if (bare && pendingLength && !/[a-z]\s*$/i.test(pendingLength)) {
+        adapter.setEntry(pendingLength + ' ' + bare);
+        const laser = window.CValRLaser && window.CValRLaser.pending;
+        if (laser) window.CValRLaser.pending = false;
+        if (submit || laser) adapter.commit();
+        mobilePending = null;
+        return;
+      }
+
       // Bare direction (optionally + next/last): preview the chosen aligned candidate.
       if (bare && adapter.previewCandidate) {
         const probe = adapter.candidates ? adapter.candidates(bare) : [];
