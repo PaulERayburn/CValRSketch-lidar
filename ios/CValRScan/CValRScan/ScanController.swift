@@ -889,7 +889,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         shareURLs = namedCopies(of: exportURLs)
     }
 
-    // Copies of the scan files named like "2603 36 Ave 2026-10-08_21-07.cvalrscan.json",
+    // Copies of the scan files named like "123 Main St 2026-10-08_21-07.cvalrscan.json",
     // so a shared or saved file says which job it is. The originals keep
     // their timestamp names, which the app finds them by. Characters that
     // file systems refuse (/ \ : * ? " < > |) are left out.

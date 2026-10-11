@@ -189,7 +189,7 @@ struct ContentView: View {
             .navigationTitle("CValRScan")
             .sheet(item: $model3D) { ModelView(url: $0) }
             .alert("Name this scan", isPresented: $naming) {
-                TextField("e.g. 2603 36 Ave", text: $nameDraft)
+                TextField("e.g. 123 Main St", text: $nameDraft)
                     .textInputAutocapitalization(.words)
                 Button("Save") { scan.setName(nameDraft) }
                 Button("Cancel", role: .cancel) {}
