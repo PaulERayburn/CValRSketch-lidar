@@ -156,9 +156,10 @@ struct PlanGeometry {
 
     // What a reading between two scanned (inside) corners should be. Inside,
     // face to face. Outside, siding corner to siding corner: one wall thickness
-    // further at an outside corner, where the house ends; nothing extra at an
-    // inside corner, where the house carries on past it (the step in an L), as
-    // the siding there is set in by the same thickness as the wall it meets.
+    // further at an outside corner, where the house ends, and one less at an
+    // inside corner (the step in an L), where the wall met there has its
+    // siding a thickness out from its scanned inside face, toward the reading.
+    // At a jog the two cancel, so inside and outside read the same.
     func spanEstimate(_ a: CGPoint, _ b: CGPoint, story: Int, outside: Bool) -> Int {
         var inches = Double(Self.along(a, b)) * 12
         guard outside else { return Int(inches.rounded()) }
@@ -172,8 +173,10 @@ struct PlanGeometry {
         for (end, other) in [(a, b), (b, a)] {
             let ux: CGFloat = horizontal ? (end.x > other.x ? 1 : -1) : 0
             let uy: CGFloat = horizontal ? 0 : (end.y > other.y ? 1 : -1)
-            let past = CGPoint(x: end.x + ux * 0.75 + n.dx * sign * 0.75, y: end.y + uy * 0.75 + n.dy * sign * 0.75)
-            inches += inside(past) ? 0 : Assume.exteriorInches
+            let houseSide = CGPoint(x: end.x + ux * 0.75 + n.dx * sign * 0.75, y: end.y + uy * 0.75 + n.dy * sign * 0.75)
+            let outSide = CGPoint(x: end.x + ux * 0.75 - n.dx * sign * 0.75, y: end.y + uy * 0.75 - n.dy * sign * 0.75)
+            if !inside(houseSide) { inches += Assume.exteriorInches }
+            else if inside(outSide) { inches -= Assume.exteriorInches }
         }
         return Int(inches.rounded())
     }
@@ -248,6 +251,32 @@ struct PlanGeometry {
             }
         }
         return Int(inches.rounded())
+    }
+
+    // True when the wall closing this end turns away from the measured side:
+    // seen from the room, an outside corner, with no face to put the dot on.
+    func turnsAway(_ r: WallRun, start: Bool) -> Bool {
+        guard let e = start ? r.startWall : r.endWall, let w = r.walls.first else { return false }
+        return reach(e, from: start ? r.start : r.end, toward: w.sideVector(r.sign)) < -0.3
+    }
+
+    // A reading of the same stretch from the other side (inside or outside),
+    // and what it says this one should be: the two estimates differ only by
+    // the wall thickness at each corner, which cancels at a jog.
+    func otherSide(_ r: WallRun, story: Int, existing: WallMeasurement?) -> (label: String, expect: Int)? {
+        let here = estimateInches(r)
+        func label(_ f: WallMeasurement.Face) -> String { f == .outside ? "outside reading" : "inside reading" }
+        if let m = existing, (m.face == .outside) != r.outside, let w = r.walls.first {
+            let there = estimateInches(run(from: w, sign: m.sideSign, outside: m.face == .outside))
+            return (label(m.face), m.inches + here - there)
+        }
+        func near(_ p: CGPoint, _ q: CGPoint) -> Bool { hypot(p.x - q.x, p.y - q.y) < 0.5 }
+        for s in spans where s.reading.story == story && (s.reading.face == .outside) != r.outside {
+            guard (near(s.a, r.start) && near(s.b, r.end)) || (near(s.a, r.end) && near(s.b, r.start)) else { continue }
+            let there = spanEstimate(s.a, s.b, story: story, outside: s.reading.face == .outside)
+            return (label(s.reading.face), s.reading.inches + here - there)
+        }
+        return nil
     }
 
     // Single-segment estimate used for the plan's labels.

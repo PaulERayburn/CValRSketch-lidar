@@ -159,6 +159,7 @@ struct GapSheet: View {
                         if parsed == nil && !text.isEmpty {
                             Text("Not understood. Try feet then inches, like 2 0, or 24 in.").foregroundStyle(.red)
                         }
+                        ReadingClearRow(text: $text)
                         LaserRow()
                     } header: {
                         Text("Or enter a laser depth")

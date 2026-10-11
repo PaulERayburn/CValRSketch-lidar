@@ -206,3 +206,32 @@ private struct LaserInput: ViewModifier {
         }
     }
 }
+
+// Takes the last piece off a reading ("10 9 + 6 5" → "10 9"), for a laser
+// press that went wrong or twice, or clears it.
+struct ReadingClearRow: View {
+    @Binding var text: String
+
+    var body: some View {
+        if !text.trimmingCharacters(in: .whitespaces).isEmpty {
+            HStack {
+                if Self.withoutLast(text) != nil {
+                    Button("Clear last", systemImage: "delete.backward") { text = Self.withoutLast(text) ?? "" }
+                }
+                Spacer()
+                Button("Clear all", systemImage: "xmark.circle", role: .destructive) { text = "" }
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    // The reading before its last + or − piece; nil when it has only one.
+    static func withoutLast(_ s: String) -> String? {
+        let cuts = ["+", "−", "–", " - ", " plus ", " minus "].compactMap {
+            s.range(of: $0, options: [.backwards, .caseInsensitive])?.lowerBound
+        }
+        guard let cut = cuts.max() else { return nil }
+        let rest = s[..<cut].trimmingCharacters(in: .whitespaces)
+        return rest.isEmpty ? nil : rest
+    }
+}
