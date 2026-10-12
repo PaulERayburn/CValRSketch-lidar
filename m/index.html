@@ -546,6 +546,39 @@ function restoreState(snap) {
   state.annotations = d.annotations || [];
   state.selection = null;
 }
+// ----- Autosave / crash recovery -----
+// A phone page can be closed, reloaded or killed by iOS at any moment on site,
+// so the working sketch is mirrored to localStorage a moment after every
+// change and restored on startup. The whole sketch is kept, desktop-only data
+// included, the same as Save. Separate from Recent projects.
+const AUTOSAVE_KEY = 'cvalrsketchMobile:autosave';
+let autosaveTimer = null;
+function sketchData() {
+  const data = { ...state };
+  for (const k of ['undoStack', 'redoStack', 'selection', 'fenceSelection', 'fenceDraw', 'offsetPick',
+                   'preview', 'splitSelection', 'splitPreview']) delete data[k];
+  return data;
+}
+function writeAutosave() {
+  autosaveTimer = null;
+  try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ at: Date.now(), data: sketchData() })); }
+  catch (e) { /* quota or private mode: not fatal */ }
+}
+function scheduleAutosave() {
+  if (!autosaveTimer) autosaveTimer = setTimeout(writeAutosave, 800);
+}
+function restoreAutosave() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || 'null'); } catch (e) { return; }
+  if (!saved || !saved.data || !Array.isArray(saved.data.shapes)) return;
+  Object.assign(state, saved.data);
+  state.undoStack = []; state.redoStack = [];
+  state.selection = null;
+}
+// iOS may suspend the page without warning once it's hidden: write now.
+document.addEventListener('visibilitychange', () => { if (document.hidden && autosaveTimer) { clearTimeout(autosaveTimer); writeAutosave(); } });
+window.addEventListener('pagehide', () => { if (autosaveTimer) { clearTimeout(autosaveTimer); writeAutosave(); } });
+
 // Counts edits, undo and redo included — see the desktop note; used to key the
 // "shape is closed" offer.
 let editTick = 0;
@@ -693,6 +726,7 @@ function render() {
   renderStatus();
   renderCloseOffer();
   renderStartPanel();
+  scheduleAutosave();
 }
 
 function renderShape(sh, W, isGhost) {
@@ -2545,8 +2579,7 @@ async function saveJSON() {
   // Always snapshot to localStorage recents so the user can hop back here later
   // without re-navigating the file system. Then save the actual file too.
   saveToRecents();
-  const data = { ...state };
-  delete data.undoStack; delete data.redoStack; delete data.selection;
+  const data = sketchData();
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const filename = (state.subject || 'sketch').replace(/[^\w\-]/g, '_') + '.json';
   await saveBlob(blob, filename, 'application/json');
@@ -2862,6 +2895,8 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 // =============================================================================
 $('header-version').textContent = 'v' + APP_VERSION;
 $('drawer-version').textContent = 'v' + APP_VERSION;
+restoreAutosave();
+$('subject-input').value = state.subject || '';
 updateEntryDisplay();
 render();
 renderDrawer();
