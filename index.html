@@ -3138,6 +3138,14 @@ function sidebarBasement() {
   return html;
 }
 
+// Rooms with finishes from a scan (core.js roomTable), as a small table.
+function roomTableHtml(rows) {
+  if (!rows.length) return '';
+  const td = v => `<td style="padding:1px 4px;">${escapeHtml(v || '')}</td>`;
+  return `<div style="margin-top:6px;font-weight:bold;font-size:11px;color:#555;">&nbsp;&nbsp;Rooms</div>
+    <table style="font-size:11px;border-collapse:collapse;width:100%;"><tr style="color:#777;text-align:left;"><th>Room</th><th>Floor</th><th>Walls</th><th>Ceiling</th><th>Ht</th><th>Cond.</th></tr>
+    ${rows.map(r => `<tr>${td(r.name + (r.level ? ' (' + r.level + ')' : ''))}${td(r.floorFinish)}${td(r.walls)}${td(r.ceiling)}${td(r.ceilingHeight ? formatLength(r.ceilingHeight) : '')}${td(r.condition)}</tr>`).join('')}</table>`;
+}
 function sidebarTotals() {
   if (state.shapes.length === 0) return '';
   // Totals grouped Building → Floor → Type
@@ -3163,6 +3171,7 @@ function sidebarTotals() {
       buildingTotal += floorTotal;
     });
     html += `<div class="row total"><span>&nbsp;&nbsp;${escapeHtml(building)} total</span><span>${Math.round(buildingTotal)} sf</span></div>`;
+    html += roomTableHtml(roomTable(state.shapes.filter(sh => (sh.building || DEFAULT_BUILDING) === building)));
 
     // Above / below grade living-area summary (appraisal reporting)
     const agla = aboveGradeLiving(building);
@@ -5458,7 +5467,9 @@ function svgForExport() {
   const legendPad = 10;
   const legendHeaderH = 22;
   const summaryRowH = (gradeSummary && includeLegend) ? 20 : 0;  // grade/basement totals live in the legend
-  const legendH = includeLegend ? (legendPad*2 + legendHeaderH + usedTypes.length * legendRowH + summaryRowH + legendFooterH) : 0;
+  const roomRows = includeLegend ? roomTable(visibleShapes()) : [];   // finishes from a scan
+  const roomRowH = 15, roomTableH = roomRows.length ? 22 + roomRows.length * roomRowH : 0;
+  const legendH = includeLegend ? (legendPad*2 + legendHeaderH + usedTypes.length * legendRowH + summaryRowH + roomTableH + legendFooterH) : 0;
 
   // ---- 2. Capture the drawing panel(s) ----
   // 'active' exports the live canvas as-is (active floor + ghosts + surfaced dims).
@@ -5655,6 +5666,21 @@ function svgForExport() {
         'font-size': 12.5, 'font-weight':'bold', fill:'#2b3a4a'
       }, gradeSummary));
       summaryBottom += 20;
+    }
+    // Room table: name, finishes, ceiling height and condition per scanned room
+    if (roomRows.length) {
+      const cols = [['Room', 0], ['Floor', 0.22], ['Walls', 0.38], ['Ceiling', 0.52], ['Ceiling ht', 0.68], ['Condition', 0.8]];
+      const cell = (txt, i, y, bold) => out.appendChild(mk('text', {
+        x: x0 + 12 + cols[i][1] * (lw - 24), y, 'font-family':'Arial, sans-serif', 'font-size': 11,
+        ...(bold ? { 'font-weight':'bold', fill:'#555' } : { fill:'#222' })
+      }, txt));
+      cols.forEach(([h], i) => cell(h, i, summaryBottom + 12, true));
+      roomRows.forEach((r, k) => {
+        const y = summaryBottom + 12 + (k + 1) * roomRowH;
+        [r.name + (r.level ? ` (${r.level})` : ''), r.floorFinish, r.walls, r.ceiling, r.ceilingHeight ? formatLength(r.ceilingHeight) : '', r.condition]
+          .forEach((v, i) => cell(v || '', i, y, false));
+      });
+      summaryBottom += roomTableH;
     }
     // Wall-style swatches as a footer row
     const footerY = summaryBottom + 6;
@@ -6102,7 +6128,7 @@ function pdfImportToSketch(res, picked) {
       if (r.f.detail) {
         const rel = p => ({ x: +(p.x - ox + nextX - pts[0].x).toFixed(4), y: +(p.y - oy - pts[0].y).toFixed(4) });
         sh.detail = { lines: r.f.detail.lines.map(l => ({ a: rel(l.a), b: rel(l.b), kind: l.kind, ...(l.hinge ? { hinge: l.hinge, side: l.side, style: l.style } : {}) })),
-                      rooms: r.f.detail.rooms.map(rm => ({ ...rel(rm), name: rm.name })),
+                      rooms: r.f.detail.rooms.map(rm => ({ ...rm, ...rel(rm) })),   // name, and finishes for roomTable()
                       stairs: { pieces: (r.f.detail.stairs?.pieces || []).map(p => ({ outline: p.outline.map(rel), treads: p.treads.map(t => t.map(rel)) })),
                                 paths: (r.f.detail.stairs?.paths || []).map(p => ({ points: p.points.map(rel), label: p.label })) } };
       }

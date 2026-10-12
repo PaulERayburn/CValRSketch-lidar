@@ -899,3 +899,21 @@ function enclosureCandidates(walk, shapes) {
   cands.sort((a, b) => a.area - b.area);
   return cands;
 }
+
+// The room table: every named room a scan brought in (shape.detail.rooms)
+// that has finishes, a condition or a ceiling height, in shape order.
+// { name, level (the shape's floor), floorFinish, walls, ceiling,
+//   condition, ceilingHeight (ft) }; missing fields are left out.
+function roomTable(shapes) {
+  const rows = [];
+  for (const sh of shapes || []) {
+    for (const r of (sh.detail && sh.detail.rooms) || []) {
+      if (!r || !r.name || !(r.floorFinish || r.walls || r.ceiling || r.condition || r.ceilingHeight)) continue;
+      const row = { name: String(r.name), level: sh.floor || '' };
+      for (const k of ['floorFinish', 'walls', 'ceiling', 'condition']) if (r[k]) row[k] = String(r[k]);
+      if (Number.isFinite(r.ceilingHeight) && r.ceilingHeight > 0) row.ceilingHeight = r.ceilingHeight;
+      rows.push(row);
+    }
+  }
+  return rows;
+}

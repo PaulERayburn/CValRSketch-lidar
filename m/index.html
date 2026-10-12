@@ -2810,6 +2810,11 @@ function totalsHtml() {
       total += ft;
     }
     html += row('sum', multi ? `${escapeHtml(b)} total` : 'All areas', total);
+    // Rooms with finishes from a scan (core.js roomTable)
+    for (const r of roomTable(state.shapes.filter(sh => (sh.building || DEFAULT_BUILDING) === b))) {
+      const bits = [r.floorFinish, r.walls, r.ceiling, r.ceilingHeight ? formatLength(r.ceilingHeight) + ' ceiling' : '', r.condition].filter(Boolean);
+      html += `<div class="tot-row"><span>${escapeHtml(r.name)}${r.level ? ` <small>${escapeHtml(r.level)}</small>` : ''}</span><span style="text-align:right;">${escapeHtml(bits.join(' · '))}</span></div>`;
+    }
   }
   return html;
 }

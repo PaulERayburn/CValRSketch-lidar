@@ -438,7 +438,7 @@ function interiorDetail(d, story, plan, before, after) {
   }
   // Room names as the user left them (format 7), else the scan's own.
   const rooms = d.rooms
-    ? d.rooms.filter(r => r.story === story && r.name).map(r => ({ ...map(r.center), name: r.name }))
+    ? d.rooms.filter(r => r.story === story && r.name).map(r => ({ ...map(r.center), name: r.name, ...roomFinishes(r) }))
     : (d.sections || []).filter(s => s.story === story && ROOM_NAMES[s.label])
         .map(s => ({ ...map(s.center), name: ROOM_NAMES[s.label] }));
   // Stairs as CValRScan drew them for each floor (format 7, 0.16+): pieces
@@ -458,6 +458,18 @@ function doorStyle(s) {
   if (s.type) return 'swing';
   const m = Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]);
   return m > 1.83 ? 'overhead' : m >= 1.2 ? 'double' : 'swing';
+}
+
+// Finishes, condition and ceiling height (feet) picked or scanned in CValRScan
+// 0.28.0+, for the sketch's room table; only those present.
+function roomFinishes(r) {
+  const f = r.finishes || {}, out = {};
+  if (f.floor) out.floorFinish = String(f.floor);
+  if (f.walls) out.walls = String(f.walls);
+  if (f.ceiling) out.ceiling = String(f.ceiling);
+  if (r.condition) out.condition = String(r.condition);
+  if (Number.isFinite(r.ceilingHeight) && r.ceilingHeight > 0) out.ceilingHeight = +(r.ceilingHeight * 3.28084).toFixed(2);
+  return out;
 }
 
 // RoomPlan counts floors from where scanning began (0); appraisal plans name them.
