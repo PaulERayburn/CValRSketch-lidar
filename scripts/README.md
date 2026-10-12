@@ -2,6 +2,19 @@
 
 Helper scripts to bridge platform gaps that the app can't solve from inside the browser.
 
+## compare-import.js (scan import against a laser sketch)
+
+Runs the LiDAR scan importer (`lidar-import.mjs`, the same `readCvalrScan` the desktop page calls before it turns each floor's outline into an area) on a CValRScan file, and compares the main floor's outline wall by wall with a CValRSketch sketch of the same house walked with a laser. It lines the two up (all four turns, mirrored or not, walked either way; a straight run of several walls counts as one), prints each wall's laser length, the import's, and the difference in inches, then the two areas, the worst wall, and `PASS` when every wall is within the tolerance (default 1″) and the area within 1%. A wall the import breaks with a jog the sketch doesn't have (or the other way round) is a fail whatever its length.
+
+There is no Node on the Mac it was written on; it runs with the JavaScriptCore shell that ships with macOS, as an ES module (`-m`), from the repository root:
+
+```
+JSC=/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc
+$JSC -m scripts/compare-import.js -- path/to/scan.cvalrscan.json path/to/laser-sketch.json [tolerance-inches]
+```
+
+The truth sketch's largest living area on the main floor is the one compared. Scans and sketches of real houses stay out of the repository; pass them by path.
+
 ## sync-icloud-to-onedrive.bat (Windows)
 
 Creates a Windows Scheduled Task that mirrors `%USERPROFILE%\iCloudDrive\Sketches` → `%USERPROFILE%\OneDrive\Sketches` every 5 minutes. Useful when iOS Save to Files keeps dropping OneDrive but iCloud Drive stays reliable.
