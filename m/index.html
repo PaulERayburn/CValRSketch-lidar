@@ -184,6 +184,9 @@
   .entry .value { flex: 1; font-size: 18px; font-weight: bold; color: #2b3a4a; }
   .entry .value.placeholder { color: #aaa; font-weight: normal; font-size: 13px; }
   .entry .preview { color: #2e8b57; font-size: 11px; }
+  .entry .toggle-btn.jump-btn { width: auto; padding: 0 8px; font-size: 13px; color: #555; font-family: -apple-system, system-ui, sans-serif; }
+  .entry .toggle-btn.jump-btn.on { background: #555; color: #fff; border-color: #555; }
+  .vertex-target { fill: #fff; stroke: #2b6cb0; stroke-width: 1.5; }
   /* Keypad */
   .keypad {
     display: grid;
@@ -336,6 +339,8 @@
     <span class="label">ENTRY</span>
     <span class="value placeholder" id="entry-value">type length, then direction</span>
     <span class="preview" id="entry-preview"></span>
+    <!-- No data-k: CValRScan's laser hook treats [data-k] taps as using up a reading. -->
+    <button class="toggle-btn jump-btn" id="btn-jump" aria-pressed="false" title="Move the pen without drawing a wall">↷ Jump</button>
     <button class="toggle-btn" id="btn-collapse" aria-label="Hide keypad">▼</button>
   </div>
   <div class="dictate-row" style="display:flex;align-items:center;gap:8px;padding:4px 0;">
@@ -497,7 +502,13 @@ let entryText = '';
 //   ✓ Add Wall(s) → commits each leg as its own cardinal wall, OR
 //   ↗ Connect    → commits the entire path as ONE diagonal wall from the pen
 //                  to the final endpoint (the in-between vertices are dropped).
-let chainPreview = null;  // null | { legs: [{along, point, segment, dir}, ...] }
+let chainPreview = null;  // null | { legs: [{along, point, segment, dir}, ...], jump? }
+
+// Jump (the desktop's pen-jump): while on, the next direction, length or corner
+// tap moves the pen without drawing a wall. The chain preview above is drawn
+// dotted grey and commits as one { jump: true } segment. One-shot: it turns off
+// once the jump is made.
+let jumpArmed = false;
 
 // In-place edit panel — replaces the keypad while editing a vertex or wall.
 // Lets the canvas stay visible so direction-snap / offset edits are visible live.
@@ -651,6 +662,7 @@ function fitView() {
 }
 
 function render() {
+  if (jumpArmed && !state.segments.length) setJump(false);   // walk closed, cancelled or undone
   const w = svg.clientWidth || 360, h = svg.clientHeight || 400;
   svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
   view = userView || fitView();
@@ -706,27 +718,84 @@ function render() {
       ? pathPoints(state.segments, getStart()).slice(-1)[0]
       : getStart();
     let prev = chainStartWorld;
+    const jump = !!chainPreview.jump;   // a jump previews as the desktop draws one: grey, dotted
+    const col = jump ? '#777' : '#e57c00';
     for (const leg of chainPreview.legs) {
       const a = W(prev), b = W(leg.point);
-      addEl('path', { d: `M${a.x} ${a.y} L${b.x} ${b.y}`, fill: 'none', stroke: '#e57c00', 'stroke-width': 2, 'stroke-dasharray': '5,3' });
-      addEl('circle', { cx: b.x, cy: b.y, r: 6, fill: 'none', stroke: '#e57c00', 'stroke-width': 2 });
+      addEl('path', { d: `M${a.x} ${a.y} L${b.x} ${b.y}`, fill: 'none', stroke: col, 'stroke-width': 2, 'stroke-dasharray': jump ? '2,4' : '5,3' });
+      addEl('circle', { cx: b.x, cy: b.y, r: 6, fill: 'none', stroke: col, 'stroke-width': 2 });
       addEl('text', {
         x: (a.x + b.x)/2, y: (a.y + b.y)/2 - 8,
         'text-anchor': 'middle', 'font-size': 12, 'font-weight': 'bold',
-        fill: '#e57c00', stroke: 'white', 'stroke-width': 3, 'paint-order': 'stroke fill'
-      }, `${formatLength(leg.along)} ${leg.dir}`);
+        fill: col, stroke: 'white', 'stroke-width': 3, 'paint-order': 'stroke fill'
+      }, `${jump ? '↷ ' : ''}${formatLength(leg.along)} ${leg.dir}`);
       prev = leg.point;
     }
-    if (chainPreview.legs.length >= 2) {
+    if (chainPreview.legs.length >= 2 && !jump) {
       const a = W(chainStartWorld);
       const b = W(chainPreview.legs[chainPreview.legs.length - 1].point);
       addEl('path', { d: `M${a.x} ${a.y} L${b.x} ${b.y}`, fill: 'none', stroke: '#d946ef', 'stroke-width': 2, 'stroke-dasharray': '2,4', opacity: 0.7 });
     }
   }
+  renderWalkTargets(W);
   renderStatus();
   renderCloseOffer();
   renderStartPanel();
   scheduleAutosave();
+}
+
+// While walking, every corner on this floor and of the walk itself can be
+// tapped (the desktop's click-to-snap): the pen goes straight to it, a wall at
+// any angle, or a jump when Jump is on. Drawn last so wall hit-lines don't
+// cover them; the canvas click listener reads data-tx/data-ty.
+function renderWalkTargets(W) {
+  if (!state.segments.length || fenceMode || editTarget) return;
+  const wpts = pathPoints(state.segments, getStart());
+  const pen = wpts[wpts.length - 1];
+  const seen = new Set();
+  const pts = [];
+  shapesOnFloor(state.activeFloor).forEach(sh => pts.push(...sh.points.slice(0, -1)));
+  pts.push(...wpts.slice(0, -1));
+  for (const p of pts) {
+    if (Math.hypot(p.x - pen.x, p.y - pen.y) < 1e-6) continue;
+    const k = p.x.toFixed(3) + ',' + p.y.toFixed(3);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const sp = W(p);
+    addEl('circle', { cx: sp.x, cy: sp.y, r: 4, class: 'vertex-target' });
+    addEl('circle', { cx: sp.x, cy: sp.y, r: 16, fill: 'transparent', 'data-tx': p.x, 'data-ty': p.y });
+  }
+}
+
+// Desktop snapWalkToPoint: one straight wall from the pen to `target`.
+function snapWalkToPoint(target) {
+  if (!state.segments.length) return;
+  const wpts = pathPoints(state.segments, getStart());
+  const pen = wpts[wpts.length - 1];
+  const dx = target.x - pen.x, dy = target.y - pen.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-6) return;
+  const dir = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 'r' : 'l') : (dy >= 0 ? 'd' : 'u');
+  const jump = jumpArmed;
+  pushUndo();
+  chainPreview = null;
+  entryText = '';
+  state.segments.push(jump
+    ? { length, dir, angle: 0, dx, dy, jump: true, raw: `↷ ${formatLength(length)} ${dir} (jump to point)` }
+    : { length, dir, angle: 0, dx, dy, raw: `${formatLength(length)} ${dir} (to point)` });
+  if (jump) setJump(false);
+  updateEntryDisplay();
+  render();
+}
+
+function setJump(on) {
+  if (on && !state.segments.length) { toast('Jump moves the pen mid-walk. To move the start, tap a corner or the canvas.'); on = false; }
+  jumpArmed = on;
+  const b = $('btn-jump');
+  b.classList.toggle('on', on);
+  b.setAttribute('aria-pressed', String(on));
+  chainPreview = null;   // a chain started in the other mode would commit as the wrong kind
+  updateEntryDisplay();
 }
 
 function renderShape(sh, W, isGhost) {
@@ -1534,14 +1603,18 @@ function renderStartPanel() {
 function renderInProgress(W) {
   const wpts = pathPoints(state.segments, getStart());
   const pts = wpts.map(W);
-  const d = pts.map((p,i) => (i===0?'M':'L') + p.x + ' ' + p.y).join(' ');
+  // A jump is a move (M), not a wall, with a faint dotted line so it can be seen.
+  const d = pts.map((p,i) => (i === 0 || state.segments[i-1].jump ? 'M' : 'L') + p.x + ' ' + p.y).join(' ');
   addEl('path', { d, fill: 'none', stroke: '#2b6cb0', 'stroke-width': 2.5, 'stroke-dasharray': '5,3' });
+  const jumpD = state.segments.map((seg, i) => seg.jump ? `M${pts[i].x} ${pts[i].y} L${pts[i+1].x} ${pts[i+1].y}` : '').join(' ');
+  if (jumpD.trim()) addEl('path', { d: jumpD, fill: 'none', stroke: '#999', 'stroke-width': 1.5, 'stroke-dasharray': '2,4' });
   const start = pts[0], pen = pts[pts.length-1];
   addEl('circle', { cx: start.x, cy: start.y, r: 5, fill: '#2e8b57' });
   addEl('circle', { cx: pen.x, cy: pen.y, r: 6, fill: '#c44' });
   // Length labels on in-progress
   if (state.settings.showSegmentLabels) {
     state.segments.forEach((seg, i) => {
+      if (seg.jump) return;
       const a = pts[i], b = pts[i+1];
       const mx = (a.x + b.x)/2, my = (a.y + b.y)/2;
       const dx = b.x - a.x, dy = b.y - a.y;
@@ -1551,16 +1624,34 @@ function renderInProgress(W) {
       addEl('text', { x: mx + nx*10, y: my + ny*10, 'text-anchor':'middle', 'dominant-baseline':'middle', 'font-size': 11, fill: '#2b6cb0' }, formatLength(seg.length));
     });
   }
-  // Gap indicator
-  const wStart = wpts[0], wPen = wpts[wpts.length - 1];
-  const gapDx = wStart.x - wPen.x, gapDy = wStart.y - wPen.y;
-  const gapLen = Math.hypot(gapDx, gapDy);
-  if (gapLen > state.settings.autoCloseFeet) {
+  // Gap indicator: the straight line Close would add
+  const ol = walkOutline();
+  if (ol.points && ol.gap > state.settings.autoCloseFeet) {
+    const a = W(ol.from), b = W(ol.to);
     addEl('path', {
-      d: `M${pen.x} ${pen.y} L${start.x} ${start.y}`,
+      d: `M${a.x} ${a.y} L${b.x} ${b.y}`,
       fill: 'none', stroke: '#e57c00', 'stroke-width': 1.5, 'stroke-dasharray': '4,4'
     });
   }
+}
+
+// The outline the walk closes into. Without jumps it is the pen's path and the
+// gap runs pen → start. With jumps the walls are chained as the desktop does
+// (assemblePolygonFromWalls): points is null when they don't make one cycle or
+// one open run, else the gap is between the run's two loose ends.
+function walkOutline() {
+  const wpts = pathPoints(state.segments, getStart());
+  const jumps = state.segments.filter(s => s.jump).length;
+  let points = wpts;
+  let walls = state.segments.length;
+  if (jumps) {
+    const w = walkWalls(state.segments, getStart());
+    walls = w.length;
+    points = assemblePolygonFromWalls(w);
+    if (!points) return { points: null, walls, jumps };
+  }
+  const from = points[points.length - 1], to = points[0];
+  return { points, from, to, gap: Math.hypot(to.x - from.x, to.y - from.y), walls, jumps };
 }
 
 // ----- "Walk is closed" offer (mirrors the desktop sidebar box) -----
@@ -1568,14 +1659,14 @@ function renderInProgress(W) {
 // changes; walk on and come back to the start and it is offered again.
 function currentCloseOffer() {
   if (state.segments.length < 3) return null;
+  const ol = walkOutline();
+  if (!ol.points || ol.walls < 3 || ol.gap > state.settings.autoCloseFeet) return null;
   const wpts = pathPoints(state.segments, getStart());
-  const start = wpts[0], pen = wpts[wpts.length - 1];
-  const gap = Math.hypot(pen.x - start.x, pen.y - start.y);
-  if (gap > state.settings.autoCloseFeet) return null;
+  const pen = wpts[wpts.length - 1];
   const key = [state.segments.length, editTick, pen.x.toFixed(2) + ',' + pen.y.toFixed(2)].join('|');
   if (!state.closeOffer || state.closeOffer.key !== key) state.closeOffer = { key, off: false };
   if (state.closeOffer.off) return null;
-  return { gap, area: polygonArea(wpts) };
+  return { gap: ol.gap, area: polygonArea([...ol.points, ol.to]) };
 }
 
 function renderCloseOffer() {
@@ -1600,15 +1691,21 @@ function renderStatus() {
     el.className = 'status';
     return;
   }
-  const wpts = pathPoints(state.segments, getStart());
-  const start = wpts[0], pen = wpts[wpts.length-1];
-  const gapDx = start.x - pen.x, gapDy = start.y - pen.y;
-  const gap = Math.hypot(gapDx, gapDy);
-  if (gap < state.settings.autoCloseFeet) {
-    el.textContent = `✓ Closed (${state.segments.length} walls). Tap ✓ at top to save shape.`;
+  const ol = walkOutline();
+  const jumps = ol.jumps ? ` + ${ol.jumps} jump${ol.jumps > 1 ? 's' : ''}` : '';
+  if (!ol.points) {
+    el.textContent = ol.walls < 3
+      ? `${ol.walls} wall${ol.walls === 1 ? '' : 's'}${jumps} — keep walking`
+      : `${ol.walls} walls${jumps}: the walls don't join into one outline`;
+    el.className = 'status gap';
+    return;
+  }
+  const gapDx = ol.to.x - ol.from.x, gapDy = ol.to.y - ol.from.y;
+  if (ol.gap < state.settings.autoCloseFeet) {
+    el.textContent = `✓ Closed (${ol.walls} walls${jumps}). Tap ✓ at top to save shape.`;
     el.className = 'status closed';
   } else {
-    el.textContent = `gap ${formatLength(gap)} (${formatGapBreakdown(gapDx, gapDy)})`;
+    el.textContent = `gap ${formatLength(ol.gap)} (${formatGapBreakdown(gapDx, gapDy)})${jumps}`;
     el.className = 'status gap';
   }
 }
@@ -1650,7 +1747,7 @@ function clearEntry() {
 function pressKey(k) {
   switch (k) {
     case 'back':  if (chainPreview) { popChainLeg(); return; } backspaceEntry(); return;
-    case 'clear': cancelChainPreview(); clearEntry();     return;
+    case 'clear': cancelChainPreview(); clearEntry(); if (jumpArmed) { setJump(false); render(); } return;
     case 'add':   commitEntry();    return;
     case 'connect': commitChainAsDiagonal(); return;
     case 'ft':    cancelChainPreview(); appendEntry("'"); return;
@@ -1736,7 +1833,8 @@ function pressDirection(d) {
   const cands = findSnapCandidates([...state.segments, ...chainSegs], d, getStart(), state.shapes);
   if (!cands.length) { toast(`No vertex or projection to the ${d}`); return; }
   const c = cands[0];
-  if (!chainPreview) chainPreview = { legs: [] };
+  // In Jump mode the same direction again chains another leg, i.e. skips further.
+  if (!chainPreview) chainPreview = { legs: [], jump: jumpArmed };
   chainPreview.legs.push({ along: c.along, point: c.point, segment: c.segment, dir: d });
   updateEntryDisplay();
   render();
@@ -1829,6 +1927,7 @@ function chainEndpoint() {
 // Connect chain as ONE diagonal wall: build a single segment from current pen
 // to the chain's final endpoint, discarding intermediate vertices.
 function commitChainAsDiagonal() {
+  if (chainPreview && chainPreview.jump) { commitEntry(); return; }
   if (!chainPreview || chainPreview.legs.length < 2) {
     toast('Chain needs 2+ legs to connect as one diagonal');
     return;
@@ -1858,6 +1957,16 @@ function previewSegment() {
 function updateEntryDisplay() {
   const v = $('entry-value');
   const p = $('entry-preview');
+  if (chainPreview && chainPreview.jump) {
+    const legs = chainPreview.legs;
+    v.textContent = '↷ ' + legs.map(l => `${l.dir.toUpperCase()} ${formatLength(l.along)}`).join(' · ');
+    v.classList.remove('placeholder');
+    $('btn-add').classList.remove('disabled');
+    $('btn-add').textContent = '↷ Jump';
+    $('btn-connect').classList.add('hidden');
+    p.textContent = 'same direction again skips further · ⌫ back · ✓ jumps';
+    return;
+  }
   if (chainPreview) {
     const legs = chainPreview.legs;
     const summary = legs.map(l => `${l.dir.toUpperCase()} ${formatLength(l.along)}`).join(' · ');
@@ -1876,18 +1985,19 @@ function updateEntryDisplay() {
   }
   const conn = $('btn-connect');
   if (conn) conn.classList.add('hidden');
-  $('btn-add').textContent = '✓ Add Wall';
+  $('btn-add').textContent = jumpArmed ? '↷ Jump' : '✓ Add Wall';
   if (!entryText) {
-    v.textContent = 'type length, then direction';
+    v.textContent = jumpArmed ? 'jump: tap a direction or a corner' : 'type length, then direction';
     v.classList.add('placeholder');
     p.textContent = '';
   } else {
     v.textContent = entryText;
     v.classList.remove('placeholder');
     const seg = previewSegment();
+    const pre = jumpArmed ? '↷ jump ' : '→ ';
     if (!seg || seg.error) p.textContent = '';
-    else if (seg.autoExtend) p.textContent = '↳ auto-extend ' + seg.dir;
-    else p.textContent = `→ ${formatLength(seg.length)} ${seg.dir}${seg.angle ? ' @ ' + seg.angle + '°' : ''}`;
+    else if (seg.autoExtend) p.textContent = (jumpArmed ? '↷ jump to next ' : '↳ auto-extend ') + seg.dir;
+    else p.textContent = `${pre}${formatLength(seg.length)} ${seg.dir}${seg.angle ? ' @ ' + seg.angle + '°' : ''}`;
   }
   $('btn-add').classList.toggle('disabled', !entryText.trim());
 }
@@ -1897,7 +2007,18 @@ function commitEntry() {
   if (chainPreview) {
     if (!chainPreview.legs.length) { chainPreview = null; return; }
     pushUndo();
-    chainPreview.legs.forEach(l => state.segments.push(l.segment));
+    if (chainPreview.jump) {
+      // The legs only found the landing point; the jump itself is one move.
+      const legs = chainPreview.legs;
+      const dx = legs.reduce((a, l) => a + l.segment.dx, 0), dy = legs.reduce((a, l) => a + l.segment.dy, 0);
+      const length = Math.hypot(dx, dy);
+      const dir = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 'r' : 'l') : (dy >= 0 ? 'd' : 'u');
+      state.segments.push({ length, dir, angle: 0, dx, dy, jump: true,
+        raw: '↷ ' + legs.map(l => `${formatLength(l.along)} ${l.dir}`).join(' ') + ' (jump)' });
+      setJump(false);
+    } else {
+      chainPreview.legs.forEach(l => state.segments.push(l.segment));
+    }
     chainPreview = null;
     entryText = '';
     updateEntryDisplay();
@@ -1913,10 +2034,13 @@ function commitEntry() {
   if (seg.autoExtend) {
     const cands = findSnapCandidates(state.segments, seg.dir, getStart(), state.shapes);
     if (!cands.length) { toast('No aligned vertex to snap to'); state.undoStack.pop(); return; }
-    state.segments.push(cands[0].segment);
-  } else {
-    state.segments.push(seg);
+    seg = cands[0].segment;
   }
+  if (jumpArmed) {
+    seg = { ...seg, jump: true, raw: `↷ ${seg.raw || formatLength(seg.length) + ' ' + seg.dir} (jump)` };
+    setJump(false);
+  }
+  state.segments.push(seg);
   entryText = '';
   updateEntryDisplay();
   render();
@@ -2075,15 +2199,16 @@ function openShapeEditor(sh) {
 // =============================================================================
 function closeShape() {
   if (!state.segments.length) { toast('Walk some segments first'); return; }
-  const wpts = pathPoints(state.segments, getStart());
-  const start = wpts[0], pen = wpts[wpts.length-1];
-  const gap = Math.hypot(start.x - pen.x, start.y - pen.y);
-  let pts = wpts;
-  if (gap > state.settings.autoCloseFeet) {
-    if (!confirm(`Path doesn't close (gap ${formatLength(gap)}). Force-close with a straight line back to start?`)) return;
-    pts = [...wpts, { ...start }];
+  const ol = walkOutline();
+  if (ol.jumps && ol.walls < 3) { toast('Need at least 3 walls (jumps don’t count)'); return; }
+  if (!ol.points) { toast('The walls (jumps left out) don’t form one outline. Walk the missing wall, or undo the jump.'); return; }
+  const outline = ol.points, start = ol.to;
+  let pts;
+  if (ol.gap > state.settings.autoCloseFeet) {
+    if (!confirm(`Path doesn't close (gap ${formatLength(ol.gap)}). Force-close with a straight line back to start?`)) return;
+    pts = [...outline, { ...start }];
   } else {
-    pts = wpts.map((p, i) => i === wpts.length-1 ? { ...start } : p);
+    pts = outline.map((p, i) => i === outline.length-1 ? { ...start } : p);
   }
   const label = prompt('Label for this area:', `Area ${state.nextShapeId}`);
   if (label === null) return;
@@ -2767,6 +2892,7 @@ function setControlsCollapsed(collapsed) {
   setTimeout(render, 200);
 }
 $('btn-collapse').onclick = () => setControlsCollapsed(true);
+$('btn-jump').onclick = () => { setJump(!jumpArmed); render(); };
 $('btn-expand').onclick = () => setControlsCollapsed(false);
 
 $('btn-menu').onclick = openDrawer;
@@ -2855,6 +2981,11 @@ $('ghost-slider').onchange = () => saveSettings();
 // SVG empty-click: place the start point when picking a new area's start,
 // otherwise clear any selection.
 svg.addEventListener('click', (e) => {
+  const corner = e.target.closest && e.target.closest('[data-tx]');
+  if (corner) {
+    snapWalkToPoint({ x: parseFloat(corner.getAttribute('data-tx')), y: parseFloat(corner.getAttribute('data-ty')) });
+    return;
+  }
   if (e.target !== svg) return;
   if (suppressNextCanvasTap) { suppressNextCanvasTap = false; return; }
   if (state.segments.length === 0 && !editTarget && !fenceMode) {
@@ -2920,7 +3051,7 @@ window.SketchEntryAdapter = {
     const n = cands.length;
     const i = ((idx % n) + n) % n;
     const c = cands[i];
-    chainPreview = { legs: [{ along: c.along, point: c.point, segment: c.segment, dir }] };
+    chainPreview = { legs: [{ along: c.along, point: c.point, segment: c.segment, dir }], jump: jumpArmed };
     entryText = '';
     updateEntryDisplay();
     render();

@@ -707,3 +707,63 @@ function findAlignedCandidates(priorSegments, dir, start, shapes) {
   out.sort((a, b) => a.along - b.along);
   return out;
 }
+
+// ----- Walks with pen-jumps -----
+// A jump segment ({ jump: true }) moves the pen without drawing a wall.
+// The walk's walls (jumps skipped) as absolute { a, b } pairs.
+function walkWalls(segments, start) {
+  let x = start.x, y = start.y;
+  const walls = [];
+  for (const s of segments) {
+    const sx = x, sy = y;
+    x += s.dx; y += s.dy;
+    if (!s.jump) walls.push({ a: { x: sx, y: sy }, b: { x, y } });
+  }
+  return walls;
+}
+
+// Given walls (each {a, b}), assemble an ordered polygon vertex list by traversing
+// the wall graph. Returns null if walls don't form a cycle or path with 0/2 endpoints.
+function assemblePolygonFromWalls(walls) {
+  if (walls.length < 3) return null;
+  const eps = 0.05;
+  const sameP = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y) < eps;
+  const verts = [];
+  function vId(p) {
+    for (let i = 0; i < verts.length; i++) if (sameP(verts[i], p)) return i;
+    verts.push({ x: p.x, y: p.y });
+    return verts.length - 1;
+  }
+  const adj = []; // adj[id] = [{wallIdx, otherId}]
+  for (let i = 0; i < walls.length; i++) {
+    const aId = vId(walls[i].a), bId = vId(walls[i].b);
+    if (aId === bId) continue;
+    if (!adj[aId]) adj[aId] = [];
+    if (!adj[bId]) adj[bId] = [];
+    adj[aId].push({ wallIdx: i, otherId: bId });
+    adj[bId].push({ wallIdx: i, otherId: aId });
+  }
+  for (let i = 0; i < verts.length; i++) if (!adj[i]) adj[i] = [];
+  const ones = [], odd = [];
+  for (let i = 0; i < verts.length; i++) {
+    const d = adj[i].length;
+    if (d === 1) ones.push(i);
+    else if (d % 2 === 1 || d === 0) odd.push(i);
+  }
+  let startId;
+  if (ones.length === 0 && odd.length === 0) startId = 0;          // closed cycle
+  else if (ones.length === 2 && odd.length === 0) startId = ones[0]; // open path with 2 endpoints
+  else return null;
+  const used = new Set();
+  const path = [startId];
+  let cur = startId;
+  while (used.size < walls.length) {
+    const next = adj[cur].find(a => !used.has(a.wallIdx));
+    if (!next) break;
+    used.add(next.wallIdx);
+    path.push(next.otherId);
+    cur = next.otherId;
+  }
+  if (used.size !== walls.length) return null;
+  return path.map(id => ({ x: verts[id].x, y: verts[id].y }));
+}
