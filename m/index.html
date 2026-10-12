@@ -212,6 +212,14 @@
   .keypad button.dir:active { background: #2b6cb0; color: #fff; }
   .keypad button.back { background: #f8d7da; color: #721c24; font-size: 22px; }
   .keypad button.add  { background: #2e8b57; color: #fff; border-color: #1d6a3e; font-size: 17px; grid-column: 4; }
+  /* Arrows instead of the compass (the switch in the Dictate row): one row of
+     four, about 100 px less than the compass, for jobs with no angled walls. */
+  .keypad .arrow-key { display: none; }
+  .keypad.arrows .arrow-key { display: block; }
+  .keypad.arrows .rose-cell { display: none; }
+  .keypad.arrows button.add { grid-column: span 2; }
+  .keypad button.dir { background: #e1ebf8; color: #2b3a4a; font-size: 20px; }
+  .measure-on { background: #d946ef !important; color: #fff !important; border-color: #a126b8 !important; }
   .keypad .rose-cell { grid-column: 1 / span 3; grid-row: span 3; display: flex; justify-content: center; align-items: center; }
   .rose-cell svg { width: 100%; max-width: 150px; height: auto; touch-action: manipulation; }
   .rose-wedge { fill: #f1f5fb; stroke: #fff; stroke-width: 2; }
@@ -371,6 +379,8 @@
     <button id="btnMic" class="toggle-btn" style="flex:0 0 auto;padding:6px 12px;">Dictate</button>
     <button id="btnTrain" class="toggle-btn" style="flex:0 0 auto;padding:6px 12px;" title="Teach a correction for the last mishearing">Train</button>
     <span id="micStatus" style="font-size:11px;color:#888;flex:1;min-height:14px;line-height:1.3;"></span>
+    <button id="btnMeasure" class="toggle-btn" style="flex:0 0 auto;padding:6px 10px;" title="Measure between two points">📏 Measure</button>
+    <button id="btnPad" class="toggle-btn" style="flex:0 0 auto;padding:6px 10px;" title="Switch between the compass and plain arrows"></button>
   </div>
   <div class="keypad" id="keypad">
     <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button><button data-k="back" class="back" aria-label="backspace">⌫</button>
@@ -380,6 +390,7 @@
     <!-- Compass, as on the desktop: 8 or 16 directions (tap the centre to switch).
          The four cardinals add a direction to the entry (an angle can follow:
          10 r 45); any other heading adds the wall at once. -->
+    <button data-k="l" class="dir arrow-key" aria-label="Left">←</button><button data-k="u" class="dir arrow-key" aria-label="Up">↑</button><button data-k="d" class="dir arrow-key" aria-label="Down">↓</button><button data-k="r" class="dir arrow-key" aria-label="Right">→</button>
     <div class="rose-cell" id="rose-cell"></div>
     <button data-k="add" id="btn-add" class="add">✓ Add Wall</button>
     <button data-k="clear" class="back" aria-label="clear entry">×</button>
@@ -775,7 +786,8 @@ function render() {
       addEl('path', { d: `M${a.x} ${a.y} L${b.x} ${b.y}`, fill: 'none', stroke: '#d946ef', 'stroke-width': 2, 'stroke-dasharray': '2,4', opacity: 0.7 });
     }
   }
-  renderWalkTargets(W);
+  renderMeasurements(W);
+  if (!measureMode) renderWalkTargets(W);
   renderStatus();
   renderCloseOffer();
   renderStartPanel();
@@ -1944,6 +1956,81 @@ function pressKey(k) {
       return;
     default:
       if (/^\d$/.test(k)) { cancelChainPreview(); appendEntry(k); }
+  }
+}
+
+// ----- Compass or plain arrows -----
+let dirPad = 'compass';
+try { if (localStorage.getItem('cvalrsketchDirPad') === 'arrows') dirPad = 'arrows'; } catch (e) {}
+function applyDirPad() {
+  $('keypad').classList.toggle('arrows', dirPad === 'arrows');
+  $('btnPad').textContent = dirPad === 'arrows' ? '◎ Compass' : '✛ Arrows';
+  setTimeout(render, 50);   // the canvas height changed
+}
+function toggleDirPad() {
+  dirPad = dirPad === 'arrows' ? 'compass' : 'arrows';
+  try { localStorage.setItem('cvalrsketchDirPad', dirPad); } catch (e) {}
+  applyDirPad();
+}
+
+// ----- Measure: tap two points, the distance is kept as a measurement -----
+// Stored as the desktop stores them ({ a, b, floor } in state.annotations), so
+// they show and export there too. Taps snap to a corner within a thumb's width.
+let measureMode = false, measureFirst = null;
+function setMeasure(on) {
+  measureMode = on;
+  measureFirst = null;
+  $('btnMeasure').classList.toggle('measure-on', on);
+  $('btnMeasure').textContent = on ? '📏 Done' : '📏 Measure';
+  if (on) toast('Measure: tap the first point (corners snap)');
+  render();
+}
+function measurePoint(e) {
+  const w = screenToWorld(e.clientX, e.clientY);
+  const tol = 24 / (view.scale || 1);
+  const corners = [...shapesOnFloor(state.activeFloor).flatMap(sh => sh.points),
+                   ...(state.segments.length ? pathPoints(state.segments, getStart()) : [])];
+  let best = null, bd = tol;
+  for (const c of corners) { const d = Math.hypot(c.x - w.x, c.y - w.y); if (d < bd) { bd = d; best = c; } }
+  return best ? { x: best.x, y: best.y } : { x: Math.round(w.x * 12) / 12, y: Math.round(w.y * 12) / 12 };
+}
+function measureTap(e) {
+  const p = measurePoint(e);
+  if (!measureFirst) { measureFirst = p; toast('Now tap the second point'); render(); return; }
+  const a = measureFirst, dx = p.x - a.x, dy = p.y - a.y;
+  measureFirst = null;
+  if (Math.hypot(dx, dy) < 1 / 24) { render(); return; }
+  pushUndo();
+  state.annotations.push({ a, b: p, floor: state.activeFloor });
+  const parts = [Math.abs(dx) > 0.01 ? `${formatLength(Math.abs(dx))} ${dx > 0 ? '→' : '←'}` : '',
+                 Math.abs(dy) > 0.01 ? `${formatLength(Math.abs(dy))} ${dy > 0 ? '↓' : '↑'}` : ''].filter(Boolean);
+  toast(`${formatLength(Math.hypot(dx, dy))}${parts.length > 1 ? ' (' + parts.join(', ') + ')' : ''}`);
+  render();
+}
+function clearMeasurements() {
+  const n = state.annotations.filter(a => (a.floor || 'main') === state.activeFloor).length;
+  if (!n) { toast('No measurements on this floor'); return; }
+  pushUndo();
+  state.annotations = state.annotations.filter(a => (a.floor || 'main') !== state.activeFloor);
+  toast(`Cleared ${n} measurement${n > 1 ? 's' : ''}`);
+  render();
+}
+function renderMeasurements(W) {
+  const MAG = '#d946ef';
+  for (const ann of state.annotations) {
+    if (!ann || !ann.a || !ann.b || (ann.floor || 'main') !== state.activeFloor) continue;
+    const a = W(ann.a), b = W(ann.b);
+    addEl('path', { d: `M${a.x} ${a.y} L${b.x} ${b.y}`, fill: 'none', stroke: MAG, 'stroke-width': 1.5, 'stroke-dasharray': '4,4' });
+    addEl('circle', { cx: a.x, cy: a.y, r: 3, fill: MAG });
+    addEl('circle', { cx: b.x, cy: b.y, r: 3, fill: MAG });
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1, nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+    addEl('text', { x: (a.x + b.x) / 2 + nx * 14, y: (a.y + b.y) / 2 + ny * 14, 'text-anchor': 'middle', 'dominant-baseline': 'middle',
+      'font-size': 12, 'font-weight': 'bold', fill: MAG, stroke: 'white', 'stroke-width': 3, 'paint-order': 'stroke fill' },
+      formatLength(Math.hypot(ann.b.x - ann.a.x, ann.b.y - ann.a.y)));
+  }
+  if (measureMode && measureFirst) {
+    const a = W(measureFirst);
+    addEl('circle', { cx: a.x, cy: a.y, r: 8, fill: 'none', stroke: MAG, 'stroke-width': 3, class: 'ui-overlay' });
   }
 }
 
@@ -3191,6 +3278,21 @@ document.querySelectorAll('#keypad button').forEach(b => {
 });
 renderRose();
 $('rose-cell').addEventListener('click', roseTap);
+applyDirPad();
+$('btnPad').onclick = toggleDirPad;
+// A long press on Measure clears this floor's measurements.
+let measureHold = null;
+$('btnMeasure').addEventListener('pointerdown', () => { measureHold = setTimeout(() => { measureHold = 'fired'; clearMeasurements(); }, 700); });
+$('btnMeasure').addEventListener('pointerup', () => { if (measureHold !== 'fired') clearTimeout(measureHold); });
+$('btnMeasure').onclick = () => { if (measureHold === 'fired') { measureHold = null; return; } setMeasure(!measureMode); };
+// In measure mode every tap on the drawing is a measuring point: caught before
+// corners, walls and areas get it.
+svg.addEventListener('click', (e) => {
+  if (!measureMode || fenceMode) return;
+  e.stopPropagation();
+  e.preventDefault();
+  measureTap(e);
+}, true);
 // Measurement fields (class "measure") open the on-screen number pad instead of
 // the system keyboard. Delegated so it covers inputs created inside modals/panels.
 document.addEventListener('click', (e) => {
