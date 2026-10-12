@@ -32,18 +32,34 @@ struct CrosshairReading: Equatable {
     static let noReading = "No LiDAR reading — aim at the siding"
 }
 
+// Two faces of siding meeting under the crosshair: Mark corner will work.
+struct CornerReading: Equatable {
+    var distance: Double      // metres
+    var angle: Double         // degrees between the faces
+    var convex: Bool
+    var feet: Double { distance * 3.28084 }
+    var text: String { String(format: "%@ · %.1f ft · %.0f°", convex ? "Corner" : "Inside corner", feet, angle) }
+    var quality: CrosshairReading.Quality { feet <= CrosshairReading.goodFeet ? .good : .fair }
+}
+
 // A point marked on the siding. Older scans have the point only; newer ones
 // say how it was found and how good it was, so the importer can weigh it.
+// A marked corner is a point too: the last of one wall and the first of the next.
 struct ExteriorPoint: Equatable {
     var point: SIMD3<Float>
-    var method: String?               // "lidar" (depth strip) or "plane" (estimated plane)
+    var kind: String?                 // "corner", or nil for a point on a wall
+    var method: String?               // "lidar" (depth strip), "plane" (estimated plane) or "lidar-corner"
     var distance: Double?             // metres from the phone
-    var angle: Double?                // degrees off square
+    var angle: Double?                // degrees off square; for a corner, between its faces
     var rms: Double?                  // metres, the strip's fit
     var n: Int?                       // depth samples in the fit
     var camera: SIMD2<Double>?        // where the phone was, plan x, z
     var dir: SIMD2<Double>?           // the wall's run, plan, unit
     var span: [SIMD2<Double>]?        // the strip's two ends, plan
+    var dirs: [SIMD2<Double>]?        // a corner's faces, plan, unit, each away from the corner:
+                                      // the wall it ends first, then the wall it starts
+
+    var isCorner: Bool { kind == "corner" }
 
     // Moved by a drift correction, along with everything else it located.
     func shifted(by d: SIMD3<Float>) -> ExteriorPoint {
@@ -65,6 +81,7 @@ private struct DepthSample {
     var band: [SIMD3<Double>]
     var aim: SIMD3<Double>?
     var reading: CrosshairReading?
+    var run: SIMD2<Double>?
 }
 
 @MainActor
@@ -72,6 +89,10 @@ final class OutsideDepth: ObservableObject {
     static var isSupported: Bool { ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) }
 
     @Published private(set) var reading: CrosshairReading?
+    @Published private(set) var corner: CornerReading?
+    // The run in plan of the wall under the crosshair, to tell when the aim
+    // has moved on to another wall.
+    @Published private(set) var aimRun: SIMD2<Double>?
     @Published private(set) var running = false
 
     private let session: ARSession
@@ -96,6 +117,8 @@ final class OutsideDepth: ObservableObject {
         timer = nil
         recent = []
         reading = nil
+        corner = nil
+        aimRun = nil
         running = false
     }
 
@@ -111,6 +134,15 @@ final class OutsideDepth: ObservableObject {
         if ticks % 3 == 0 {
             let r = s?.reading
             if r?.text != reading?.text || r?.quality != reading?.quality { reading = r }
+            switch (s?.run, aimRun) {
+            case (nil, nil): break
+            case (let a?, let b?) where abs(simd_dot(a, b)) > cos(5 * .pi / 180): break
+            case (let a, _): aimRun = a
+            }
+            // A couple of milliseconds on the band, so it is figured with the readout, not every sample.
+            var c: CornerReading?
+            if case .success(let k) = cornerFit() { c = CornerReading(distance: k.distance, angle: k.angle, convex: k.convex) }
+            if c?.text != corner?.text { corner = c }
         }
     }
 
@@ -124,6 +156,16 @@ final class OutsideDepth: ObservableObject {
         return DepthMath.wallStrip(recent.flatMap(\.band), cameraOrigin: last.origin, cameraForward: last.forward,
                                    aim: last.aim)
     }
+
+    // Two faces meeting, from the same depth as `strip`.
+    func cornerFit() -> Result<DepthMath.Corner, DepthMath.CornerFailure> {
+        guard let last = recent.last else { return .failure(.tooFewSamples) }
+        return DepthMath.corner(recent.flatMap(\.band), cameraOrigin: last.origin, cameraForward: last.forward,
+                                maxDistance: CrosshairReading.fairFeet / 3.28084)
+    }
+
+    // The way the phone faces in plan: the screen's right is to the right of it.
+    var forwardPlan: SIMD2<Double>? { recent.last.map { SIMD2($0.forward.x, $0.forward.z) } }
 
     // MARK: Reading the depth map
 
@@ -188,6 +230,7 @@ final class OutsideDepth: ObservableObject {
         // The readout: depth at the centre and, from a plane through a
         // slightly larger patch, how square on the wall is.
         var reading: CrosshairReading?
+        var run: SIMD2<Double>?
         if let aim {
             var patch: [SIMD3<Double>] = []
             for v in stride(from: mv - 9, through: mv + 9, by: 2) {
@@ -199,8 +242,10 @@ final class OutsideDepth: ObservableObject {
                 if kept.count >= 30, let again = DepthMath.fitPlane(kept) { fit = again }
                 reading = CrosshairReading(point: aim, distance: simd_distance(aim, origin),
                                            angle: DepthMath.incidence(direction: aim - origin, normal: fit.plane.normal))
+                let n2 = SIMD2(fit.plane.normal.x, fit.plane.normal.z)
+                if simd_length(n2) > 0.5 { run = simd_normalize(SIMD2(-n2.y, n2.x)) }
             }
         }
-        return DepthSample(time: frame.timestamp, origin: origin, forward: forward, band: band, aim: aim, reading: reading)
+        return DepthSample(time: frame.timestamp, origin: origin, forward: forward, band: band, aim: aim, reading: reading, run: run)
     }
 }

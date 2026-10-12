@@ -117,6 +117,7 @@ enum PlanExport {
     struct ExteriorPointOut: Encodable {
         let point: [Double]
         let elevation: Double
+        var kind: String?
         var method: String?
         var distance: Double?
         var angle: Double?
@@ -125,6 +126,7 @@ enum PlanExport {
         var camera: [Double]?
         var dir: [Double]?
         var span: [[Double]]?
+        var dirs: [[Double]]?
     }
 
     // A point on a wall the scan missed, with the wall's horizontal facing.
@@ -205,10 +207,11 @@ enum PlanExport {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
         func r4(_ v: Double) -> Double { (v * 10000).rounded() / 10000 }
         func exteriorOut(_ p: ExteriorPoint) -> ExteriorPointOut {
-            ExteriorPointOut(point: [r(p.point.x), r(p.point.z)], elevation: r(p.point.y), method: p.method,
+            ExteriorPointOut(point: [r(p.point.x), r(p.point.z)], elevation: r(p.point.y), kind: p.kind, method: p.method,
                              distance: p.distance.map { (($0 * 1000).rounded()) / 1000 }, angle: p.angle.map { ($0 * 10).rounded() / 10 },
                              rms: p.rms.map(r4), n: p.n, camera: p.camera.map { [r4($0.x), r4($0.y)] },
-                             dir: p.dir.map { [r4($0.x), r4($0.y)] }, span: p.span.map { $0.map { [r4($0.x), r4($0.y)] } })
+                             dir: p.dir.map { [r4($0.x), r4($0.y)] }, span: p.span.map { $0.map { [r4($0.x), r4($0.y)] } },
+                             dirs: p.dirs.map { $0.map { [r4($0.x), r4($0.y)] } })
         }
         // Drawn walls go in with the scanned ones, at the height of that floor's walls.
         let drawn = addedWalls.map { w -> Segment in

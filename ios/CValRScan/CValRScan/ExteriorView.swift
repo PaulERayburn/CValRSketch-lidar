@@ -13,12 +13,12 @@ struct ExteriorView: View {
     @State private var flash: String?
     // A wall whose points turn a corner, waiting for the user to say
     // whether to split it; then Next wall goes ahead if that was tapped.
-    @State private var corner: (splits: [Int], next: Bool)?
+    @State private var corner: (splits: [Int], next: Bool, note: String?)?
     // A start-spot check that landed far from the start spot, waiting for the user.
     @State private var farEnd: (point: SIMD3<Float>, feet: Double)?
 
     private var pointCount: Int { scan.exteriorWalls.reduce(0) { $0 + $1.count } }
-    private var wallCount: Int { scan.exteriorWalls.filter { !$0.isEmpty }.count }
+    private var wallNumber: Int { max(scan.exteriorWalls.count, 1) }
     private var walking: Bool { scan.anchorStart != nil && scan.anchorEnd == nil }
     // Why Mark point can't be used now, from the live LiDAR reading.
     private var markRefusal: String? {
@@ -58,6 +58,16 @@ struct ExteriorView: View {
                     Text(flash).padding(8).background(.thinMaterial, in: Capsule())
                 }
                 Spacer()
+                if let wallStatus {
+                    Text(wallStatus)
+                        .font(.footnote.weight(.medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(.thinMaterial, in: Capsule())
+                        .padding(.horizontal)
+                }
                 // Outside photos for the report (front, rear, street), pinned
                 // on the plan where they were taken.
                 if scan.anchorStart != nil {
@@ -73,15 +83,15 @@ struct ExteriorView: View {
         }
         .onAppear { scan.startOutsideWalk() }
         .onDisappear { scan.stopOutsideWalk() }
-        .alert("Wall \(wallCount) turns a corner",
+        .alert("Wall \(wallNumber) turns a corner",
                isPresented: Binding(get: { corner != nil }, set: { if !$0 { corner = nil } }),
                presenting: corner) { c in
             Button("Split into \(c.splits.count + 1) walls") {
                 scan.splitLastExteriorWall(at: c.splits)
-                if c.next { nextWall() }
+                if c.next { nextWall(c.note) }
             }
             Button("Keep as one wall", role: .cancel) {
-                if c.next { nextWall() }
+                if c.next { nextWall(c.note) }
             }
         } message: { c in
             Text("Its points fit \(c.splits.count + 1) walls better than one. Did you miss Next wall at a corner?")
@@ -100,30 +110,65 @@ struct ExteriorView: View {
     }
 
     // Before leaving a wall, check its points lie on one line.
-    private func checkCorner(next: Bool) {
+    private func checkCorner(next: Bool, note: String? = nil) {
         let splits = scan.cornerSplits
         if splits.isEmpty {
-            if next { nextWall() }
+            if next { nextWall(note) }
         } else {
-            corner = (splits, next)
+            corner = (splits, next, note)
         }
     }
 
-    private func nextWall() {
+    private func nextWall(_ note: String? = nil) {
         scan.nextExteriorWall()
-        show("Wall \(wallCount + 1)")
+        show(note ?? "Wall \(wallNumber)")
+    }
+
+    // One line on the wall being walked: whether it has enough points yet,
+    // or that the aim has turned onto another wall.
+    private var wallStatus: String? {
+        guard walking else { return nil }
+        let wall = scan.exteriorWalls.last ?? []
+        let n = wallNumber
+        if swungAway { return "New wall? Tap Next wall" + (depth.running ? " or Mark corner" : "") }
+        switch wall.count {
+        case 0: return "Wall \(n) · no points yet"
+        case 1 where wall[0].isCorner: return "Wall \(n) · from the corner — mark a point along it"
+        case 1 where wall[0].dir != nil: return "Wall \(n) · 1 point — step along 3 ft for another, or Mark corner"
+        case 1: return "Wall \(n) · 1 point — needs another"
+        default: return "Wall \(n) · \(wall.count) points ✓"
+        }
+    }
+
+    // The wall under the crosshair runs more than 45° off the wall being walked.
+    private var swungAway: Bool {
+        guard let run = depth.aimRun, let along = currentWallRun else { return false }
+        return abs(simd_dot(run, along)) < cos(45 * .pi / 180)
+    }
+
+    private var currentWallRun: SIMD2<Double>? {
+        let wall = scan.exteriorWalls.last ?? []
+        // Just turned a corner: still facing the wall behind, so no hint yet.
+        if wall.count == 1, wall[0].isCorner { return nil }
+        if let d = wall.last(where: { !$0.isCorner && $0.dir != nil })?.dir { return d }
+        if let ds = wall.first?.dirs, wall.first?.isCorner == true, ds.count == 2 { return ds[1] }
+        let pts = wall.map { SIMD2(Double($0.point.x), Double($0.point.z)) }
+        guard let a = pts.first, let b = pts.last, simd_distance(a, b) > 0.3 else { return nil }
+        return simd_normalize(b - a)
     }
 
     // Distance and squareness under the crosshair: green is good, orange
     // usable, red can't be marked.
+    // A corner in view takes the place of the wall's reading, so it shows
+    // when Mark corner will work.
     private var readout: some View {
-        let r = depth.reading
-        let colour: Color = switch r?.quality {
+        let r = depth.reading, c = depth.corner
+        let colour: Color = switch c?.quality ?? r?.quality {
         case .good: .green
         case .fair: .orange
         default: .red
         }
-        return Text(r.map { $0.refusal ?? $0.text } ?? CrosshairReading.noReading)
+        return Text(c?.text ?? r.map { $0.refusal ?? $0.text } ?? CrosshairReading.noReading)
             .font(.callout.weight(.semibold).monospacedDigit())
             .foregroundStyle(.white)
             .padding(.horizontal, 10)
@@ -148,6 +193,17 @@ struct ExteriorView: View {
         }
     }
 
+    private func markCorner() {
+        switch scan.markExteriorCorner() {
+        case .marked(let p):
+            MarkFeedback.good()
+            checkCorner(next: true, note: String(format: "Corner marked, %.0f°, %.1f ft away", p.angle ?? 0, (p.distance ?? 0) * 3.28084))
+        case .refused(let why):
+            MarkFeedback.refused()
+            show(why)
+        }
+    }
+
     private var instructions: String {
         if scan.anchorStart == nil {
             return "Before going out: aim at a fixed spot by the door you'll use (a light switch or door-frame corner) and tap Set start spot."
@@ -155,10 +211,14 @@ struct ExteriorView: View {
         if scan.anchorEnd != nil {
             return "Walk finished. Drift over the walk: \(driftText). Tap Done."
         }
-        let current = scan.exteriorWalls.last?.count ?? 0
-        let aim = depth.running ? "Stand close and face the siding: green under the crosshair is best. " : ""
-        return "Walk out slowly. " + aim + "For each outside wall, mark 2 or more points on the siding, then tap Next wall at the corner. "
-            + "Wall \(max(wallCount, 1)): \(current) point\(current == 1 ? "" : "s"). "
+        if depth.running {
+            return "Walk out slowly. Stand close and face the siding: green under the crosshair is best. "
+                + "Mark 2 points on each outside wall (1 will do on a short wall), then tap Next wall at the corner. "
+                + "Or aim at the corner itself and tap Mark corner: it ends this wall and starts the next. "
+                + "A volume button or selfie-stick remote marks a point. "
+                + "Back inside, aim at the start spot (green dot) and tap Check start spot."
+        }
+        return "Walk out slowly. For each outside wall, mark 2 or more points on the siding, then tap Next wall at the corner. "
             + "A volume button or selfie-stick remote marks a point too. "
             + "Back inside, aim at the start spot (green dot) and tap Check start spot."
     }
@@ -182,18 +242,25 @@ struct ExteriorView: View {
         } else if scan.anchorEnd == nil {
             VStack(spacing: 10) {
                 HStack {
-                    Button("Undo", systemImage: "arrow.uturn.backward") { scan.undoExteriorPoint() }
-                        .buttonStyle(.bordered)
-                        .disabled(pointCount == 0)
-                    Spacer()
                     Button { markPoint() } label: { Label("Mark point", systemImage: "scope") }
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
                     .disabled(markRefusal != nil)
+                    // Without LiDAR there is no depth to find two faces in.
+                    if depth.running {
+                        Button { markCorner() } label: { Label("Mark corner", systemImage: "square.split.bottomrightquarter") }
+                        .buttonStyle(.borderedProminent)
+                        .tint(depth.corner != nil ? .teal : .gray)
+                    }
+                }
+                HStack {
+                    Button("Undo", systemImage: "arrow.uturn.backward") { scan.undoExteriorPoint() }
+                        .buttonStyle(.bordered)
+                        .disabled(pointCount == 0)
                     Spacer()
                     Button("Next wall") { checkCorner(next: true) }
                     .buttonStyle(.bordered)
-                    .disabled(scan.exteriorWalls.last?.isEmpty ?? true)
+                    .disabled(scan.exteriorWalls.last.map { $0.isEmpty || ($0.count == 1 && $0[0].isCorner) } ?? true)
                 }
                 HStack {
                     Button("Pause") { dismiss() }.buttonStyle(.bordered)

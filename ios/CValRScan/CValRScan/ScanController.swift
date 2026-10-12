@@ -591,8 +591,72 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         return .marked(mark)
     }
 
+    // Two faces of siding meeting under the crosshair. The corner ends the
+    // current wall; Next wall (which ExteriorView calls after checking the
+    // wall for a missed corner) starts the next one from it.
+    func markExteriorCorner() -> ExteriorMark {
+        guard outsideDepth.running else { return .refused(CrosshairReading.noReading) }
+        let c: DepthMath.Corner
+        switch outsideDepth.cornerFit() {
+        case .success(let k): c = k
+        case .failure(let f):
+            switch f {
+            case .tooFar: return .refused(CrosshairReading.tooFar)
+            case .notUpright: return .refused("That's not upright. Aim at the siding, not the ground or the eaves.")
+            case .oneWall: return .refused("Only one wall in view — aim at the corner")
+            case .notCorner: return .refused("Faces don't meet at a corner")
+            case .tooFewSamples, .noWall: return .refused(CrosshairReading.noReading)
+            }
+        }
+        let mark = ExteriorPoint(point: SIMD3(Float(c.point.x), Float(c.point.y), Float(c.point.z)), kind: "corner",
+                                 method: "lidar-corner", distance: c.distance, angle: c.angle, rms: c.rms, n: c.count,
+                                 camera: outsideDepth.cameraPlan, dirs: orderFaces(c))
+        if exteriorWalls.isEmpty { exteriorWalls.append([]) }
+        exteriorWalls[exteriorWalls.count - 1].append(mark)
+        writeFiles()
+        return .marked(mark)
+    }
+
+    // The face the current wall's points lie along is the wall just walked,
+    // so it goes first. With nothing marked on this wall yet, the face on the
+    // screen's left is taken as walked: the importer doesn't rely on the order.
+    private func orderFaces(_ c: DepthMath.Corner) -> [SIMD2<Double>] {
+        let c2 = SIMD2(c.point.x, c.point.z)
+        let walked = (exteriorWalls.last ?? []).map { SIMD2(Double($0.point.x), Double($0.point.z)) }
+            .filter { simd_distance($0, c2) > 0.15 }
+        func off(_ d: SIMD2<Double>) -> Double { walked.reduce(0) { $0 + abs(d.x * ($1.y - c2.y) - d.y * ($1.x - c2.x)) } }
+        if !walked.isEmpty { return off(c.dirs[0]) <= off(c.dirs[1]) ? c.dirs : c.dirs.reversed() }
+        guard let f = outsideDepth.forwardPlan else { return c.dirs }
+        let right = SIMD2(-f.y, f.x)
+        return simd_dot(c.dirs[0], right) <= simd_dot(c.dirs[1], right) ? c.dirs : c.dirs.reversed()
+    }
+
+    // A wall holding only the corner that started it: nothing walked on it yet.
+    private static func onlyCorner(_ wall: [ExteriorPoint]) -> Bool { wall.count == 1 && wall[0].isCorner }
+
     func nextExteriorWall() {
-        if let last = exteriorWalls.last, !last.isEmpty { exteriorWalls.append([]) }
+        guard let last = exteriorWalls.last, !last.isEmpty, !Self.onlyCorner(last) else { return }
+        // After a corner, the next wall starts at it.
+        if let c = last.last, c.isCorner {
+            exteriorWalls.append([c])
+            writeFiles()
+        } else {
+            exteriorWalls.append([])
+        }
+    }
+
+    // How far through the walk each point was taken, for spreading the drift:
+    // a corner starting a wall is the one that ended the wall before, one point.
+    private var walkSteps: (each: [[Int]], total: Int) {
+        var k = 0
+        let each = exteriorWalls.enumerated().map { i, wall in
+            wall.enumerated().map { j, p -> Int in
+                if j == 0, p.isCorner, i > 0, exteriorWalls[i - 1].last == p { return k }
+                k += 1
+                return k
+            }
+        }
+        return (each, k)
     }
 
     // Where the current wall's points turn a corner, i.e. Next wall was
@@ -638,6 +702,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
 
     func undoExteriorPoint() {
         if exteriorWalls.last?.isEmpty == true { exteriorWalls.removeLast() }
+        // A corner belongs to both walls it joins: Undo takes it off both.
+        if let last = exteriorWalls.last, Self.onlyCorner(last), exteriorWalls.count >= 2,
+           exteriorWalls[exteriorWalls.count - 2].last == last[0] { exteriorWalls.removeLast() }
         if !exteriorWalls.isEmpty { exteriorWalls[exteriorWalls.count - 1].removeLast() }
         writeFiles()
     }
@@ -654,15 +721,20 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     // plan x/z) spanning the points.
     struct XY { var x: Double; var y: Double }
     var exteriorPlanLines: [(a: XY, b: XY)] {
-        let total = max(exteriorWalls.reduce(0) { $0 + $1.count }, 1)
-        var index = 0
+        let steps = walkSteps
+        let total = max(steps.total, 1)
         var lines: [(a: XY, b: XY)] = []
-        for wall in exteriorWalls {
-            let pts: [XY] = wall.map { p in
-                index += 1
-                let f = Float(index) / Float(total + 1)
+        for (wall, ks) in zip(exteriorWalls, steps.each) {
+            let pts: [XY] = zip(wall, ks).map { p, k in
+                let f = Float(k) / Float(total + 1)
                 let q = p.point - (drift ?? .zero) * f
                 return XY(x: Double(q.x), y: Double(q.z))
+            }
+            // One LiDAR point: the strip it was fitted to.
+            if wall.count == 1, let span = wall[0].span, span.count == 2, let k = ks.first {
+                let d = drift.map { SIMD2(Double($0.x), Double($0.z)) * (Double(k) / Double(total + 1)) } ?? .zero
+                lines.append((XY(x: span[0].x - d.x, y: span[0].y - d.y), XY(x: span[1].x - d.x, y: span[1].y - d.y)))
+                continue
             }
             guard pts.count >= 2 else { continue }
             let mx = pts.map(\.x).reduce(0, +) / Double(pts.count)
@@ -857,13 +929,10 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         // Fold an earlier walk's drift correction into its points, so a new
         // walk can measure its own drift from a fresh start spot.
         if let d = drift {
-            let total = max(exteriorWalls.reduce(0) { $0 + $1.count }, 1)
-            var index = 0
-            exteriorWalls = exteriorWalls.map { wall in
-                wall.map { p in
-                    index += 1
-                    return p.shifted(by: -d * (Float(index) / Float(total + 1)))
-                }
+            let steps = walkSteps
+            let total = max(steps.total, 1)
+            exteriorWalls = zip(exteriorWalls, steps.each).map { wall, ks in
+                zip(wall, ks).map { p, k in p.shifted(by: -d * (Float(k) / Float(total + 1))) }
             }
         }
         // New outside points start a new wall, not the last one walked before.
@@ -1100,9 +1169,10 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             }
             func xy(_ v: [Double]?) -> SIMD2<Double>? { v.flatMap { $0.count == 2 ? SIMD2($0[0], $0[1]) : nil } }
             exteriorWalls = (saved?.exterior?.walls ?? []).map { $0.map { p in
-                ExteriorPoint(point: SIMD3(Float(p.point[0]), Float(p.elevation), Float(p.point[1])), method: p.method,
+                ExteriorPoint(point: SIMD3(Float(p.point[0]), Float(p.elevation), Float(p.point[1])), kind: p.kind, method: p.method,
                               distance: p.distance, angle: p.angle, rms: p.rms, n: p.n, camera: xy(p.camera), dir: xy(p.dir),
-                              span: p.span.map { $0.compactMap(xy) }.flatMap { $0.count == 2 ? $0 : nil })
+                              span: p.span.map { $0.compactMap(xy) }.flatMap { $0.count == 2 ? $0 : nil },
+                              dirs: p.dirs.map { $0.compactMap(xy) }.flatMap { $0.count == 2 ? $0 : nil })
             } }
             anchorStart = saved?.exterior?.anchorStart.map(world)
             anchorEnd = saved?.exterior?.anchorEnd.map(world)
@@ -1176,6 +1246,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             let point: [Double]; let elevation: Double
             let method: String?; let distance: Double?; let angle: Double?; let rms: Double?; let n: Int?
             let camera: [Double]?; let dir: [Double]?; let span: [[Double]]?
+            let kind: String?; let dirs: [[Double]]?
         }
         struct Exterior: Decodable { let walls: [[ExteriorPointIn]]; let anchorStart: Point?; let anchorEnd: Point? }
         struct WallPointIn: Decodable { let point: [Double]; let elevation: Double; let normal: [Double] }

@@ -88,7 +88,7 @@ struct ContentView: View {
                         Text("\(count(scan.photos.count, "photo")), shown as camera pins on the plan")
                             .foregroundStyle(.secondary)
                     }
-                    let outsideWalls = scan.exteriorWalls.filter { $0.count >= 2 }.count
+                    let outsideWalls = scan.exteriorWalls.filter { $0.count >= 2 || $0.first?.dir != nil }.count
                     if outsideWalls > 0 {
                         Text("Outside: \(count(outsideWalls, "wall")) marked" + (scan.anchorEnd != nil ? ", loop closed" : ""))
                             .foregroundStyle(.secondary)
