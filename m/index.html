@@ -2602,9 +2602,13 @@ const LABEL_PRESETS = {
   misc: ['Other'],
 };
 // Fills `row` with the chips for `type`; a tap puts that label in `input`.
+// The chip matching the label box is shown selected, as it changes.
 function renderLabelChips(row, type, input, onPick) {
   row.innerHTML = (LABEL_PRESETS[type] || []).map(l => `<button type="button" data-label-pick="${escapeHtml(l)}">${escapeHtml(l)}</button>`).join('');
-  row.querySelectorAll('[data-label-pick]').forEach(b => b.onclick = () => { input.value = b.dataset.labelPick; onPick && onPick(); });
+  const mark = () => row.querySelectorAll('[data-label-pick]').forEach(b => b.classList.toggle('sel', b.dataset.labelPick === input.value.trim()));
+  row.querySelectorAll('[data-label-pick]').forEach(b => b.onclick = () => { input.value = b.dataset.labelPick; mark(); onPick && onPick(); });
+  input.oninput = mark;
+  mark();
 }
 // A label still saying what a type is called (or a split's "… (split)"), so
 // changing the type may rename it; anything typed by hand is left alone.
