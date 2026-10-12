@@ -12,6 +12,7 @@ While the project is below 1.0, the public "API" (segment syntax, JSON save form
 
 | Version | Date       | Type   | Headline change                                                            |
 |---------|------------|--------|----------------------------------------------------------------------------|
+| 0.45.0  | 2026-10-11 | minor  | **Subtraction** in walk lengths (`20'6 − 10 r`). Phone: compass rose (8/16 directions), − key, autosave, tap a corner mid-walk, pen-jump, close onto an existing wall, new-area form, Totals. |
 | 0.44.1  | 2026-10-02 | patch  | Crosshair pointer for corner dragging; the magnifier follows the corner over a traced image. |
 | 0.44.0  | 2026-10-02 | minor  | **Drag corners** in Edit (snap to corners and the inch; shared corners move in both areas); **Ctrl** squares the corner up with its neighbours. |
 | 0.43.1  | 2026-10-02 | patch  | Flagged **START** pin for the walk start; reads *CLICK TO CLOSE* when tracing and the cursor is on it. Garage fill is now light grey. **Remove this wall** offers previewed options (merge with the neighbouring area, extend neighbours, join across either corner). |

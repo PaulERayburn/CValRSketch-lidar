@@ -14,6 +14,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [0.45.0] — 2026-10-11
+
+### Added
+- **Subtracting in a wall length**: `20'6 − 10 r` draws 10'6". The minus sign (−), a hyphen with spaces round it, or the word *minus* subtract; a bare hyphen is unchanged (`d -45` is an angle, `6-1/2` a fraction). A total of zero or less is refused.
+- **Phone: compass rose** in place of the L/U/D/R row, as on the desktop: 8 or 16 directions (tap the centre for 22.5°). Cardinals add a direction to the entry; any other heading adds the wall.
+- **Phone: − key** beside +; clear (×) moves under Add Wall.
+- **Phone: autosave**: the sketch is kept a moment after every change and restored on reopening.
+- **Phone: tap a corner mid-walk** to draw a wall straight to it; **↷ Jump** moves the pen to the next aligned corner, a given distance, or a tapped corner without drawing.
+- **Phone: close onto an existing wall**: ending a walk on another area's wall offers the enclosed area (Next option cycles).
+- **Phone: new-area form** (type, label, floor, building) instead of typed prompts, and **Totals** (GLA, area by floor and type, per building) in the menu.
+
+### Changed
+- **Phone: dictation takes only measuring commands**; anything else is shown as Ignored. One-word mishears ("you" for U) are no longer directions there. A bare direction after a length finishes that wall.
+- **Phone: the start panel's arrows are gone** (tap a corner or the canvas to move the start); the panel shows only once the start is moved.
+
+### Fixed
+- `20'6-10 r` silently drew 20'6".
+- **Phone:** the drawing vanished when the keypad left the canvas under 80 px tall.
+
+---
+
 ## [0.44.1] — 2026-10-02
 
 ### Changed
