@@ -791,6 +791,7 @@ function render() {
       addEl('path', { d: `M${a.x} ${a.y} L${b.x} ${b.y}`, fill: 'none', stroke: '#d946ef', 'stroke-width': 2, 'stroke-dasharray': '2,4', opacity: 0.7 });
     }
   }
+  renderEditHighlight(W);
   renderMeasurements(W);
   if (!measureMode) renderWalkTargets(W);
   renderStatus();
@@ -858,15 +859,30 @@ function setJump(on) {
   updateEntryDisplay();
 }
 
+// The corner or wall whose panel is open, in orange, so it's clear what Split,
+// Delete or a move will act on.
+function renderEditHighlight(W) {
+  if (!editTarget) return;
+  const sh = state.shapes.find(s => s.id === editTarget.shapeId);
+  if (!sh) return;
+  const ORANGE = '#f59e0b';
+  if (editTarget.kind === 'vertex') {
+    const p = W(sh.points[editTarget.idx]);
+    addEl('circle', { cx: p.x, cy: p.y, r: 14, fill: 'rgba(245,158,11,0.25)', stroke: ORANGE, 'stroke-width': 4, 'pointer-events': 'none', class: 'ui-overlay' });
+  } else if (editTarget.kind === 'wall') {
+    addEl('path', { d: wallPathD(sh, editTarget.idx, W), fill: 'none', stroke: ORANGE, 'stroke-width': 6, 'stroke-linecap': 'round', opacity: 0.85, 'pointer-events': 'none', class: 'ui-overlay' });
+  }
+}
+
 function renderShape(sh, W, isGhost) {
   const t = TYPES[sh.type] || TYPES.living;
   const screenPts = sh.points.map(W);
   const d = shapePathD(sh, W);
   const cls = isGhost ? 'ghost' : '';
-  const canPickStart = state.segments.length === 0;
   const fillPoly = addEl('path', { d, fill: t.fill, stroke: 'none', class: cls });
-  // Suppress shape-editor click when picking start so taps land on vertices, not the body
-  if (!isGhost && !canPickStart) fillPoly.addEventListener('click', (ev) => {
+  // A tap inside an area opens its settings. Corners and walls are drawn on top,
+  // so they still get their own taps; empty canvas still moves the start.
+  if (!isGhost) fillPoly.addEventListener('click', (ev) => {
     ev.stopPropagation();
     state.selection = { kind: 'shape', shapeId: sh.id };
     openShapeEditor(sh);
@@ -938,7 +954,7 @@ function renderShape(sh, W, isGhost) {
     }
   }
   // Pickable vertex dots — only when no in-progress walk. Tap to anchor start here.
-  if (canPickStart) {
+  if (state.segments.length === 0) {
     const startP = getStart();
     sh.points.slice(0, -1).forEach((p, i) => {
       const sp = W(p);
@@ -3269,7 +3285,9 @@ let suppressNextCanvasTap = false;   // set when a double-tap reset fires, so th
                                      // trailing click doesn't also place a start
 svg.addEventListener('pointerdown', (e) => {
   const now = performance.now();
-  if (now - lastTap < 300 && activePointers.size === 1) {
+  // Not while measuring: two quick taps there are two points, and the re-fit's
+  // redraw mid-tap would swallow the second one.
+  if (now - lastTap < 300 && activePointers.size === 1 && !measureMode) {
     userView = null;
     suppressNextCanvasTap = true;
     render();
