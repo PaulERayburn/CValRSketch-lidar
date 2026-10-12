@@ -2393,14 +2393,28 @@ function openShapeEditor(sh) {
 // =============================================================================
 // CLOSE SHAPE
 // =============================================================================
+// A walk across the inside of an existing area divides it: the highlighted
+// part becomes the new area and the area keeps the other part (another of the
+// offered outlines, the area's size less this one). Null when the walk isn't
+// inside an area or the rest isn't one of the outlines.
+function carvedFrom(pts, cands) {
+  const a = polygonArea(pts), inner = shapeInteriorPoint(pts);
+  const host = shapesOnFloor(state.activeFloor).find(sh => polygonArea(sh.points) > a + 0.5 && pointInPoly(inner, sh.points));
+  if (!host) return { host: null, rest: null };
+  const left = polygonArea(host.points) - a;
+  const c = cands.find(c => Math.abs(c.area - left) < 0.5 && pointInPoly(shapeInteriorPoint(c.polygon), host.points));
+  return c ? { host, rest: c.polygon } : { host: null, rest: null };
+}
+
 function closeShape() {
   if (!state.segments.length) { toast('Walk some segments first'); return; }
   const enc = currentEnclose();
   const ol = walkOutline();
-  let pts;
+  let pts, host = null, rest = null;
   if (enc) {
     // The walk plus the highlighted run of existing walls back to the start.
     pts = enc.cands[enc.idx].polygon.map(p => ({ x: p.x, y: p.y }));
+    ({ host, rest } = carvedFrom(pts, enc.cands));
   } else if (ol.jumps && ol.walls < 3) { toast('Need at least 3 walls (jumps don’t count)'); return; }
   else if (!ol.points) { toast('The walls (jumps left out) don’t form one outline. Walk the missing wall, or undo the jump.'); return; }
   else if (ol.gap > state.settings.autoCloseFeet) {
@@ -2412,6 +2426,14 @@ function closeShape() {
   // Cancel keeps the walk.
   openNewAreaModal(polygonArea(pts), ({ label, type, floor, building }) => {
     pushUndo();
+    if (host) {
+      // Carved out of an existing area: that area keeps the rest, so nothing
+      // is counted twice. Per-wall extras no longer line up with its walls.
+      host.points = rest.map(p => ({ x: p.x, y: p.y }));
+      delete host.arcs; delete host.dimOffsets; delete host.calc;
+      rebuildSegments(host);
+      toast(`"${host.label}" is now ${Math.round(polygonArea(host.points))} sq ft`);
+    }
     const shape = {
       id: state.nextShapeId++,
       label, type, floor, building,

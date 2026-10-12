@@ -854,13 +854,26 @@ function encGraph(shapes, extra) {
 // with the walk, fences off a region not containing another shape; smallest
 // area first. walk = the pen's path (start … pen); shapes = the floor's shapes.
 // Each candidate is { polygon (closed), path (pen … start along walls), area }.
+// True when `outer` contains the whole of shape outline `pts` (every corner
+// inside or on its edges). A single interior sample point isn't enough: the
+// sample sits beside whichever wall a shape happens to start with, so a walk
+// that divides a shape lost one of its two halves depending on that.
+function swallows(outer, pts) {
+  const ring = outer.slice(0, -1);
+  const onEdge = p => ring.some((a, i) => {
+    const b = ring[(i + 1) % ring.length], dx = b.x - a.x, dy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / ((dx * dx + dy * dy) || 1)));
+    return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy) < 0.01;
+  });
+  return pts.every(p => onEdge(p) || pointInPoly(p, ring));
+}
+
 function enclosureCandidates(walk, shapes) {
   const start = walk[0], pen = walk[walk.length - 1];
   const g = encGraph(shapes, [start, pen]);
   const sId = g.nodeId(start), pId = g.nodeId(pen);
   const cands = [];
   if (!g.adj[sId].size || !g.adj[pId].size) return cands;
-  const interior = shapes.map(sh => shapeInteriorPoint(sh.points));
   const seen = new Set();
   const paths = []; const visited = new Set([pId]); let budget = 6000;
   (function dfs(cur, path) {
@@ -877,7 +890,7 @@ function enclosureCandidates(walk, shapes) {
     if (hasSpur(poly)) continue;                                // doubles back along a walked leg
     const area = polygonArea(poly);
     if (area < 1) continue;
-    if (interior.some(ip => pointInPoly(ip, poly.slice(0, -1)))) continue;   // would swallow a shape
+    if (shapes.some(sh => swallows(poly, sh.points))) continue;  // would wrap a whole shape
     const key = area.toFixed(1) + ':' + poly.length;
     if (seen.has(key)) continue;
     seen.add(key);
