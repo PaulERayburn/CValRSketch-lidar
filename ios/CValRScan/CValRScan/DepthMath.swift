@@ -182,4 +182,101 @@ enum DepthMath {
                               count: fit.inliers.count, distance: distance,
                               angle: incidence(direction: cameraForward, normal: fit.plane.normal), tilt: fit.plane.tilt))
     }
+
+    struct Corner {
+        var point: SIMD3<Double>          // on the line where the faces meet, at the crosshair's height
+        var dirs: [SIMD2<Double>]         // each face's run in plan, unit, away from the corner along the face
+        var angle: Double                 // degrees between the faces: 90 for a square corner
+        var convex: Bool                  // juts toward the phone: an outside corner of the house
+        var rms: Double
+        var count: Int
+        var distance: Double
+    }
+
+    enum CornerFailure: Error, Equatable {
+        case tooFewSamples, noWall, notUpright, oneWall, notCorner, tooFar
+    }
+
+    // Two siding faces meeting, seen across the screen, as the corner's plan
+    // point: the dominant upright plane, then the dominant one among what it
+    // leaves, each sample then given to the nearer face and both refitted.
+    // They must cross at 60–120° and both run out from where they meet:
+    // a face carrying on past it is a wall in front of another, not a corner.
+    static func corner(_ pts: [SIMD3<Double>], cameraOrigin: SIMD3<Double>, cameraForward: SIMD3<Double>,
+                       maxDistance: Double = 5, tolerance: Double = 0.03) -> Result<Corner, CornerFailure> {
+        guard pts.count >= 120 else { return .failure(.tooFewSamples) }
+        let minFace = max(40, pts.count / 10)
+        guard let a = uprightPlane(pts, tolerance: tolerance), a.inliers.count >= minFace else { return .failure(.noWall) }
+        guard a.plane.tilt <= 10 else { return .failure(.notUpright) }
+        let rest = pts.filter { abs(a.plane.distance($0)) > tolerance }
+        guard rest.count >= minFace, let b = uprightPlane(rest, tolerance: tolerance), b.inliers.count >= minFace,
+              b.plane.tilt <= 10 else { return .failure(.oneWall) }
+        func flat(_ n: SIMD3<Double>) -> SIMD2<Double> { simd_normalize(SIMD2(n.x, n.z)) }
+        let between = acos(min(abs(simd_dot(flat(a.plane.normal), flat(b.plane.normal))), 1)) * 180 / .pi
+        // A second face nearly parallel to the first is trim, a fence or the house next door.
+        guard between >= 30 else { return .failure(.oneWall) }
+        guard between >= 60 else { return .failure(.notCorner) }
+        var planes = [a.plane, b.plane]
+        var faces: [[SIMD3<Double>]] = [[], []]
+        var rmsAll = [0.0, 0.0]
+        for _ in 0..<2 {
+            faces = [[], []]
+            for p in pts {
+                let da = abs(planes[0].distance(p)), db = abs(planes[1].distance(p))
+                guard min(da, db) <= tolerance else { continue }
+                faces[da <= db ? 0 : 1].append(p)
+            }
+            guard faces[0].count >= minFace, faces[1].count >= minFace,
+                  let fa = fitPlane(faces[0]), let fb = fitPlane(faces[1]) else { return .failure(.oneWall) }
+            planes = [fa.plane, fb.plane]
+            rmsAll = [fa.rms, fb.rms]
+        }
+        guard planes.allSatisfy({ $0.tilt <= 10 }) else { return .failure(.notUpright) }
+        // Where the faces meet at height y: n.x x + n.z z = d − n.y y for both.
+        func meet(_ y: Double) -> SIMD2<Double>? {
+            let (p, q) = (planes[0], planes[1])
+            let det = p.normal.x * q.normal.z - p.normal.z * q.normal.x
+            guard abs(det) > 1e-6 else { return nil }
+            let r0 = p.d - p.normal.y * y, r1 = q.d - q.normal.y * y
+            return SIMD2((r0 * q.normal.z - r1 * p.normal.z) / det, (p.normal.x * r1 - q.normal.x * r0) / det)
+        }
+        // At the height where the crosshair passes the corner.
+        let o2 = SIMD2(cameraOrigin.x, cameraOrigin.z), f2 = SIMD2(cameraForward.x, cameraForward.z)
+        guard var c2 = meet(cameraOrigin.y) else { return .failure(.notCorner) }
+        var y = cameraOrigin.y
+        if simd_length_squared(f2) > 1e-6 {
+            let t = simd_dot(c2 - o2, f2) / simd_length_squared(f2)
+            guard t > 0 else { return .failure(.notCorner) }
+            y = cameraOrigin.y + cameraForward.y * t
+            guard let again = meet(y) else { return .failure(.notCorner) }
+            c2 = again
+        }
+        var dirs: [SIMD2<Double>] = []
+        for (plane, face) in zip(planes, faces) {
+            let n = flat(plane.normal)
+            var dir = SIMD2(-n.y, n.x)
+            var ts = face.map { simd_dot(SIMD2($0.x, $0.z) - c2, dir) }.sorted()
+            if ts[ts.count / 2] < 0 {
+                dir = -dir
+                ts = ts.map { -$0 }.reversed()
+            }
+            // By counts, not the very nearest sample: a shrub in front of the
+            // corner leaves a few samples on a face's line carried on past it.
+            let past = Double(ts.filter { $0 < -0.1 }.count) / Double(ts.count)
+            let near = ts[Int(Double(ts.count - 1) * 0.05)], far = ts[Int(Double(ts.count - 1) * 0.95)]
+            guard past < 0.1, near < 0.3, far > 0.15 else { return .failure(.notCorner) }
+            dirs.append(dir)
+        }
+        let angle = acos(max(-1, min(simd_dot(dirs[0], dirs[1]), 1))) * 180 / .pi
+        guard angle >= 60, angle <= 120 else { return .failure(.notCorner) }
+        let point = SIMD3(c2.x, y, c2.y)
+        let distance = simd_distance(point, cameraOrigin)
+        guard distance <= maxDistance else { return .failure(.tooFar) }
+        let count = faces[0].count + faces[1].count
+        let rms = ((rmsAll[0] * rmsAll[0] * Double(faces[0].count) + rmsAll[1] * rmsAll[1] * Double(faces[1].count))
+                   / Double(count)).squareRoot()
+        // Seen from outside an outside corner, both faces run away from the phone.
+        let convex = simd_dot(dirs[0], o2 - c2) + simd_dot(dirs[1], o2 - c2) < 0
+        return .success(Corner(point: point, dirs: dirs, angle: angle, convex: convex, rms: rms, count: count, distance: distance))
+    }
 }
