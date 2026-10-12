@@ -42,6 +42,10 @@ final class WidePhoto: ObservableObject {
     private var pose = matrix_identity_float4x4
     private var frameTime: TimeInterval = 0
     private var config: ARConfiguration?
+    // The session's map, taken just before the pause: on resume ARKit is made to
+    // find itself in it again. Resumed without one, it carried on from a guess
+    // and could come back feet away from where the phone really was.
+    private var map: ARWorldMap?
     private var arPaused = false
     private var depthWasRunning = false
     private var show: ((String) -> Void)?
@@ -69,6 +73,16 @@ final class WidePhoto: ObservableObject {
 
     // The values of the newest AR frame, never the frame itself: holding
     // frames starves tracking. nil when there is no frame newer than `after`.
+    // The session's current map, or nil if ARKit can't give one within a few
+    // seconds (too little seen yet).
+    private static func currentMap(_ session: ARSession) async -> ARWorldMap? {
+        await withCheckedContinuation { (done: CheckedContinuation<ARWorldMap?, Never>) in
+            let once = OnceBox()
+            session.getCurrentWorldMap { map, _ in once.run { done.resume(returning: map) } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { once.run { done.resume(returning: nil) } }
+        }
+    }
+
     private func frameNow(after: TimeInterval? = nil) -> (pose: simd_float4x4, normal: Bool, time: TimeInterval, state: String)? {
         guard let f = scan?.arSession.currentFrame else { return nil }
         let t = f.timestamp
@@ -109,6 +123,10 @@ final class WidePhoto: ObservableObject {
             guard token == step else { return }
         }
         guard token == step else { return }
+        phase = .opening("Saving where you are…")
+        map = await Self.currentMap(scan.arSession)
+        guard token == step else { return }
+        if map == nil { log.warning("wide photo: no world map before the pause; resuming without one") }
         phase = .opening("Opening the wide camera…")
         depthWasRunning = scan.outsideDepth.running
         scan.outsideDepth.stop()
@@ -198,11 +216,22 @@ final class WidePhoto: ObservableObject {
 
     private func resumeAR(_ token: Int) {
         guard let scan, let config else { finish(); return }
-        // No .resetTracking or .removeExistingAnchors: the world stays as it was.
-        scan.arSession.run(config)
+        // With the map, ARKit relocalizes into it (as Resume on site does), so the
+        // world keeps its coordinates and tracking only reads normal once found.
+        // Without one, it is run on unreset and carries on as best it can.
+        let relocalize: Bool
+        if let map, let c = config.copy() as? ARWorldTrackingConfiguration {
+            c.initialWorldMap = map
+            scan.arSession.run(c, options: [.resetTracking, .removeExistingAnchors])
+            relocalize = true
+        } else {
+            scan.arSession.run(config)
+            relocalize = false
+        }
         arPaused = false
         let before = SIMD3(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)
-        var check = AlignmentCheck(before: before, start: ProcessInfo.processInfo.systemUptime)
+        var check = AlignmentCheck(before: before, start: ProcessInfo.processInfo.systemUptime,
+                                   timeout: relocalize ? 15 : AlignmentCheck.timeout)
         let after = frameTime
         Task {
             var states: [String] = []
@@ -236,7 +265,7 @@ final class WidePhoto: ObservableObject {
                    ? "points marked from here may be off by that much. Check the orange dots still sit on the siding before marking more."
                    : "rooms scanned from here may not line up with the earlier ones. Point the phone at a room you've scanned and move it slowly for a few seconds before the next room.")
         case .lost:
-            log.warning("wide photo: tracking not back after \(AlignmentCheck.timeout) s; \(trail, privacy: .public)")
+            log.warning("wide photo: tracking not back in time; \(trail, privacy: .public)")
             warning = "Tracking hasn't come back after the wide photo. Move the phone slowly around "
                 + (outside ? "the siding near you" : "the room")
                 + " until it settles, then check "
@@ -410,7 +439,7 @@ struct WideCameraView: View {
         switch wide.phase {
         case .opening(let s): s
         case .capturing, .saving: "Saving…"
-        case .resuming: "Hold still: finding your place again…"
+        case .resuming: "Finding your place again: point at what you just scanned…"
         case .idle, .live: nil
         }
     }
@@ -491,4 +520,17 @@ struct WidePreview: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PreviewView, context: Context) { uiView.setNeedsLayout() }
+}
+
+// Runs its block at most once, from whichever caller gets there first.
+private final class OnceBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func run(_ body: () -> Void) {
+        lock.lock()
+        let first = !done
+        done = true
+        lock.unlock()
+        if first { body() }
+    }
 }

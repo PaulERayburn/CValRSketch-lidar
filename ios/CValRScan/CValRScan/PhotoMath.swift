@@ -44,16 +44,18 @@ struct AlignmentCheck {
 
     let before: SIMD3<Float>
     let start: TimeInterval
+    let limit: TimeInterval
     private var normalSince: TimeInterval?
 
-    init(before: SIMD3<Float>, start: TimeInterval) {
+    init(before: SIMD3<Float>, start: TimeInterval, timeout: TimeInterval = AlignmentCheck.timeout) {
         self.before = before
         self.start = start
+        self.limit = timeout
     }
 
     // One look at the tracking: `position` nil when there is no new frame yet.
     mutating func feed(normal: Bool, position: SIMD3<Float>?, at t: TimeInterval) -> Outcome {
-        let timedOut = t - start >= Self.timeout
+        let timedOut = t - start >= limit
         if normal, let p = position {
             let since = normalSince ?? t
             normalSince = since
