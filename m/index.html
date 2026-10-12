@@ -596,6 +596,7 @@ function restoreState(snap) {
 // included, the same as Save. Separate from Recent projects.
 const AUTOSAVE_KEY = 'cvalrsketchMobile:autosave';
 let autosaveTimer = null;
+const AUTOSAVE_HISTORY = 30;
 function sketchData() {
   const data = { ...state };
   for (const k of ['undoStack', 'redoStack', 'selection', 'fenceSelection', 'fenceDraw', 'offsetPick', 'enclose',
@@ -604,7 +605,10 @@ function sketchData() {
 }
 function writeAutosave() {
   autosaveTimer = null;
-  try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ at: Date.now(), data: sketchData() })); }
+  // Undo history goes too (the newest steps): reopening the app shouldn't strand
+  // a mistake made just before, with "Nothing to undo".
+  const keep = a => a.slice(-AUTOSAVE_HISTORY);
+  try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ at: Date.now(), data: sketchData(), undo: keep(state.undoStack), redo: keep(state.redoStack) })); }
   catch (e) { /* quota or private mode: not fatal */ }
 }
 function scheduleAutosave() {
@@ -615,7 +619,8 @@ function restoreAutosave() {
   try { saved = JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || 'null'); } catch (e) { return; }
   if (!saved || !saved.data || !Array.isArray(saved.data.shapes)) return;
   Object.assign(state, saved.data);
-  state.undoStack = []; state.redoStack = [];
+  state.undoStack = Array.isArray(saved.undo) ? saved.undo : [];
+  state.redoStack = Array.isArray(saved.redo) ? saved.redo : [];
   state.selection = null;
 }
 // iOS may suspend the page without warning once it's hidden: write now.
@@ -1842,7 +1847,10 @@ function clearEntry() {
 
 function pressKey(k) {
   switch (k) {
-    case 'back':  if (chainPreview) { popChainLeg(); return; } backspaceEntry(); return;
+    case 'back':
+      if (chainPreview) { popChainLeg(); return; }
+      if (!entryText && state.segments.length) { removeLastWalkWall(); return; }
+      backspaceEntry(); return;
     case 'clear': cancelChainPreview(); clearEntry(); if (jumpArmed) { setJump(false); render(); } return;
     case 'add':   commitEntry();    return;
     case 'connect': commitChainAsDiagonal(); return;
@@ -1914,6 +1922,14 @@ function roseTap(e) {
   if (!/\d/.test(v) || /[a-z]/i.test(v)) { toast('Enter a length, then tap a direction'); return; }
   entryText = v + ' ' + headingToCmd(deg);
   commitEntry();
+}
+
+// ⌫ with nothing typed takes the walk's last wall back (undo restores it).
+function removeLastWalkWall() {
+  pushUndo();
+  const seg = state.segments.pop();
+  toast(`Removed ${seg.jump ? 'jump' : 'wall'} ${formatLength(seg.length || Math.hypot(seg.dx, seg.dy))} — ↶ brings it back`);
+  render();
 }
 
 function pressDirection(d) {
