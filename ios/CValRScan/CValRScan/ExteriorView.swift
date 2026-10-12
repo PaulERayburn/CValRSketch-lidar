@@ -41,6 +41,12 @@ struct ExteriorView: View {
                 .shadow(color: .black, radius: 2)
                 .allowsHitTesting(false)
             if walking && depth.running { readout.offset(y: 44).allowsHitTesting(false) }
+            // A selfie-stick remote (or either volume button) marks a point.
+            if walking && corner == nil && farEnd == nil {
+                VolumeButtonCatcher { markPoint() }
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+            }
             VStack(spacing: 10) {
                 Text(instructions)
                     .font(.callout)
@@ -153,6 +159,7 @@ struct ExteriorView: View {
         let aim = depth.running ? "Stand close and face the siding: green under the crosshair is best. " : ""
         return "Walk out slowly. " + aim + "For each outside wall, mark 2 or more points on the siding, then tap Next wall at the corner. "
             + "Wall \(max(wallCount, 1)): \(current) point\(current == 1 ? "" : "s"). "
+            + "A volume button or selfie-stick remote marks a point too. "
             + "Back inside, aim at the start spot (green dot) and tap Check start spot."
     }
 
