@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Phone: the start panel's arrows are gone** (tap a corner or the canvas to move the start); the panel shows only once the start is moved.
 
 ### Fixed
+- **Scan import: sides the outside walk marked with LiDAR go on the marks.** A side was placed at the scan's inside face plus the wall thickness measured beside it, so a quick scan's rough inside faces came straight through (thicknesses of 2″ to 12″, walls 7″ off), and two stretches of one straight wall could get different thicknesses and a false jog. Now each side with LiDAR siding marks (CValRScan 0.24+) is set on them; the walk is turned square to the house first, and scaled to the laser readings (tracking can make a walk a few percent small), which still win where they disagree. Neighbouring stretches whose marks lie on one line become one wall. Scans without LiDAR marks import as before.
 - `20'6-10 r` silently drew 20'6".
 - **Phone:** the drawing vanished when the keypad left the canvas under 80 px tall.
 - **Desktop: the drawing area assumed a one-row toolbar.** On a narrow or short window the toolbar wraps, and the drawing (with the zoom bar and **Fit**) ran off the bottom of the window. The page is now a column: the drawing takes whatever height is left.

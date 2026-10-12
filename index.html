@@ -5942,7 +5942,7 @@ document.getElementById('import-pdf').addEventListener('change', async (e) => {
 // ===== LIDAR SCAN IMPORT =====
 // A CValRScan plan (.cvalrscan.json) through the same import window as a PDF.
 // lidar-import.mjs loads only when a scan is picked.
-const LIDAR_IMPORT_VERSION = '0.13.0';
+const LIDAR_IMPORT_VERSION = '0.14.0';
 async function importScan(file) {
   let d;
   try { d = JSON.parse(await file.text()); }
@@ -6043,7 +6043,7 @@ function openPdfImportModal(res, fname) {
     <ul class="help" style="margin:10px 0 0; padding-left:18px;">
       ${excludedNote}
       ${placeNote}
-      ${scan ? `<li>A scan measures the inside faces of the walls. Each side is pushed out by its wall's thickness: measured where the outside walk marked the siding beside it, otherwise ${escapeHtml(String(6))}″. Check at least one side against a tape measurement.</li>`
+      ${scan ? `<li>A scan measures the inside faces of the walls. A side the outside walk marked with LiDAR is set on the siding itself; the others are pushed out by the wall's thickness: measured where the walk marked the siding beside it, otherwise ${escapeHtml(String(6))}″. Laser readings override both. Check at least one side against a tape measurement.</li>`
         : `<li>Decks, porches and patios are traced from the outline around their label; one without a closed outline is listed below to draw by hand.</li>`}
       ${(res.warnings || []).map(w => `<li style="color:#c05621;">${escapeHtml(w)}</li>`).join('')}
     </ul>

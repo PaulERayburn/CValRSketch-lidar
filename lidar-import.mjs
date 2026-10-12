@@ -11,6 +11,10 @@
 // missed (closet backs) are moved out to where the app placed them, and each side
 // is pushed out by that wall's thickness: measured where the outside walk marked
 // the siding beside it, otherwise the default. GLA is figured from the result.
+// Where the walk marked a side's siding with LiDAR (CValRScan 0.24+), the side
+// goes on the marks instead: a quick scan's inside faces are rough, and a
+// thickness added to them carries the roughness out. Laser readings still have
+// the last word (applyReadings).
 //
 // The outside walk is first lined up with the scan (tracking can re-settle
 // between the two, leaving the walk turned or shifted). Floor the scan carried
@@ -29,6 +33,15 @@ const WALK_TILT_FIX_DEG = 1.5;    // an outside walk turned more than this from 
 const CORNER_FACE_FT = 1.5;       // a marked outside corner stands for this much of each face
 const CELL_FT = 0.1;              // grid for finding floor that lies outside the outside walk
 const MIN_CUT_SF = 4;             // smaller pieces outside the walk are noise
+const MARK_RMS_M = 0.025;         // a LiDAR siding fit this tight (1″) is a mark of the siding
+const MARK_SQUARE_DEG = 3;        // a mark's face runs this close to square with the house, after the walk is turned
+const WEAK_MARK_DEG = 10;         // a side's two end corners whose faces along it are this close to square place it, weakly
+const MARK_CORNER_FT = 1.25;      // a marked corner lies up to this past the inside end of its side
+const LIDAR_TILT_FIX_DEG = 0.25;  // a walk of LiDAR marks turned more than this from the scan is turned back
+const MARK_GAP_IN = [-6, 24];     // a mark this far outside a side's inside face can be its siding
+const MARK_AGREE_IN = 2;          // marks on one side further than this from the rest are left out
+const JOG_MARKS_IN = 2;           // neighbouring parallel sides whose marks are this close are one wall
+const JOG_SCAN_IN = 6;            // when the scan's step between them is under this
 export const DEFAULT_EXTERIOR_IN = 6;
 
 // The floor the outside walk was taken beside is the main floor; floors are
@@ -61,6 +74,7 @@ export function readCvalrScan(d, opts = {}) {
     const fit = registerWalk(walk, mainSides);
     if (fit) {
       walk.lines = fit.lines;
+      walk.marks = walk.marks.map(fit.move);
       warnings.push(`The outside walk sat ${Math.abs(fit.tiltDeg).toFixed(1)}° turned and ${Math.hypot(fit.dx, fit.dy).toFixed(1)} ft off from the scan; it was lined up with the scanned walls.`);
     }
   }
@@ -112,9 +126,19 @@ export function readCvalrScan(d, opts = {}) {
       if (open > 0) warnings.push(`${floorTitle(story)}: ${open} missing wall${open > 1 ? 's' : ''} in the scan (closet backs?) kept where the scan's floor stopped; check ${open > 1 ? 'them' : 'it'}.`);
       const inside = outline(sides);
       const thick = thicknesses(sides, walk.lines, defaultIn);
-      const measured = thick.filter(t => t.measured);
-      const scanned = sides.map((s, i) => offsetSide(s, outwardSign(inside), thick[i].inches / 12));
-      const fit = applyReadings(d, story, plan, scanned, warnings);
+      // Sides the walk marked with LiDAR go on the marks: the siding itself,
+      // not an inside face (rough on a quick scan) plus a thickness. Two
+      // stretches of one straight wall go on one line.
+      const marks = story === mainStory ? sidingMarks(sides, walk.marks, outwardSign(inside)) : sides.map(() => null);
+      marks.forEach((mk, i) => { if (mk) thick[i] = { inches: mk.gapIn, measured: true, lidar: true }; });
+      const ties = straightWalls(sides, marks);
+      for (const [p, q] of ties) {
+        const c = (marks[p].c * marks[p].n + marks[q].c * marks[q].n) / (marks[p].n + marks[q].n);
+        marks[p] = { ...marks[p], c }; marks[q] = { ...marks[q], c };
+      }
+      const measured = thick.filter(t => t.measured && !t.lidar), onMarks = thick.filter(t => t.lidar).length;
+      const scanned = sides.map((s, i) => marks[i] ? { ...s, c: marks[i].c } : offsetSide(s, outwardSign(inside), thick[i].inches / 12));
+      const fit = applyReadings(d, story, plan, scanned, warnings, marks, ties);
       const outer = tidy(outline(fit.sides));
       // The outline's edges that are calculated walls: an edge through the
       // midpoint of a calculated wall, along it.
@@ -128,7 +152,13 @@ export function readCvalrScan(d, opts = {}) {
           if (t > 0.05 && t < 0.95 && off < 0.1 && !calcWalls.includes(i)) calcWalls.push(i);
         });
       });
-      if (measured.length) {
+      if (onMarks) {
+        warnings.push(`${floorTitle(story)}: ${onMarks} of ${sides.length} sides set on the siding where the outside walk marked it with LiDAR${ties.length ? `; ${ties.length} step${ties.length > 1 ? 's' : ''} in the scan's inside faces taken out where the marks show one straight wall` : ''}.`);
+        if (measured.length) {
+          const list = [...new Set(measured.map(t => Math.round(t.inches)))].sort((a, b) => a - b).join('″, ') + '″';
+          warnings.push(`${floorTitle(story)}: wall thickness measured on ${measured.length} more side${measured.length > 1 ? 's' : ''} from the outside walk (${list}); the rest use ${defaultIn}″.`);
+        } else if (onMarks < sides.length) warnings.push(`${floorTitle(story)}: the other ${sides.length - onMarks} side${sides.length - onMarks > 1 ? 's' : ''} use ${defaultIn}″ walls.`);
+      } else if (measured.length) {
         const list = [...new Set(measured.map(t => Math.round(t.inches)))].sort((a, b) => a - b).join('″, ') + '″';
         warnings.push(`${floorTitle(story)}: wall thickness measured on ${measured.length} of ${sides.length} sides from the outside walk (${list}); the rest use ${defaultIn}″.`);
       } else {
@@ -154,7 +184,7 @@ export function readCvalrScan(d, opts = {}) {
         title: floorTitle(story) + (d.floors.filter(g => g.story === story).length > 1 ? ` (${floors.filter(g => g.page === story + 1).length + 1})` : ''),
         points: house, traced: Math.abs(signedArea(house)),
         interior: Math.abs(signedArea(inside)), interiorPoints: tidy(inside),
-        sides: thick.map(t => ({ inches: +t.inches.toFixed(1), measured: t.measured })),
+        sides: thick.map(t => ({ inches: +t.inches.toFixed(1), measured: t.measured, ...(t.lidar ? { lidar: true } : {}) })),
         scanTraced: Math.abs(signedArea(tidy(outline(scanned)))), walls: fit.walls, calcWalls: houseCalc,
         detail,
         areas: {}, stated: null, excludedTraced: null, placement: 'reference', turned: 0,
@@ -183,12 +213,28 @@ export function readCvalrScan(d, opts = {}) {
 // Least squares over all readings, held loosely to the scan, then: sides a
 // reading set are "measured", the rest "calculated" (they are whatever closes
 // the house), each calculated side checked against the scan.
+//
+// Sides on the outside walk's LiDAR marks are held ten times harder than the
+// scan, so a reading moves the scan-placed side at its other end rather than
+// the marked one, and two marked sides' gap comes from the walk where no
+// reading spans it. The walk can come out a few percent small or large
+// (tracking scale over a long walk outside), so its marks are fitted as one
+// walk: their own scale and slide, found from the readings (nothing else
+// knows the scale; without readings it stays 1). A reading still outweighs a
+// mark ten to one, so where the two disagree the reading wins; marked sides
+// held in one line (straightWalls) are tied as hard as a reading.
 // ---------------------------------------------------------------------------
 const SCAN_WEIGHT = 0.01;          // a reading outweighs the scan 100 to 1
+const MARK_WEIGHT = 0.1;           // and a LiDAR mark 10 to 1; a mark outweighs the scan 10 to 1
+const WEAK_MARK_WEIGHT = 0.03;     // a side placed between two off-square corners, three times the scan
+const MARKED_SCAN_WEIGHT = 1e-4;   // a marked side's own scan place only steadies the fit
+const SCALE_WEIGHT = 0.01;         // the walk's scale held to 1 only loosely: the readings set it
+const AXIS_SCALE_WEIGHT = 0.1;     // each axis's scale may part from the walk's by what the readings show
+const SCALE_FLAG = 0.005;          // a walk scaled more than this is reported
 const FLAG_IN = 2;                 // readings that can't both hold
 const CALC_FLAG_IN = 6;            // calculated side this far from the scan
 
-function applyReadings(d, story, plan, sides, warnings) {
+function applyReadings(d, story, plan, sides, warnings, marks = [], ties = []) {
   const n = sides.length;
   const lengthOf = (ss, i) => {
     const p = ss[(i + n - 1) % n], q = ss[(i + 1) % n];
@@ -247,15 +293,35 @@ function applyReadings(d, story, plan, sides, warnings) {
   }
   if (!cons.length) return { sides, walls: [] };
 
-  // Normal equations, one unknown per squared side.
+  // Normal equations, one unknown per squared side; with marks, then the
+  // walk's scale and its slide along each axis.
   const idx = [], col = new Map();
   sides.forEach((s, i) => { if (s.kind !== 'free') { col.set(i, idx.length); idx.push(i); } });
-  const m = idx.length, A = Array.from({ length: m }, () => new Float64Array(m)), r = new Float64Array(m);
-  idx.forEach((i, k) => { A[k][k] += SCAN_WEIGHT; r[k] += SCAN_WEIGHT * sides[i].c; });
+  const marked = idx.filter(i => marks[i]);
+  const mean = {}, tCol = {}, dCol = {};
+  let m = idx.length;
+  const sCol = marked.length ? m++ : -1;
+  for (const kind of ['h', 'v']) {
+    const on = marked.filter(i => sides[i].kind === kind);
+    if (on.length) { mean[kind] = on.reduce((t, i) => t + marks[i].c, 0) / on.length; tCol[kind] = m++; dCol[kind] = m++; }
+  }
+  const A = Array.from({ length: m }, () => new Float64Array(m)), r = new Float64Array(m);
+  idx.forEach((i, k) => { const w = marks[i] ? MARKED_SCAN_WEIGHT : SCAN_WEIGHT; A[k][k] += w; r[k] += w * sides[i].c; });
   for (const c of cons) {
     const p = col.get(c.i), q = col.get(c.j);
     A[p][p] += 1; A[q][q] += 1; A[p][q] -= 1; A[q][p] -= 1;
     r[q] += c.L; r[p] -= c.L;
+  }
+  // A mark: side = mean + (scale + the axis's own) × (mark − mean) + slide.
+  for (const i of marked) {
+    const kind = sides[i].kind, w = marks[i].weak ? WEAK_MARK_WEIGHT : MARK_WEIGHT, e = [[col.get(i), 1], [sCol, -(marks[i].c - mean[kind])], [dCol[kind], -(marks[i].c - mean[kind])], [tCol[kind], -1]];
+    for (const [a, va] of e) { r[a] += w * va * mean[kind]; for (const [b, vb] of e) A[a][b] += w * va * vb; }
+  }
+  if (sCol >= 0) { A[sCol][sCol] += SCALE_WEIGHT; r[sCol] += SCALE_WEIGHT; }
+  for (const k of Object.values(dCol)) A[k][k] += AXIS_SCALE_WEIGHT;
+  for (const [i, j] of ties) {
+    const p = col.get(i), q = col.get(j);
+    A[p][p] += 1; A[q][q] += 1; A[p][q] -= 1; A[q][p] -= 1;
   }
   for (let k = 0; k < m; k++) {                      // Gauss-Jordan; A is positive definite
     let piv = k;
@@ -270,6 +336,17 @@ function applyReadings(d, story, plan, sides, warnings) {
     }
   }
   const fitted = sides.map((s, i) => col.has(i) ? { ...s, c: r[col.get(i)] / A[col.get(i)][col.get(i)] } : s);
+  // Where each side was before the readings: the scan, or its mark on the
+  // walk as the fit scaled and slid it.
+  const prior = sides.map(s => s.c);
+  if (sCol >= 0) {
+    const val = k => r[k] / A[k][k], scale = val(sCol);
+    for (const i of marked) {
+      const kind = sides[i].kind;
+      prior[i] = mean[kind] + (scale + val(dCol[kind])) * (marks[i].c - mean[kind]) + val(tCol[kind]);
+    }
+    if (Math.abs(scale - 1) > SCALE_FLAG) warnings.push(`${floorTitle(story)}: the outside walk came out ${(Math.abs(scale - 1) * 100).toFixed(1)}% ${scale > 1 ? 'small' : 'large'} against the laser readings (tracking over the walk); its marks were scaled to fit them.`);
+  }
   // A jog under an inch left between two sides on (nearly) one line is scan
   // noise, not a wall: line the two sides up, weighted by length.
   for (let i = 0; i < n; i++) {
@@ -302,14 +379,14 @@ function applyReadings(d, story, plan, sides, warnings) {
     run.forEach(r => seen.add(r));
     const p = (run[0] + n - 1) % n, q = (run[run.length - 1] + 1) % n;
     const measured = cons.some(c => (c.i === p && c.j === q) || (c.i === q && c.j === p));
-    const after = Math.abs(fitted[q].c - fitted[p].c), before = Math.abs(sides[q].c - sides[p].c);
+    const after = Math.abs(fitted[q].c - fitted[p].c), before = Math.abs(prior[q] - prior[p]);
     const line = fitted[run[0]], mid = (fitted[p].c + fitted[q].c) / 2;
     const at = line.kind === 'v' ? { x: line.c, y: mid } : { x: mid, y: line.c };
     out.push({ sides: run, kind: measured ? 'measured' : 'calculated', inches: Math.round(after * 12), scanInches: Math.round(before * 12), at });
     if (!measured) {
       calc++;
       const diff = Math.round((after - before) * 12);
-      if (Math.abs(diff) > CALC_FLAG_IN) warnings.push(`${floorTitle(story)}: a wall no reading covers works out at ${fmt(after * 12)} to close the house; the scan has ${fmt(before * 12)} (${diff > 0 ? '+' : '−'}${Math.abs(diff)}″). Check it.`);
+      if (Math.abs(diff) > CALC_FLAG_IN) warnings.push(`${floorTitle(story)}: a wall no reading covers works out at ${fmt(after * 12)} to close the house; ${marks[p] || marks[q] ? 'the outside walk has' : 'the scan has'} ${fmt(before * 12)} (${diff > 0 ? '+' : '−'}${Math.abs(diff)}″). Check it.`);
     }
   }
   warnings.push(`${floorTitle(story)}: fitted to ${cons.length} laser reading${cons.length > 1 ? 's' : ''}${skipped ? ` (${skipped} not used: inside, or not at an outside corner)` : ''}; ${calc} wall${calc === 1 ? '' : 's'} calculated to close the house (${out.filter(w => w.kind === 'calculated').map(w => fmt(w.inches)).join(', ') || 'none'}).`);
@@ -542,7 +619,7 @@ function offsetSide(s, sign, ft) {
 // marked corner ends one wall and starts the next, stored as the last point of
 // the one and the first of the other.
 function outsideWalk(ext, plan) {
-  if (!ext || !(ext.walls || []).length) return { lines: [], split: 0, driftIn: null };
+  if (!ext || !(ext.walls || []).length) return { lines: [], marks: [], split: 0, driftIn: null };
   const isCorner = p => p.kind === 'corner' && Array.isArray(p.dirs) && p.dirs.length === 2;
   // A corner starting a wall is the one that ended the wall before: one point
   // of the walk, so it takes one share of the drift.
@@ -553,6 +630,19 @@ function outsideWalk(ext, plan) {
     ? [ext.anchorEnd.point[0] - ext.anchorStart.point[0], ext.anchorEnd.point[1] - ext.anchorStart.point[1]] : [0, 0];
   // plan() only turns and scales, so it turns a direction too.
   const dirPlan = v => { const o = plan([0, 0]), q = plan(v), L = Math.hypot(q.x - o.x, q.y - o.y); return L > 0 ? { x: (q.x - o.x) / L, y: (q.y - o.y) / L } : null; };
+  // A line found wholly from LiDAR depth says so (registerWalk trusts its
+  // direction).
+  const isLidar = q => (q.method === 'lidar' || q.method === 'lidar-corner') && Number.isFinite(q.rms);
+  const lidarOf = pts => pts.every(q => isLidar(q.src)) ? { lidar: true } : {};
+  // Each LiDAR point a tight fit (an inch) is also kept on its own as a mark
+  // of the siding: where it is and which way the face(s) through it run.
+  const marks = [];
+  const keepMark = q => {
+    if (!isLidar(q.src) || q.src.rms > MARK_RMS_M) return;
+    const dirs = (isCorner(q.src) ? q.src.dirs : q.src.method === 'lidar' && Array.isArray(q.src.dir) ? [q.src.dir] : [])
+      .map(v => Array.isArray(v) && v.length === 2 ? dirPlan(v) : null).filter(Boolean);
+    if (dirs.length) marks.push({ x: q.x, y: q.y, dirs, corner: isCorner(q.src) });
+  };
   let k = 0, split = 0, last = null;
   const lines = [];
   ext.walls.forEach((w, i) => {
@@ -563,6 +653,7 @@ function outsideWalk(ext, plan) {
       return { ...plan([p.point[0] - drift[0] * f, p.point[1] - drift[1] * f]), src: p };
     });
     if (pts.length) last = pts.at(-1);
+    pts.forEach((q, j) => { if (!(j === 0 && continues(w, i))) keepMark(q); });
     // Corners never split a wall: they are its ends, on its line.
     const plain = pts.filter(q => !isCorner(q.src));
     const head = pts.length && isCorner(pts[0].src) ? [pts[0]] : [];
@@ -582,22 +673,22 @@ function outsideWalk(ext, plan) {
           ? p.src.span.map(s => { const q = plan([s[0] - p.src.point[0], s[1] - p.src.point[1]]); return (q.x - o.x) * u.x + (q.y - o.y) * u.y; })
           : [-1, 1];
         ts.push(...ends.map(along));
-        lines.push({ mx: p.x, my: p.y, ux: u.x, uy: u.y, worst: 0, squares: 0, lo: Math.min(...ts), hi: Math.max(...ts) });
+        lines.push({ mx: p.x, my: p.y, ux: u.x, uy: u.y, worst: 0, squares: 0, lo: Math.min(...ts), hi: Math.max(...ts), ...lidarOf([p, ...ends]) });
       } else if (part.length + ends.length >= 2) {
-        lines.push(fitLine([...part, ...ends]));
+        lines.push({ ...fitLine([...part, ...ends]), ...lidarOf([...part, ...ends]) });
       }
     });
     // A wall of two corners and nothing between.
-    if (!plain.length && head.length && tail.length) lines.push(fitLine([...head, ...tail]));
+    if (!plain.length && head.length && tail.length) lines.push({ ...fitLine([...head, ...tail]), ...lidarOf([...head, ...tail]) });
     // Each corner once, as a short line along each face, out from the corner.
     for (const c of [...(continues(w, i) ? [] : head), ...tail]) {
       for (const dv of c.src.dirs) {
         const u = Array.isArray(dv) && dv.length === 2 ? dirPlan(dv) : null;
-        if (u) lines.push({ mx: c.x, my: c.y, ux: u.x, uy: u.y, worst: 0, squares: 0, lo: 0, hi: CORNER_FACE_FT });
+        if (u) lines.push({ mx: c.x, my: c.y, ux: u.x, uy: u.y, worst: 0, squares: 0, lo: 0, hi: CORNER_FACE_FT, ...lidarOf([c]) });
       }
     }
   });
-  return { lines, split, driftIn: ext.anchorStart && ext.anchorEnd ? Math.hypot(...drift) * 39.37 : null };
+  return { lines, marks, split, driftIn: ext.anchorStart && ext.anchorEnd ? Math.hypot(...drift) * 39.37 : null };
 }
 
 // The story the walk was taken beside: the highest floor at least a foot below
@@ -615,8 +706,12 @@ function walkStory(d) {
 // The turn is the walk's typical angle off square; the slide is the one that
 // puts the most walk length a wall's thickness outside a parallel side, taken
 // at the middle of the range of equally good slides. Returns null when the
-// walk already fits as well as anything found.
+// walk already fits as well as anything found. A walk marked with LiDAR has
+// its siding's direction to a fraction of a degree, so any turn over a
+// quarter degree is real (the house squared from the inside, the walk from
+// the outside, and tracking turned a little between) and is always taken out.
 function registerWalk(walk, sides) {
+  const lidar = lidarWalk(walk.lines), minTilt = lidar ? LIDAR_TILT_FIX_DEG : WALK_TILT_FIX_DEG;
   const angleOff = l => { let a = Math.atan2(l.uy, l.ux) * 180 / Math.PI; a = ((a % 90) + 90) % 90; return a > 45 ? a - 90 : a; };
   // A corner's lines are too short to steer the turn; a one-point wall counts when its LiDAR strip ran 4 ft.
   const long = walk.lines.filter(l => l.hi - l.lo >= 4);
@@ -625,8 +720,15 @@ function registerWalk(walk, sides) {
   const half = sorted.reduce((t, x) => t + x.w, 0) / 2;
   let acc = 0, tilt = 0;
   for (const x of sorted) { acc += x.w; if (acc >= half) { tilt = x.a; break; } }
+  // The same turn and slide for the walk's marks (points with directions).
+  const mover = (deg, dx, dy) => {
+    const cx = walk.lines.reduce((t, l) => t + l.mx, 0) / walk.lines.length, cy = walk.lines.reduce((t, l) => t + l.my, 0) / walk.lines.length;
+    const r = Math.abs(deg) < minTilt ? 0 : -deg * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+    return mk => ({ ...mk, x: cx + (mk.x - cx) * c - (mk.y - cy) * s + dx, y: cy + (mk.x - cx) * s + (mk.y - cy) * c + dy,
+                    dirs: mk.dirs.map(u => ({ x: u.x * c - u.y * s, y: u.x * s + u.y * c })) });
+  };
   const turnLines = deg => {
-    if (Math.abs(deg) < WALK_TILT_FIX_DEG) return walk.lines;
+    if (Math.abs(deg) < minTilt) return walk.lines;
     const cx = walk.lines.reduce((t, l) => t + l.mx, 0) / walk.lines.length, cy = walk.lines.reduce((t, l) => t + l.my, 0) / walk.lines.length;
     const r = -deg * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
     return walk.lines.map(l => ({ ...l, mx: cx + (l.mx - cx) * c - (l.my - cy) * s, my: cy + (l.mx - cx) * s + (l.my - cy) * c,
@@ -655,7 +757,8 @@ function registerWalk(walk, sides) {
   };
   const asIs = score(walk.lines, 0, 0);
   let found = null;
-  for (const deg of Math.abs(tilt) >= WALK_TILT_FIX_DEG ? [0, tilt] : [0]) {
+  const turned = lidar && Math.abs(tilt) >= minTilt;
+  for (const deg of turned ? [tilt] : Math.abs(tilt) >= minTilt ? [0, tilt] : [0]) {
     const lines = turnLines(deg);
     const grid = [];
     let max = 0;
@@ -669,8 +772,10 @@ function registerWalk(walk, sides) {
     if (!found || max > found.max) found = { max, lines, dx, dy, tiltDeg: deg };
   }
   const total = walk.lines.reduce((t, l) => t + (l.hi - l.lo), 0);
-  if (!found || found.max < asIs * 1.3 + 2 || found.max < total * 0.4 || (Math.hypot(found.dx, found.dy) < 0.3 && !found.tiltDeg)) return null;
-  return { ...found, lines: found.lines.map(l => ({ ...l, mx: l.mx + found.dx, my: l.my + found.dy })) };
+  if (!found || found.max < asIs * 1.3 + 2 || found.max < total * 0.4 || (Math.hypot(found.dx, found.dy) < 0.3 && !found.tiltDeg)) {
+    return turned ? { lines: turnLines(tilt), dx: 0, dy: 0, tiltDeg: tilt, move: mover(tilt, 0, 0) } : null;
+  }
+  return { ...found, lines: found.lines.map(l => ({ ...l, mx: l.mx + found.dx, my: l.my + found.dy })), move: mover(found.tiltDeg, found.dx, found.dy) };
 }
 
 // Floor that lies outside the outside walk. On a grid, the outdoors is flooded
@@ -1206,6 +1311,79 @@ function splitWalk(pts) {
     if (cost < bestCost) { bestCost = cost; best = k; }
   }
   return [...splitWalk(pts.slice(0, best)), ...splitWalk(pts.slice(best))];
+}
+
+// A walk is a LiDAR walk when most of its long lines were found from LiDAR
+// depth.
+function lidarWalk(lines) {
+  const long = lines.filter(l => l.hi - l.lo >= 4), total = long.reduce((t, l) => t + l.hi - l.lo, 0);
+  return total > 0 && long.filter(l => l.lidar).reduce((t, l) => t + l.hi - l.lo, 0) >= total * 0.8;
+}
+
+// Where the walk's LiDAR marks put each side's siding: the side's constant
+// (y for an 'h' side, x for a 'v' one) in the walk's frame, or null. A mark
+// counts for a side when a face through it runs along the side (square to
+// the house within MARK_SQUARE_DEG), it lies beside the side (a corner a
+// little past its end, its face pointing back along it), and outside the
+// inside face by up to two feet (or a little inside, where the inside face
+// is rough). A corner whose face along the side is off square caught trim or
+// a downspout on that face: it lies on its other face, not this one. A side's
+// marks are taken round their median, leaving out any that stray from it.
+// A side with no such mark but a marked corner at each end, both faces along
+// it a little off square, is taken at the middle of the two (the wall runs
+// between its corners, whichever end is off), held less hard ('weak').
+function sidingMarks(sides, marks, sign) {
+  const near = (s, deg, corners) => {
+    const cos = Math.cos(deg * Math.PI / 180);
+    const h = s.kind === 'h', n = outwardNormal(s, sign), out = h ? Math.sign(n.y) : Math.sign(n.x);
+    const lo = Math.min(s.a[h ? 'x' : 'y'], s.b[h ? 'x' : 'y']), hi = Math.max(s.a[h ? 'x' : 'y'], s.b[h ? 'x' : 'y']), mid = (lo + hi) / 2;
+    const got = [];
+    for (const mk of marks) {
+      if (corners && !mk.corner) continue;
+      const along = h ? mk.x : mk.y, c = h ? mk.y : mk.x;
+      const face = mk.dirs.find(u => Math.abs(h ? u.x : u.y) >= cos && (!mk.corner || (h ? u.x : u.y) * (mid - along) > 0));
+      if (!face) continue;
+      const slack = mk.corner ? MARK_CORNER_FT : 0;
+      if (along < lo - slack || along > hi + slack) continue;
+      const gapIn = (c - s.c) * out * 12;
+      if (gapIn < MARK_GAP_IN[0] || gapIn > MARK_GAP_IN[1]) continue;
+      got.push({ c, end: along < mid ? 0 : 1 });
+    }
+    return { got, out };
+  };
+  return sides.map(s => {
+    if (s.kind === 'free' || !marks.length) return null;
+    const { got: found, out } = near(s, MARK_SQUARE_DEG, false);
+    const got = found.map(g => g.c);
+    if (!got.length) {
+      const ends = near(s, WEAK_MARK_DEG, true).got;
+      const a = ends.filter(g => g.end === 0), b = ends.filter(g => g.end === 1);
+      if (a.length !== 1 || b.length !== 1) return null;
+      const c = (a[0].c + b[0].c) / 2;
+      return { c, n: 1, weak: true, gapIn: (c - s.c) * out * 12 };
+    }
+    got.sort((p, q) => p - q);
+    const med = got[Math.floor((got.length - 1) / 2)];
+    const close = got.filter(c => Math.abs(c - med) * 12 <= MARK_AGREE_IN);
+    const c = close.reduce((t, v) => t + v, 0) / close.length;
+    return { c, n: close.length, gapIn: (c - s.c) * out * 12 };
+  });
+}
+
+// Neighbouring parallel sides (a short jog between them) whose siding marks
+// lie on one line are one straight wall, whatever step the inside faces took
+// (a scanned cabinet, a rough corner): pairs of side indices to hold in line.
+// A step the marks show (JOG_MARKS_IN or more: they scatter about an inch)
+// stays; so does any the scan has over JOG_SCAN_IN, which the marks would
+// have to be wrong to remove.
+function straightWalls(sides, marks) {
+  const n = sides.length, ties = [];
+  for (let i = 0; i < n; i++) {
+    const p = (i + n - 1) % n, q = (i + 1) % n;
+    if (p === q || !marks[p] || !marks[q] || marks[p].weak || marks[q].weak || sides[p].kind !== sides[q].kind || sides[i].kind === sides[p].kind) continue;
+    if (Math.abs(marks[p].c - marks[q].c) * 12 < JOG_MARKS_IN && Math.abs(sides[p].c - sides[q].c) * 12 < JOG_SCAN_IN) ties.push([p, q]);
+  }
+  return ties;
 }
 
 // Each side's wall thickness: the gap to a parallel outside-walk line beside it
