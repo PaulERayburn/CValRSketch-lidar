@@ -22,6 +22,13 @@ It lives only in the `PaulERayburn/CValRSketch-lidar` fork for now. Adding an `i
    - `scan-<date>.capturedstructure.json`: RoomPlan's full output.
    - `scan-<date>.usdz`: a 3-D model (walls with door and window openings, furniture as boxes) that Files, Quick Look and AR open on any iPhone or Mac. **View in 3D** shows it in the app on a plain background (turn, zoom, move); opening the shared file in Files gives Apple's viewer with AR.
 
+**If the app closes before Build floor plan** (a crash, iOS closing it in the background, a flat battery), nothing is lost. From 0.26.0 the scan is saved as you go: after every room, Remove last room, outside point, corner, Next wall, start spot and photo, into a folder `inprogress-<id>` beside the saved scans (the rooms, the marks, the outside walk, photos and name; the AR session, about 100 MB, after each room and otherwise every 5 minutes). On the next launch the home screen offers it at the top, e.g. *Recover unfinished scan — 6 rooms, 8 photos, 11:15 AM*:
+- **Recover** puts the scan back as it was. **Build floor plan** works straight away. To scan more rooms or go outside, first **Resume on site** (as for a saved scan), so the new rooms line up; if the AR session wasn't saved, it says so and the scan can be built but not resumed.
+- **Discard** (asks first) deletes the unbuilt rooms and marks. Photos are never deleted: they move to a folder named `Recovered photos <date> <time>` in Files, or, for a scan that continued a saved one, stay with it.
+- **New** on an unbuilt scan, or **Scan a room** while one is waiting to be recovered, asks first; a scan kept for later is offered again.
+
+Build floor plan removes the scan's `inprogress-` folder once the scan files are written.
+
 Saved scans are listed on the home screen and in the Files app under On My iPhone → CValRScan. File names carry only a timestamp. Scan your own house for testing: this fork is public.
 
 ## `cvalrscan` format, version 7
