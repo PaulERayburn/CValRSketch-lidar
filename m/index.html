@@ -463,6 +463,11 @@
     <input type="range" id="ghost-slider" min="0.05" max="1" step="0.05" style="width:120px;">
     <span id="ghost-val" style="font-family:ui-monospace,monospace; min-width:34px; text-align:right; font-size:12px;"></span>
   </label>
+  <label style="display:flex; align-items:center; gap:8px; padding: 4px 0;">
+    <span style="flex:1; font-size:13px;">Show measurements (tap one to delete it)</span>
+    <input type="checkbox" id="show-measures" style="width:22px; height:22px;">
+  </label>
+  <button id="btn-clear-measures">📏 Clear measurements on this floor</button>
 
   <h2>About</h2>
   <p style="font-size:12px; color:#666; margin:4px 0;">
@@ -2017,9 +2022,11 @@ function clearMeasurements() {
 }
 function renderMeasurements(W) {
   const MAG = '#d946ef';
-  for (const ann of state.annotations) {
-    if (!ann || !ann.a || !ann.b || (ann.floor || 'main') !== state.activeFloor) continue;
+  state.annotations.forEach((ann, i) => {
+    if (state.settings.showMeasurements === false && !measureMode) return;
+    if (!ann || !ann.a || !ann.b || (ann.floor || 'main') !== state.activeFloor) return;
     const a = W(ann.a), b = W(ann.b);
+    addEl('path', { d: `M${a.x} ${a.y} L${b.x} ${b.y}`, fill: 'none', stroke: 'transparent', 'stroke-width': 24, 'data-ann': i });
     addEl('path', { d: `M${a.x} ${a.y} L${b.x} ${b.y}`, fill: 'none', stroke: MAG, 'stroke-width': 1.5, 'stroke-dasharray': '4,4' });
     addEl('circle', { cx: a.x, cy: a.y, r: 3, fill: MAG });
     addEl('circle', { cx: b.x, cy: b.y, r: 3, fill: MAG });
@@ -2027,7 +2034,7 @@ function renderMeasurements(W) {
     addEl('text', { x: (a.x + b.x) / 2 + nx * 14, y: (a.y + b.y) / 2 + ny * 14, 'text-anchor': 'middle', 'dominant-baseline': 'middle',
       'font-size': 12, 'font-weight': 'bold', fill: MAG, stroke: 'white', 'stroke-width': 3, 'paint-order': 'stroke fill' },
       formatLength(Math.hypot(ann.b.x - ann.a.x, ann.b.y - ann.a.y)));
-  }
+  });
   if (measureMode && measureFirst) {
     const a = W(measureFirst);
     addEl('circle', { cx: a.x, cy: a.y, r: 8, fill: 'none', stroke: MAG, 'stroke-width': 3, class: 'ui-overlay' });
@@ -3288,11 +3295,20 @@ $('btnMeasure').onclick = () => { if (measureHold === 'fired') { measureHold = n
 // In measure mode every tap on the drawing is a measuring point: caught before
 // corners, walls and areas get it.
 svg.addEventListener('click', (e) => {
-  if (!measureMode || fenceMode) return;
+  if (fenceMode) return;
+  if (measureMode) { e.stopPropagation(); e.preventDefault(); measureTap(e); return; }
+  const m = e.target.closest && e.target.closest('[data-ann]');
+  if (!m) return;
   e.stopPropagation();
-  e.preventDefault();
-  measureTap(e);
+  const ann = state.annotations[parseInt(m.getAttribute('data-ann'))];
+  if (!ann || !confirm(`Delete the ${formatLength(Math.hypot(ann.b.x - ann.a.x, ann.b.y - ann.a.y))} measurement?`)) return;
+  pushUndo();
+  state.annotations.splice(state.annotations.indexOf(ann), 1);
+  render();
 }, true);
+$('show-measures').checked = state.settings.showMeasurements !== false;
+$('show-measures').onchange = (e) => { state.settings.showMeasurements = e.target.checked; saveSettings(); render(); };
+$('btn-clear-measures').onclick = () => { closeDrawer(); clearMeasurements(); };
 // Measurement fields (class "measure") open the on-screen number pad instead of
 // the system keyboard. Delegated so it covers inputs created inside modals/panels.
 document.addEventListener('click', (e) => {
