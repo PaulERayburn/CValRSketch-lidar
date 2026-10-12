@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 - `20'6-10 r` silently drew 20'6".
 - **Phone:** the drawing vanished when the keypad left the canvas under 80 px tall.
+- **Desktop: the drawing area assumed a one-row toolbar.** On a narrow or short window the toolbar wraps, and the drawing (with the zoom bar and **Fit**) ran off the bottom of the window. The page is now a column: the drawing takes whatever height is left.
 
 ---
 

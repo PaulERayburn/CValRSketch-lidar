@@ -29,7 +29,12 @@
 <script src="dictation.js?v=0.45.0"></script>
 <style>
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: -apple-system, Segoe UI, Arial, sans-serif; background: #f0f0f0; color: #222; }
+  /* A column: toolbar and floor bar take what they need (they wrap on a narrow
+     window) and main gets the rest, so the drawing and its zoom bar with Fit
+     never run off the bottom. */
+  body { margin: 0; font-family: -apple-system, Segoe UI, Arial, sans-serif; background: #f0f0f0; color: #222;
+         display: flex; flex-direction: column; height: 100vh; }
+  body > header, body > #floor-bar { flex: 0 0 auto; }
   header { background: #2b3a4a; color: #fff; padding: 8px 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   header h1 { font-size: 15px; margin: 0; }
   header .version-chip { font-size: 11px; color: #9fb0c2; font-family: ui-monospace, monospace; }
@@ -82,7 +87,7 @@
   .mode-tabs { display: flex; gap: 0; border: 1px solid #4a6377; border-radius: 4px; overflow: hidden; }
   .mode-tabs button { background: #3a4d61; border-radius: 0; padding: 6px 14px; }
   .mode-tabs button.active { background: #2b6cb0; }
-  main { display: flex; height: calc(100vh - 90px); }
+  main { display: flex; flex: 1 1 auto; min-height: 240px; }
   #canvas-wrap { flex: 1; background: #fff; position: relative; overflow: hidden; }
   #canvas { display: block; width: 100%; height: 100%; cursor: default; }
   #canvas.split-mode { cursor: crosshair; }
