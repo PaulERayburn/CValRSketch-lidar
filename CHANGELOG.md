@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Phone: tap a corner mid-walk** to draw a wall straight to it; **↷ Jump** moves the pen to the next aligned corner, a given distance, or a tapped corner without drawing.
 - **Phone: close onto an existing wall**: ending a walk on another area's wall offers the enclosed area (Next option cycles).
 - **Phone: new-area form** (type, label, floor, building) instead of typed prompts, and **Totals** (GLA, area by floor and type, per building) in the menu.
+- **Room table from scans:** room names, floor / wall / ceiling finishes, condition and the scanned ceiling height picked in CValRScan (0.28) come into the sketch with each area, and show in Totals (desktop and phone) and the export legend.
 
 ### Changed
 - **Phone: dictation takes only measuring commands**; anything else is shown as Ignored. One-word mishears ("you" for U) are no longer directions there. A bare direction after a length finishes that wall.
