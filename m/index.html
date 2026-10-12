@@ -194,7 +194,7 @@
   .keypad button {
     background: #fff; border: 1px solid #ccc; border-radius: 8px;
     font-size: 19px; font-weight: bold; color: #222;
-    min-height: 48px;
+    min-height: 44px;
     transition: background 0.08s;
     -webkit-touch-callout: none;
   }
@@ -204,7 +204,7 @@
   .keypad button.back { background: #f8d7da; color: #721c24; font-size: 22px; }
   .keypad button.add  { background: #2e8b57; color: #fff; border-color: #1d6a3e; font-size: 17px; grid-column: 4; }
   .keypad .rose-cell { grid-column: 1 / span 3; grid-row: span 3; display: flex; justify-content: center; align-items: center; }
-  .rose-cell svg { width: 100%; max-width: 190px; height: auto; touch-action: manipulation; }
+  .rose-cell svg { width: 100%; max-width: 150px; height: auto; touch-action: manipulation; }
   .rose-wedge { fill: #f1f5fb; stroke: #fff; stroke-width: 2; }
   .rose-wedge.cardinal { fill: #e1ebf8; }
   .rose-wedge.tap { fill: #2b6cb0; }
@@ -606,7 +606,10 @@ function fitView() {
   const maxX = Math.max(...pts.map(p => p.x));
   const minY = Math.min(...pts.map(p => p.y));
   const maxY = Math.max(...pts.map(p => p.y));
-  const pad = 40;
+  // A short canvas (keypad open on a phone) must not lose its whole height to
+  // padding: below 80 px a fixed 40 px pad made the scale negative and the
+  // drawing vanished off-screen.
+  const pad = Math.min(40, w / 8, h / 8);
   const sx = (w - pad*2) / Math.max(0.001, maxX - minX);
   const sy = (h - pad*2) / Math.max(0.001, maxY - minY);
   const scale = Math.min(sx, sy);
@@ -1483,7 +1486,9 @@ function nudgeStart(dir) {
 // editing or fencing. Called at the end of render().
 function renderStartPanel() {
   const panel = $('start-panel');
-  const show = state.segments.length === 0 && !editTarget && !fenceMode;
+  // At the origin the status line already says where the start is, and the
+  // phone needs that height for the drawing; show it once the start is moved.
+  const show = state.segments.length === 0 && !editTarget && !fenceMode && !!state.startPoint;
   panel.classList.toggle('show', show);
   if (!show) return;
   const sp = getStart();
