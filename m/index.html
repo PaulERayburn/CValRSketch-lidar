@@ -938,6 +938,76 @@ function renderShape(sh, W, isGhost) {
 
 // ----- In-place edit panel (replaces keypad while editing) -----
 
+// ----- Split an area from a corner (the desktop's split-by-projection) -----
+// A ray from the corner in a cardinal direction to the first wall it meets;
+// the area is cut along it into two, e.g. a garage off the end of a house.
+// Desktop rayHitsWall: walls next to the origin corner are skipped.
+function rayHitsWall(origin, dir, shape, skipVertexIdx) {
+  const rad = DIR_BASE[dir] * Math.PI / 180;
+  const Dx = Math.cos(rad), Dy = Math.sin(rad);
+  const n = shape.points.length - 1;
+  const adjA = skipVertexIdx, adjB = (skipVertexIdx - 1 + n) % n;
+  let best = null;
+  for (let i = 0; i < n; i++) {
+    if (i === adjA || i === adjB) continue;
+    const a = shape.points[i], b = shape.points[i + 1];
+    const wx = b.x - a.x, wy = b.y - a.y;
+    const det = wx * Dy - Dx * wy;
+    if (Math.abs(det) < 1e-9) continue;
+    const aox = a.x - origin.x, aoy = a.y - origin.y;
+    const t = (aoy * wx - aox * wy) / det;
+    const u = (Dx * aoy - Dy * aox) / det;
+    if (t > 0.001 && u >= -0.001 && u <= 1.001 && (!best || t < best.t)) {
+      // Exactly level or plumb with the origin, not a rounding hair off it.
+      const across = dir === 'l' || dir === 'r';
+      best = { wallIdx: i, point: { x: across ? origin.x + t * Dx : origin.x, y: across ? origin.y : origin.y + t * Dy }, t, u };
+    }
+  }
+  return best;
+}
+// Desktop splitPolygon: two areas from the corners idx1..idx2 and the rest.
+function splitAreaAt(shape, idx1, idx2) {
+  if (idx1 > idx2) [idx1, idx2] = [idx2, idx1];
+  const n = shape.points.length - 1;
+  if (idx2 - idx1 < 2 || (n - idx2 + idx1) < 2) return null;
+  const pts = shape.points.slice(0, -1);
+  const a = { ...shape, points: [...pts.slice(0, idx1 + 1), ...pts.slice(idx2), { ...pts[0] }], id: state.nextShapeId++, label: shape.label };
+  const b = { ...shape, points: [...pts.slice(idx1, idx2 + 1), { ...pts[idx1] }], id: state.nextShapeId++, label: shape.label + ' (split)' };
+  const toA = j => j < idx1 ? j : j >= idx2 ? j - idx2 + idx1 + 1 : null;
+  const toB = j => (j >= idx1 && j < idx2) ? j - idx1 : null;
+  for (const k of ['arcs', 'dimOffsets', 'calc']) { a[k] = remapByWall(shape[k], toA); b[k] = remapByWall(shape[k], toB); }
+  rebuildSegments(a); rebuildSegments(b);
+  return { a, b };
+}
+function splitFromVertex(sh, vIdx, dir) {
+  const hit = rayHitsWall(sh.points[vIdx], dir, sh, vIdx);
+  if (!hit) { toast('No wall that way from this corner'); return; }
+  if (!confirm(`Split "${sh.label}" along a ${formatLength(hit.t)} line ${DIR_ARROW[dir]} from this corner?`)) return;
+  pushUndo();
+  const n = sh.points.length - 1;
+  const near = (p, q) => Math.hypot(p.x - q.x, p.y - q.y) < 0.01;
+  let origin = vIdx, other;
+  // The line may land on an existing corner; otherwise add one on the wall.
+  if (near(hit.point, sh.points[hit.wallIdx])) other = hit.wallIdx;
+  else if (near(hit.point, sh.points[hit.wallIdx + 1])) other = (hit.wallIdx + 1) % n;
+  else {
+    const w = hit.wallIdx;
+    sh.points.splice(w + 1, 0, { x: hit.point.x, y: hit.point.y });
+    const shift = i => i < w ? i : i > w ? i + 1 : null;
+    sh.arcs = remapByWall(sh.arcs, shift);
+    sh.dimOffsets = remapByWall(sh.dimOffsets, shift);
+    if (sh.calc) { const o = remapByWall(sh.calc, shift) || {}; if (sh.calc[w]) { o[w] = true; o[w + 1] = true; } sh.calc = o; }
+    rebuildSegments(sh);
+    if (origin > w) origin += 1;
+    other = w + 1;
+  }
+  const result = splitAreaAt(sh, origin, other);
+  if (!result) { restoreState(state.undoStack.pop()); toast("Can't split there"); render(); return; }
+  state.shapes.splice(state.shapes.indexOf(sh), 1, result.a, result.b);
+  exitEdit();
+  toast('Split in two: tap a part to set its type, e.g. Garage');
+}
+
 function enterVertexEdit(sh, vIdx, isGhost) {
   if (fenceMode) return;  // fence-drag intercepts taps while in fence mode
   if (isGhost) {
@@ -995,7 +1065,17 @@ function renderEditPanel() {
         <button class="subtle" id="edit-set-start">📍 Use as start</button>
         <button class="danger" id="edit-delete">Delete vertex</button>
       </div>
+      <div class="hint">Split this area from here (a straight line to the wall opposite)</div>
+      <div class="dirs">
+        <button data-split="l">← L</button>
+        <button data-split="u">↑ U</button>
+        <button data-split="d">↓ D</button>
+        <button data-split="r">R →</button>
+      </div>
     `;
+    document.querySelectorAll('#edit-panel [data-split]').forEach(b => {
+      b.onclick = () => splitFromVertex(sh, editTarget.idx, b.dataset.split);
+    });
     document.querySelectorAll('#edit-panel [data-snap]').forEach(b => {
       b.onclick = () => moveVertexToAligned(sh, editTarget.idx, b.dataset.snap, renderEditPanel);
     });
