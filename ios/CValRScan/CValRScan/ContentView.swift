@@ -12,6 +12,9 @@ struct ContentView: View {
     @State private var model3D: URL?
     @State private var naming = false
     @State private var nameDraft = ""
+    @State private var discarding: RecoveryOffer?
+    @State private var askNewScan = false
+    @State private var askLeave = false
 
     // After Build floor plan: what still needs doing before leaving the site.
     private var buildAdvice: String {
@@ -34,6 +37,20 @@ struct ContentView: View {
         return lines.joined(separator: "\n\n")
     }
 
+    private func discardMessage(_ o: RecoveryOffer) -> String {
+        let n = o.state.photos.count
+        let photos = n == 0 ? ""
+            : o.photosBelongToSavedScan ? " \(n == 1 ? "Its photo stays" : "Its \(n) photos stay") with the saved scan it continues."
+            : " \(n == 1 ? "Its photo is" : "Its \(n) photos are") kept: moved to a folder named “Recovered photos” and the date, in Files › On My iPhone › CValRScan."
+        return "Its rooms and marked points are deleted." + photos
+    }
+
+    private var leaveMessage: String {
+        let n = scan.photos.count
+        let photos = n == 0 ? "" : scan.photosBelongToSavedScan ? " Its photos stay with the saved scan." : " Its photos are kept in a “Recovered photos” folder in Files."
+        return "Build floor plan hasn't saved it. Kept, it's offered at the top of this screen to recover. Discarded, its rooms and marked points are deleted." + photos
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -41,7 +58,28 @@ struct ContentView: View {
                     Text("This device has no LiDAR scanner. Use an iPhone or iPad Pro with LiDAR.")
                         .foregroundStyle(.red)
                 }
-                Section(scan.loadedFromFile ? "Opened scan" : "Rooms scanned") {
+                if let offer = scan.recoveryOffer {
+                    Section {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Recover unfinished scan", systemImage: "arrow.counterclockwise")
+                                .font(.headline)
+                            Text((offer.state.name.isEmpty ? "" : "\(offer.state.name) · ") + offer.summary)
+                            Text("The app closed before Build floor plan." + (offer.hasWorldMap ? ""
+                                 : " Its AR session wasn't saved, so it can be built but not resumed on site."))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Button("Recover") { Task { await scan.recover(offer) } }
+                                .buttonStyle(.borderedProminent)
+                            Spacer()
+                            Button("Discard", role: .destructive) { discarding = offer }
+                                .buttonStyle(.bordered)
+                        }
+                        .disabled(scan.isBusy)
+                    }
+                }
+                Section(scan.recoveredNeedsResume ? "Recovered scan" : scan.loadedFromFile ? "Opened scan" : "Rooms scanned") {
                     if scan.structure != nil || !scan.rooms.isEmpty {
                         Button {
                             nameDraft = scan.scanName
@@ -51,7 +89,17 @@ struct ContentView: View {
                                 .font(.headline)
                         }
                     }
-                    if scan.loadedFromFile {
+                    if scan.recoveredNeedsResume {
+                        if scan.canResume {
+                            Button("Resume on site", systemImage: "location.viewfinder") { resuming = true }
+                                .font(.headline)
+                            Text("Recovered after the app closed. Still at the property? Resume to add rooms or walk outside; they line up with these. Build floor plan works now either way.")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Recovered after the app closed. Its AR session wasn't saved, so it can't be resumed on site: Build floor plan, then measure and share as usual.")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if scan.loadedFromFile {
                         if scan.canResume {
                             Button("Resume on site", systemImage: "location.viewfinder") { resuming = true }
                                 .font(.headline)
@@ -102,14 +150,16 @@ struct ContentView: View {
                     Text("Draw a plan from scratch, no scan needed: laser a wall, then tap or say its direction.")
                 }
                 Section {
-                    Button("Scan a room", systemImage: "camera.viewfinder") { scan.startRoom() }
-                        .disabled(!ScanController.isSupported || scan.isBusy)
+                    Button("Scan a room", systemImage: "camera.viewfinder") {
+                        if scan.scanRoomStartsNewScan && scan.recoveryOffer != nil { askNewScan = true } else { scan.startRoom() }
+                    }
+                    .disabled(!ScanController.isSupported || scan.isBusy || scan.recoveredNeedsResume)
                     Button("Remove last room", systemImage: "arrow.uturn.backward", role: .destructive) {
                         scan.removeLastRoom()
                     }
                     .disabled(scan.rooms.isEmpty || scan.isBusy)
                     Button("Go outside", systemImage: "house") { scan.isOutside = true }
-                        .disabled(scan.rooms.isEmpty || scan.isBusy || scan.loadedFromFile || scan.anchorEnd != nil)
+                        .disabled(scan.rooms.isEmpty || scan.isBusy || scan.loadedFromFile || scan.recoveredNeedsResume || scan.anchorEnd != nil)
                     Button("Build floor plan", systemImage: "square.split.bottomrightquarter") {
                         Task {
                             await scan.export()
@@ -205,8 +255,10 @@ struct ContentView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("New") { scan.newScan() }
-                        .disabled(scan.isBusy || (scan.rooms.isEmpty && !scan.loadedFromFile))
+                    Button("New") {
+                        if scan.unbuiltScanInProgress { askLeave = true } else { scan.newScan() }
+                    }
+                    .disabled(scan.isBusy || (scan.rooms.isEmpty && !scan.loadedFromFile && !scan.unbuiltScanInProgress))
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Open…") { picking = true }
@@ -223,6 +275,28 @@ struct ContentView: View {
                 Button("Later", role: .cancel) {}
             } message: {
                 Text(buildAdvice)
+            }
+            .alert("Discard unfinished scan?", isPresented: Binding(get: { discarding != nil }, set: { if !$0 { discarding = nil } }),
+                   presenting: discarding) { o in
+                Button("Discard", role: .destructive) { scan.discardRecovery(o) }
+                Button("Cancel", role: .cancel) {}
+            } message: { o in
+                Text(discardMessage(o))
+            }
+            .confirmationDialog("Recover the unfinished scan first?", isPresented: $askNewScan, titleVisibility: .visible,
+                                presenting: scan.recoveryOffer) { o in
+                Button("Recover it") { Task { await scan.recover(o) } }
+                Button("Start a new scan") { scan.startRoom() }
+                Button("Cancel", role: .cancel) {}
+            } message: { o in
+                Text("\(o.summary): never built into a floor plan. A new scan leaves it here to recover later.")
+            }
+            .confirmationDialog("This scan isn't built yet", isPresented: $askLeave, titleVisibility: .visible) {
+                Button("Keep it to recover later") { scan.leaveCurrentScan(discard: false) }
+                Button("Discard it", role: .destructive) { scan.leaveCurrentScan(discard: true) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(leaveMessage)
             }
             .fullScreenCover(isPresented: $scan.isOutside) {
                 ExteriorView(scan: scan, depth: scan.outsideDepth)

@@ -32,7 +32,7 @@ struct ResumeView: View {
             }
         }
         .task {
-            scan.startResume()
+            guard scan.startResume() else { dismiss(); return }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
                 if scan.checkRelocalized() {

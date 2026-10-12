@@ -2,13 +2,14 @@ import ARKit
 import AVFoundation
 import Foundation
 import RoomPlan
+import UIKit
 
 // Drives RoomPlan: scans rooms one after another in the same AR session so
 // they share one coordinate system, then merges them into one structure.
 // Marked corners and meter readings live in that same coordinate system.
 @MainActor
 final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCaptureViewDelegate {
-    @Published var rooms: [CapturedRoom] = []
+    @Published var rooms: [CapturedRoom] = [] { didSet { roomsChanged = true } }
     @Published var isScanning = false
     @Published var isBusy = false
     @Published var message: String?
@@ -145,6 +146,20 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     @Published private(set) var canResume = false
     @Published private(set) var isRelocalizing = false
     @Published private(set) var resumed = false
+    // Crash-safe progress (Recovery.swift): an unbuilt scan found on disk at
+    // launch, and whether the scan open now came back that way and still
+    // has to be located on site before it can be added to.
+    @Published private(set) var recoveryOffer: RecoveryOffer?
+    @Published private(set) var recoveredNeedsResume = false
+    private let recoveryIO = RecoveryIO(root: ScanController.docs)
+    private var recoveryId: String?
+    private var roomsChanged = true
+    private var roomsSavedFor: String?
+    private var recoveryMap: URL?
+    private var mapSaving = false
+    private var mapWanted = false
+    private var lastMapSave = Date.distantPast
+    private var mapBackgroundTask = UIBackgroundTaskIdentifier.invalid
 
     static var isSupported: Bool { RoomCaptureSession.isSupported }
 
@@ -171,6 +186,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         super.init()
         captureView.delegate = self
         refreshSaved()
+        refreshRecovery()
     }
 
     // RoomCaptureViewDelegate inherits NSCoding; nothing here needs archiving.
@@ -216,6 +232,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         rooms.append(processedResult)
         message = "Room \(rooms.count) added"
         refreshChecks()
+        saveProgress(worldMap: true)
     }
 
     func removeLastRoom() {
@@ -223,6 +240,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         exportURLs = []
         structure = nil
         refreshChecks()
+        saveProgress()
     }
 
     // The camera keeps tracking with the torch on, which is what dark
@@ -639,10 +657,10 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         // After a corner, the next wall starts at it.
         if let c = last.last, c.isCorner {
             exteriorWalls.append([c])
-            writeFiles()
         } else {
             exteriorWalls.append([])
         }
+        writeFiles()
     }
 
     // How far through the walk each point was taken, for spreading the drift:
@@ -773,9 +791,15 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             // Stored files are named by the time only; the scan's name (often
             // the address) goes into the plan and into the copies that are shared.
             if !resumed || stamp.isEmpty { stamp = Self.stampFormatter.string(from: Date()) }
-            writeFiles()
+            // A recovered scan not yet located on site: this session is not
+            // in the scan's space, so its map would be wrong; the map saved
+            // with the recovery goes to the scan instead.
+            let recovered = recoveredNeedsResume
+            let wrote = writeFiles()
+            if wrote { finishRecovery(moveMapTo: recovered ? worldMapURL : nil) }
             saveWorldMap()
             write3DModel(replace: true)
+            if recovered && wrote { becomeSavedScan() }
             if lost > 0 {
                 message = "\(lost == 1 ? "1 edit" : "\(lost) edits") couldn't find \(lost == 1 ? "its wall" : "their walls") in the rebuilt plan. Check them in Measure & edit plan."
             }
@@ -891,21 +915,25 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     private var worldMapURL: URL { Self.docs.appendingPathComponent("scan-\(stamp).worldmap") }
 
     func saveWorldMap() {
-        guard !stamp.isEmpty, !loadedFromFile else { return }
-        let url = worldMapURL
-        arSession.getCurrentWorldMap { map, _ in
-            guard let map,
-                  let data = try? NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true)
-            else { return }
-            try? data.write(to: url)
-        }
+        guard !stamp.isEmpty, !loadedFromFile, !recoveredNeedsResume else { return }
+        recoveryIO.saveWorldMap(from: arSession, to: worldMapURL, onlyFor: nil) { _ in }
     }
 
-    func startResume() {
-        guard let data = try? Data(contentsOf: worldMapURL),
-              let map = try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data) else {
-            message = "This scan has no saved session to resume."
-            return
+    // False when there is no readable map, so the resume screen closes.
+    @discardableResult
+    func startResume() -> Bool {
+        // A recovered scan resumes from the map saved with it, else its saved scan's.
+        let urls = (recoveredNeedsResume ? [recoveryMap].compactMap { $0 } : []) + (stamp.isEmpty ? [] : [worldMapURL])
+        guard let map = urls.lazy.compactMap({ url in
+            (try? Data(contentsOf: url)).flatMap { try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: $0) }
+        }).first else {
+            if recoveredNeedsResume {
+                canResume = false
+                message = "The saved AR session couldn't be read, so this scan can't be resumed on site. Build floor plan still works."
+            } else {
+                message = "This scan has no saved session to resume."
+            }
+            return false
         }
         let config = ARWorldTrackingConfiguration()
         config.initialWorldMap = map
@@ -914,6 +942,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         arSession.run(config, options: [.resetTracking, .removeExistingAnchors])
         relocalizeStarted = Date()
         isRelocalizing = true
+        return true
     }
 
     // Polled while the resume screen is up. ARKit reports limited tracking
@@ -939,7 +968,10 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         if exteriorWalls.last?.isEmpty == false { exteriorWalls.append([]) }
         anchorStart = nil
         anchorEnd = nil
+        recoveredNeedsResume = false
+        recoveryMap = nil
         message = "Located. Scan more rooms or go outside, then Build floor plan."
+        saveProgress()
         return true
     }
 
@@ -953,8 +985,14 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         writeFiles()
     }
 
-    func writeFiles() {
-        guard let structure else { return }
+    // Before Build floor plan there are no scan files: the recovery bundle
+    // is written instead. True when the scan files were written.
+    @discardableResult
+    func writeFiles() -> Bool {
+        guard let structure else {
+            saveProgress()
+            return false
+        }
         do {
             let dir = Self.docs
             let planURL = dir.appendingPathComponent("scan-\(stamp).cvalrscan.json")
@@ -974,8 +1012,188 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             message = "Saved and ready to share"
             refreshChecks()
             refreshSaved()
+            return true
         } catch {
             message = "Export failed: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    // MARK: Crash-safe progress (Recovery.swift)
+
+    // Scanned, marked or photographed, and not yet saved by Build floor plan.
+    var unbuiltScanInProgress: Bool {
+        !loadedFromFile && structure == nil
+            && (!rooms.isEmpty || !photos.isEmpty || !wallPoints.isEmpty || exteriorWalls.contains { !$0.isEmpty } || anchorStart != nil)
+    }
+
+    var photosBelongToSavedScan: Bool { belongsToSavedScan(stamp) }
+
+    // Scan a room would start a scan from nothing (rather than add to this one).
+    var scanRoomStartsNewScan: Bool { loadedFromFile || (structure == nil && !unbuiltScanInProgress) }
+
+    // Called after every change while the scan is unbuilt (writeFiles does,
+    // when there is no plan yet). The small state goes every time, the rooms
+    // when they changed; the world map after a room, else every 5 minutes.
+    func saveProgress(worldMap: Bool = false) {
+        guard unbuiltScanInProgress else {
+            // Everything taken off again (Remove last room down to none): nothing to recover.
+            // A recovered scan whose rooms couldn't be read keeps its bundle.
+            if let id = recoveryId, !loadedFromFile, structure == nil, !recoveredNeedsResume {
+                recoveryId = nil
+                roomsSavedFor = nil
+                recoveryIO.finish(id, moveMapTo: nil) {}
+            }
+            return
+        }
+        let id: String
+        if let r = recoveryId { id = r } else {
+            id = RecoveryFiles.newId()
+            recoveryId = id
+            recoveryIO.allow(id)
+        }
+        let state = RecoveryState(scanId: id, savedAt: Date(), appVersion: Self.appVersion, stamp: stamp, resumed: resumed,
+                                  name: scanName, roomCount: rooms.count, photoFolder: photoFolder,
+                                  photos: photos.map(RecoveryState.Photo.init), wallPoints: wallPoints.map(RecoveryState.WallPt.init),
+                                  corners: corners, exterior: exteriorWalls.map { $0.map(RecoveryState.Exterior.init) },
+                                  anchorStart: anchorStart, anchorEnd: anchorEnd)
+        let sendRooms = roomsChanged || roomsSavedFor != id
+        recoveryIO.save(state, rooms: sendRooms ? rooms : nil)
+        roomsChanged = false
+        roomsSavedFor = id
+        if worldMap || (!isScanning && Date().timeIntervalSince(lastMapSave) > 300) { saveRecoveryMap(id) }
+    }
+
+    // One world map at a time; one asked for meanwhile follows when it's done.
+    private func saveRecoveryMap(_ id: String) {
+        // Until a recovered scan is located, this session isn't in its space.
+        guard !recoveredNeedsResume, !isRelocalizing else { return }
+        if mapSaving { mapWanted = true; return }
+        mapSaving = true
+        mapWanted = false
+        lastMapSave = Date()
+        // A little time to finish writing if the user leaves the app meanwhile.
+        // Out of time, the write is abandoned; the previous map stays whole.
+        mapBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Save AR session") { self.endMapBackgroundTask() }
+        recoveryIO.saveWorldMap(from: arSession, to: recoveryIO.mapURL(id), onlyFor: id) { _ in
+            Task { @MainActor in
+                self.mapSaving = false
+                self.endMapBackgroundTask()
+                if self.mapWanted, let id = self.recoveryId, self.unbuiltScanInProgress { self.saveRecoveryMap(id) }
+            }
+        }
+    }
+
+    private func endMapBackgroundTask() {
+        guard mapBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(mapBackgroundTask)
+        mapBackgroundTask = .invalid
+    }
+
+    // Build floor plan wrote the scan files: the bundle isn't needed.
+    private func finishRecovery(moveMapTo: URL?) {
+        guard let id = recoveryId else { return }
+        recoveryId = nil
+        roomsSavedFor = nil
+        mapWanted = false
+        recoveryIO.finish(id, moveMapTo: moveMapTo) {}
+    }
+
+    // A recovered scan built before it was located: it now stands as a saved
+    // scan does when opened, and resumes on site the same way.
+    private func becomeSavedScan() {
+        recoveredNeedsResume = false
+        let hadMap = recoveryMap != nil
+        recoveryMap = nil
+        savedRooms = rooms
+        rooms = []
+        loadedFromFile = true
+        resumed = false
+        canResume = hadMap || FileManager.default.fileExists(atPath: worldMapURL.path)
+    }
+
+    func refreshRecovery() {
+        recoveryOffer = RecoveryFiles.pick(recoveryIO.list(), excluding: recoveryId).map { s in
+            RecoveryOffer(state: s, photosBelongToSavedScan: belongsToSavedScan(s.stamp),
+                          hasWorldMap: FileManager.default.fileExists(atPath: recoveryIO.mapURL(s.scanId).path))
+        }
+    }
+
+    private func belongsToSavedScan(_ stamp: String) -> Bool {
+        !stamp.isEmpty && FileManager.default.fileExists(atPath: Self.docs.appendingPathComponent("scan-\(stamp).cvalrscan.json").path)
+    }
+
+    // Puts an unbuilt scan back as it was: rooms, marks, the outside walk,
+    // photos and name; and a scan it continues, with its edits and readings.
+    // New rooms and outside points wait for Resume on site, so they line up.
+    func recover(_ offer: RecoveryOffer) async {
+        let s = offer.state
+        isBusy = true
+        let restored = await recoveryIO.loadRooms(s.scanId)
+        isBusy = false
+        newScan()
+        let rawURL = Self.docs.appendingPathComponent("scan-\(s.stamp).capturedstructure.json")
+        if !s.stamp.isEmpty, FileManager.default.fileExists(atPath: rawURL.path) { load(stamp: s.stamp) }
+        if let st = structure { previous = st }
+        structure = nil
+        exportURLs = []
+        recoveryId = s.scanId
+        recoveryIO.allow(s.scanId)
+        rooms = restored ?? []
+        savedRooms = rooms
+        // Unreadable rooms stay on disk as they are until a new room replaces them.
+        roomsChanged = false
+        roomsSavedFor = s.scanId
+        stamp = s.stamp
+        resumed = s.resumed
+        scanName = s.name
+        photoFolder = s.photoFolder
+        photos = s.photos.map(\.scanPhoto)
+        photoZip = nil
+        wallPoints = s.wallPoints.map(\.wallPoint)
+        corners = s.corners
+        exteriorWalls = s.exterior.map { $0.map(\.exteriorPoint) }
+        anchorStart = s.anchorStart
+        anchorEnd = s.anchorEnd
+        loadedFromFile = false
+        recoveredNeedsResume = true
+        let map = recoveryIO.mapURL(s.scanId)
+        recoveryMap = FileManager.default.fileExists(atPath: map.path) ? map : nil
+        canResume = recoveryMap != nil || (!s.stamp.isEmpty && FileManager.default.fileExists(atPath: worldMapURL.path))
+        lastMapSave = Date()
+        refreshChecks()
+        recoveryOffer = nil
+        refreshRecovery()
+        var said = "Recovered \(RecoveryFiles.summary(s, when: "from \(RecoveryFiles.when(s.savedAt))"))."
+        if restored == nil && s.roomCount > 0 { said += " Its rooms couldn't be read." }
+        if !canResume { said += " Its AR session wasn't saved, so it can't be resumed on site; Build floor plan still works." }
+        message = said
+    }
+
+    // Throws away an unbuilt scan's rooms; its photos are kept (Recovery.swift).
+    func discardRecovery(_ offer: RecoveryOffer) {
+        let s = offer.state
+        discardBundle(s.scanId, photoFolder: offer.photosBelongToSavedScan || s.photos.isEmpty ? nil : s.photoFolder, savedAt: s.savedAt)
+    }
+
+    // New while this scan is unbuilt: keep it to recover later, or discard it.
+    func leaveCurrentScan(discard: Bool) {
+        if !discard {
+            saveProgress()
+        } else if let id = recoveryId {
+            discardBundle(id, photoFolder: belongsToSavedScan(stamp) || photos.isEmpty ? nil : photoFolder, savedAt: Date())
+            recoveryId = nil
+        }
+        newScan()
+    }
+
+    private func discardBundle(_ id: String, photoFolder: String?, savedAt: Date) {
+        recoveryIO.discard(id, photoFolder: photoFolder, savedAt: savedAt) { kept in
+            Task { @MainActor in
+                self.refreshRecovery()
+                if let kept { self.message = "Unfinished scan discarded. Its photos are in Files › On My iPhone › CValRScan › \(kept)." }
+                else { self.message = "Unfinished scan discarded." }
+            }
         }
     }
 
@@ -1013,7 +1231,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     func setName(_ name: String) {
         scanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         photoZip = nil
-        if structure != nil { writeFiles() }
+        writeFiles()
         shareURLs = namedCopies(of: exportURLs)
     }
 
@@ -1084,6 +1302,13 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         photoFolder = ""
         photoZip = nil
         message = nil
+        // An unbuilt scan left behind keeps its bundle, and is offered again.
+        recoveryId = nil
+        roomsSavedFor = nil
+        recoveredNeedsResume = false
+        recoveryMap = nil
+        mapWanted = false
+        recoveryIO.afterPending { Task { @MainActor in self.refreshRecovery() } }
     }
 
     func load(stamp: String) {
