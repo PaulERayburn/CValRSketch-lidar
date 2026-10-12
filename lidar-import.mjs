@@ -26,6 +26,7 @@ const MIN_SIDE_FT = 0.15;         // shorter sides are noise in the outline
 const WALK_SPLIT_IN = 6;          // outside-walk points further than this off one line turned a corner
 const THICKNESS_RANGE_IN = [2, 16];
 const WALK_TILT_FIX_DEG = 1.5;    // an outside walk turned more than this from the scan is turned back
+const CORNER_FACE_FT = 1.5;       // a marked outside corner stands for this much of each face
 const CELL_FT = 0.1;              // grid for finding floor that lies outside the outside walk
 const MIN_CUT_SF = 4;             // smaller pieces outside the walk are noise
 export const DEFAULT_EXTERIOR_IN = 6;
@@ -537,19 +538,65 @@ function offsetSide(s, sign, ft) {
 // Outside walk: siding points per wall, drift spread over the walk in order, a
 // wall whose points turn a corner split there, each wall fitted with a line.
 // ---------------------------------------------------------------------------
+// From 0.25.0 a wall can be one LiDAR point (its `dir` gives the line) and a
+// marked corner ends one wall and starts the next, stored as the last point of
+// the one and the first of the other.
 function outsideWalk(ext, plan) {
   if (!ext || !(ext.walls || []).length) return { lines: [], split: 0, driftIn: null };
-  const total = ext.walls.reduce((a, w) => a + w.length, 0);
+  const isCorner = p => p.kind === 'corner' && Array.isArray(p.dirs) && p.dirs.length === 2;
+  // A corner starting a wall is the one that ended the wall before: one point
+  // of the walk, so it takes one share of the drift.
+  const continues = (w, i) => i > 0 && w.length > 0 && isCorner(w[0]) && ext.walls[i - 1].length > 0
+    && ext.walls[i - 1].at(-1).point.every((v, j) => v === w[0].point[j]);
+  const total = ext.walls.reduce((a, w, i) => a + w.length - (continues(w, i) ? 1 : 0), 0);
   const drift = ext.anchorStart && ext.anchorEnd
     ? [ext.anchorEnd.point[0] - ext.anchorStart.point[0], ext.anchorEnd.point[1] - ext.anchorStart.point[1]] : [0, 0];
-  let k = 0, split = 0;
+  // plan() only turns and scales, so it turns a direction too.
+  const dirPlan = v => { const o = plan([0, 0]), q = plan(v), L = Math.hypot(q.x - o.x, q.y - o.y); return L > 0 ? { x: (q.x - o.x) / L, y: (q.y - o.y) / L } : null; };
+  let k = 0, split = 0, last = null;
   const lines = [];
-  for (const w of ext.walls) {
-    const pts = w.map(p => { k++; const f = k / (total + 1); return plan([p.point[0] - drift[0] * f, p.point[1] - drift[1] * f]); });
-    const parts = splitWalk(pts);
+  ext.walls.forEach((w, i) => {
+    const pts = w.map((p, j) => {
+      if (j === 0 && continues(w, i)) return last;
+      k++;
+      const f = k / (total + 1);
+      return { ...plan([p.point[0] - drift[0] * f, p.point[1] - drift[1] * f]), src: p };
+    });
+    if (pts.length) last = pts.at(-1);
+    // Corners never split a wall: they are its ends, on its line.
+    const plain = pts.filter(q => !isCorner(q.src));
+    const head = pts.length && isCorner(pts[0].src) ? [pts[0]] : [];
+    const tail = pts.length > 1 && isCorner(pts.at(-1).src) ? [pts.at(-1)] : [];
+    const parts = plain.length ? splitWalk(plain) : [];
     if (parts.length > 1) split++;
-    for (const part of parts) if (part.length >= 2) lines.push(fitLine(part));
-  }
+    parts.forEach((part, n) => {
+      const ends = [...(n === 0 ? head : []), ...(n === parts.length - 1 ? tail : [])];
+      const p = part[0], u = part.length === 1 && p.src.method === 'lidar' && Array.isArray(p.src.dir) ? dirPlan(p.src.dir) : null;
+      if (u) {
+        // One LiDAR point: the line the depth strip found, as long as the
+        // strip (else 2 ft), reaching to the wall's corners when marked.
+        // Span ends are taken relative to the point, so drift doesn't move them.
+        const o = plan([0, 0]);
+        const along = q => (q.x - p.x) * u.x + (q.y - p.y) * u.y;
+        const ts = Array.isArray(p.src.span) && p.src.span.length === 2
+          ? p.src.span.map(s => { const q = plan([s[0] - p.src.point[0], s[1] - p.src.point[1]]); return (q.x - o.x) * u.x + (q.y - o.y) * u.y; })
+          : [-1, 1];
+        ts.push(...ends.map(along));
+        lines.push({ mx: p.x, my: p.y, ux: u.x, uy: u.y, worst: 0, squares: 0, lo: Math.min(...ts), hi: Math.max(...ts) });
+      } else if (part.length + ends.length >= 2) {
+        lines.push(fitLine([...part, ...ends]));
+      }
+    });
+    // A wall of two corners and nothing between.
+    if (!plain.length && head.length && tail.length) lines.push(fitLine([...head, ...tail]));
+    // Each corner once, as a short line along each face, out from the corner.
+    for (const c of [...(continues(w, i) ? [] : head), ...tail]) {
+      for (const dv of c.src.dirs) {
+        const u = Array.isArray(dv) && dv.length === 2 ? dirPlan(dv) : null;
+        if (u) lines.push({ mx: c.x, my: c.y, ux: u.x, uy: u.y, worst: 0, squares: 0, lo: 0, hi: CORNER_FACE_FT });
+      }
+    }
+  });
   return { lines, split, driftIn: ext.anchorStart && ext.anchorEnd ? Math.hypot(...drift) * 39.37 : null };
 }
 
@@ -571,6 +618,7 @@ function walkStory(d) {
 // walk already fits as well as anything found.
 function registerWalk(walk, sides) {
   const angleOff = l => { let a = Math.atan2(l.uy, l.ux) * 180 / Math.PI; a = ((a % 90) + 90) % 90; return a > 45 ? a - 90 : a; };
+  // A corner's lines are too short to steer the turn; a one-point wall counts when its LiDAR strip ran 4 ft.
   const long = walk.lines.filter(l => l.hi - l.lo >= 4);
   if (long.length < 3) return null;
   const sorted = long.map(l => ({ a: angleOff(l), w: l.hi - l.lo })).sort((p, q) => p.a - q.a);
