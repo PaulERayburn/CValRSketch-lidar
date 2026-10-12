@@ -48,7 +48,7 @@ private struct SketchWebView: UIViewRepresentable {
 // One page for the app's lifetime, so leaving the Sketch screen and coming
 // back keeps the sketch in progress.
 @MainActor
-final class SketchHost: NSObject, WKScriptMessageHandler {
+final class SketchHost: NSObject, WKScriptMessageHandler, WKUIDelegate {
     static let shared = SketchHost()
     static let scheme = "cvalrsketch"
 
@@ -63,10 +63,13 @@ final class SketchHost: NSObject, WKScriptMessageHandler {
         config.setURLSchemeHandler(BundleScheme(), forURLScheme: Self.scheme)
         config.userContentController.addUserScript(WKUserScript(source: Self.bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         web = WKWebView(frame: .zero, configuration: config)
+        // Without a UI delegate a web view answers alert() silently and confirm()
+        // and prompt() with no, so Delete shape, Split and the rest did nothing.
         #if DEBUG
         web.isInspectable = true
         #endif
         super.init()
+        web.uiDelegate = self
         for name in ["speech", "share"] { config.userContentController.add(self, name: name) }
         speech.send = { [weak self] js in self?.web.evaluateJavaScript(js) }
         web.load(URLRequest(url: URL(string: "\(Self.scheme)://app/m/index.html")!))
@@ -107,6 +110,38 @@ final class SketchHost: NSObject, WKScriptMessageHandler {
             self?.web.evaluateJavaScript("window.__cvalrShareDone && __cvalrShareDone(\(done))")
         }
         top.present(sheet, animated: true)
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+        present(message) { a in a.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() }) }
+            ?? completionHandler()
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        present(message) { a in
+            a.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
+            a.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
+        } ?? completionHandler(false)
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+        present(prompt) { a in
+            a.addTextField { $0.text = defaultText; $0.clearButtonMode = .whileEditing }
+            a.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(nil) })
+            a.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(a.textFields?.first?.text ?? "") })
+        } ?? completionHandler(nil)
+    }
+
+    // Shows an alert built by `build`; nil when there's nothing to show it on.
+    private func present(_ message: String, _ build: (UIAlertController) -> Void) -> Void? {
+        guard let top = Self.topController() else { return nil }
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        build(alert)
+        top.present(alert, animated: true)
+        return ()
     }
 
     private static func topController() -> UIViewController? {
