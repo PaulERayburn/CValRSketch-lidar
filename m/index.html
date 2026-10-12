@@ -287,6 +287,23 @@
     display: flex; flex-direction: column; gap: 8px;
   }
   .modal h3 { margin: 0 0 8px; font-size: 15px; }
+  .modal { max-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  /* New-area form */
+  .modal .na-hint { font-size: 11px; color: #6b7280; text-transform: uppercase; margin-top: 4px; }
+  .modal .type-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .modal .type-grid button { display: flex; align-items: center; gap: 8px; padding: 6px 8px; min-height: 40px; font-size: 13px; text-align: left; }
+  .modal .type-grid .sw { flex: 0 0 auto; width: 18px; height: 18px; border: 1px solid #999; border-radius: 3px; }
+  .modal .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .modal .chip-row button { padding: 6px 12px; min-height: 36px; font-size: 13px; }
+  .modal .type-grid button.sel, .modal .chip-row button.sel { border: 2px solid #2b6cb0; background: #e8f0fa; font-weight: bold; }
+  .modal input.na-label { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; width: 100%; -webkit-user-select: text; user-select: text; }
+  /* Totals in the drawer */
+  .drawer .totals { font-size: 13px; display: flex; flex-direction: column; gap: 2px; }
+  .drawer .totals .tot-bldg { font-weight: bold; color: #2b3a4a; border-bottom: 1px solid #ddd; margin-top: 8px; }
+  .drawer .totals .tot-floor { font-weight: bold; color: #555; font-size: 12px; margin-top: 4px; }
+  .drawer .totals .tot-row { display: flex; justify-content: space-between; padding-left: 10px; }
+  .drawer .totals .tot-row.sum { font-weight: bold; border-top: 1px dashed #ccc; }
+  .drawer .totals .tot-row.gla { font-weight: bold; color: #1f6b43; padding-left: 0; }
   .modal .modal-buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
   .modal button {
     padding: 10px 16px; border: 1px solid #ccc; background: #fff; border-radius: 8px;
@@ -405,6 +422,9 @@
 
   <h2>Areas on this Floor</h2>
   <div class="shape-list" id="shape-list"></div>
+
+  <h2>Totals</h2>
+  <div class="totals" id="totals"></div>
 
   <h2>Start Point</h2>
   <div style="font-size:12px; color:#666;" id="drawer-start-info"></div>
@@ -2276,28 +2296,88 @@ function closeShape() {
   } else {
     pts = ol.points.map((p, i) => i === ol.points.length-1 ? { ...ol.to } : p);
   }
-  const label = prompt('Label for this area:', `Area ${state.nextShapeId}`);
-  if (label === null) return;
-  const typeKey = prompt(`Type? (${Object.keys(TYPES).join(', ')})`, 'living');
-  if (!typeKey || !(typeKey in TYPES)) { toast('Cancelled.'); return; }
-  pushUndo();
-  const shape = {
-    id: state.nextShapeId++,
-    label, type: typeKey,
-    floor: state.activeFloor,
-    building: DEFAULT_BUILDING,
-    points: pts,
-    segments: [],
+  // Cancel keeps the walk.
+  openNewAreaModal(polygonArea(pts), ({ label, type, floor, building }) => {
+    pushUndo();
+    const shape = {
+      id: state.nextShapeId++,
+      label, type, floor, building,
+      points: pts,
+      segments: [],
+    };
+    rebuildSegments(shape);
+    state.shapes.push(shape);
+    state.segments = [];
+    state.startPoint = null;
+    state.enclose = null;
+    state.closeOffer = null;
+    if (floor !== state.activeFloor) { state.activeFloor = floor; toast(`Added on the ${floor} floor (now the floor in view)`); }
+    clearEntry();
+    render();
+    renderDrawer();
+  });
+}
+
+// ----- New-area form: the desktop's picker, plus floor and building -----
+// The type list is fixed (each type carries a fill and a legend entry), so a
+// "new" type is the closest listed one with the detail in the label.
+function suggestedType(floor, building) {
+  if (floor === 'basement') return 'finished';
+  const b = (building || '').toLowerCase();
+  for (const k of ['barn', 'shop', 'shed', 'carport', 'garage']) if (b.includes(k)) return k;
+  if (b.includes('outbuild')) return 'outbuilding';
+  return 'living';
+}
+function typeSwatch(k) {
+  const f = TYPES[k].fill;
+  return f.startsWith('#') ? f : 'repeating-linear-gradient(45deg,#c8c8c8 0 2px,#fff 2px 5px)';
+}
+function openNewAreaModal(area, onOk) {
+  const buildings = Array.isArray(state.buildings) && state.buildings.length ? [...state.buildings] : [...BUILDINGS];
+  // Areas are usually walked a building at a time: default to the last one used.
+  const last = state.shapes.length ? state.shapes[state.shapes.length - 1].building : null;
+  const v = { floor: state.activeFloor, building: last || DEFAULT_BUILDING };
+  if (!buildings.includes(v.building)) buildings.push(v.building);
+  v.type = suggestedType(v.floor, v.building);
+  let typeAuto = true, labelAuto = true;   // still following floor/building, and the type
+  showModal(`
+    <h3>New area — ${Math.round(area).toLocaleString()} sq ft</h3>
+    <div class="na-hint">Type</div>
+    <div class="type-grid">${Object.entries(TYPES).map(([k, t]) =>
+      `<button type="button" data-na-type="${k}"><span class="sw" style="background:${typeSwatch(k)}"></span><span>${escapeHtml(t.name)}</span></button>`).join('')}</div>
+    <div class="na-hint">Label (printed on the drawing)</div>
+    <input id="na-label" class="na-label" type="text" autocomplete="off" value="${escapeHtml(TYPES[v.type].name)}">
+    <div class="na-hint">Floor</div>
+    <div class="chip-row">${state.floors.map(f => `<button type="button" data-na-floor="${escapeHtml(f)}">${escapeHtml(f)}</button>`).join('')}</div>
+    <div class="na-hint">Building / dwelling</div>
+    <div class="chip-row">${buildings.map(b => `<button type="button" data-na-bldg="${escapeHtml(b)}">${escapeHtml(b)}</button>`).join('')}</div>
+    <div class="modal-buttons">
+      <button type="button" id="na-cancel">Cancel</button>
+      <button type="button" class="primary" id="na-ok">✓ Add area</button>
+    </div>
+  `);
+  const m = $('modal');
+  const labelIn = $('na-label');
+  const mark = () => {
+    m.querySelectorAll('[data-na-type]').forEach(b => b.classList.toggle('sel', b.dataset.naType === v.type));
+    m.querySelectorAll('[data-na-floor]').forEach(b => b.classList.toggle('sel', b.dataset.naFloor === v.floor));
+    m.querySelectorAll('[data-na-bldg]').forEach(b => b.classList.toggle('sel', b.dataset.naBldg === v.building));
+    if (labelAuto) labelIn.value = TYPES[v.type].name;
   };
-  rebuildSegments(shape);
-  state.shapes.push(shape);
-  state.segments = [];
-  state.startPoint = null;
-  state.enclose = null;
-  state.closeOffer = null;
-  clearEntry();
-  render();
-  renderDrawer();
+  const setType = t => { v.type = t; mark(); };
+  m.querySelectorAll('[data-na-type]').forEach(b => b.onclick = () => { typeAuto = false; setType(b.dataset.naType); });
+  m.querySelectorAll('[data-na-floor]').forEach(b => b.onclick = () => { v.floor = b.dataset.naFloor; if (typeAuto) v.type = suggestedType(v.floor, v.building); mark(); });
+  m.querySelectorAll('[data-na-bldg]').forEach(b => b.onclick = () => { v.building = b.dataset.naBldg; if (typeAuto) v.type = suggestedType(v.floor, v.building); mark(); });
+  labelIn.addEventListener('input', () => { labelAuto = false; });
+  const ok = () => {
+    const label = labelIn.value.trim() || TYPES[v.type].name;
+    closeModal();
+    onOk({ label, type: v.type, floor: v.floor, building: v.building });
+  };
+  labelIn.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); labelIn.blur(); ok(); } });
+  $('na-ok').onclick = ok;
+  $('na-cancel').onclick = closeModal;
+  mark();
 }
 
 function cancelWalk() {
@@ -2397,6 +2477,7 @@ function renderDrawer() {
       if (sh) { closeDrawer(); openShapeEditor(sh); }
     };
   });
+  $('totals').innerHTML = totalsHtml();
   // Subject
   $('subject-input').value = state.subject || '';
   // Start info
@@ -2408,6 +2489,42 @@ function renderDrawer() {
   // Ghost slider
   $('ghost-slider').value = state.settings.ghostOpacity;
   $('ghost-val').textContent = Math.round(state.settings.ghostOpacity * 100) + '%';
+}
+
+// Totals as the desktop's panel: every building and floor (not just the one in
+// view), GLA = above-grade living. Buildings get their own heading only when
+// there is more than one.
+function totalsHtml() {
+  if (!state.shapes.length) return '<div style="color:#999; padding:8px;">No areas yet.</div>';
+  const sf = v => `${Math.round(v).toLocaleString()} sf`;
+  const row = (cls, name, v) => `<div class="tot-row${cls ? ' ' + cls : ''}"><span>${name}</span><span>${sf(v)}</span></div>`;
+  const byB = {};
+  for (const sh of state.shapes) {
+    const b = sh.building || DEFAULT_BUILDING;
+    const floors = byB[b] || (byB[b] = {});
+    const types = floors[sh.floor] || (floors[sh.floor] = {});
+    types[sh.type] = (types[sh.type] || 0) + shapeArea(sh);
+  }
+  const multi = Object.keys(byB).length > 1;
+  const floorOrder = f => { const i = state.floors.indexOf(f); return i < 0 ? 99 : i; };
+  let html = '';
+  for (const [b, floors] of Object.entries(byB)) {
+    if (multi) html += `<div class="tot-bldg">${escapeHtml(b)}</div>`;
+    let gla = 0, total = 0;
+    const fl = Object.keys(floors).sort((x, y) => floorOrder(x) - floorOrder(y));
+    for (const f of fl) for (const [t, v] of Object.entries(floors[f]))
+      if (ABOVE_GRADE_FLOORS.includes(f) && AGLA_TYPES.includes(t)) gla += v;
+    if (gla > 0) html += row('gla', 'GLA (above-grade living)', gla);
+    for (const f of fl) {
+      html += `<div class="tot-floor">${escapeHtml(f)}</div>`;
+      let ft = 0;
+      for (const [t, v] of Object.entries(floors[f])) { html += row('', escapeHtml(TYPES[t] ? TYPES[t].name : t), v); ft += v; }
+      html += row('sum', 'Floor total', ft);
+      total += ft;
+    }
+    html += row('sum', multi ? `${escapeHtml(b)} total` : 'All areas', total);
+  }
+  return html;
 }
 
 // =============================================================================

@@ -3010,8 +3010,7 @@ function sidebarShapes() {
 }
 
 // ----- Above/below-grade area helpers (appraisal reporting) -----
-const ABOVE_GRADE_FLOORS = ['main', 'upper'];
-const AGLA_TYPES = ['living', 'upper'];   // Enclosed living + Upper floor area
+// ABOVE_GRADE_FLOORS and AGLA_TYPES are in core.js.
 
 function buildingsPresent() {
   return [...new Set(state.shapes.map(sh => sh.building || DEFAULT_BUILDING))];

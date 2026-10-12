@@ -36,6 +36,10 @@ const TYPES = {
 const BUILDINGS = ['Dwelling 1', 'Dwelling 2', 'Dwelling 3', 'Outbuildings', 'Other'];
 const DEFAULT_BUILDING = BUILDINGS[0];
 
+// Above-grade living area (appraisal GLA): these types on these floors.
+const ABOVE_GRADE_FLOORS = ['main', 'upper'];
+const AGLA_TYPES = ['living', 'upper'];   // Enclosed living + Upper floor area
+
 const DIR_BASE = { r: 0, d: 90, l: 180, u: -90 };
 
 const SETTINGS_DEFAULTS = {
