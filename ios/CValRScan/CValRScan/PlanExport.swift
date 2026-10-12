@@ -168,14 +168,30 @@ enum PlanExport {
     }
 
     // Room names the user gave, renamed, or (empty name) removed.
-    struct RoomLabelOut: Encodable { let story: Int; let point: [Double]; let name: String; let replaces: Int? }
+    struct RoomLabelOut: Encodable {
+        let story: Int; let point: [Double]; let name: String; let replaces: Int?
+        var finishes: FinishesOut?; var condition: String?    // 0.28.0; left out when not picked
+    }
+    // A room's finishes as picked; each left out when not picked.
+    struct FinishesOut: Codable, Equatable {
+        var floor: String?; var walls: String?; var ceiling: String?
+        init?(_ f: RoomFinishes) {
+            guard f.floor != nil || f.walls != nil || f.ceiling != nil else { return nil }
+            floor = f.floor; walls = f.walls; ceiling = f.ceiling
+        }
+    }
     // Doors and openings the user added on a wall; also in doors / openings.
     struct OpeningOut: Encodable {
         let story: Int; let wall: String?; let a: [Double]; let b: [Double]; let kind: String; let hingeAtB: Bool; let side: Int
         let style: String
     }
     // Every room name as it stands, scanned or the user's, for the importer.
-    struct RoomOut: Encodable { let story: Int; let center: [Double]; let name: String }
+    // From 0.28.0 also the finishes and condition picked (left out when
+    // none were) and the scanned ceiling height (m; left out when unknown).
+    struct RoomOut: Encodable {
+        let story: Int; let center: [Double]; let name: String
+        var finishes: FinishesOut?; var condition: String?; var ceilingHeight: Double?
+    }
 
     // A face-to-face reading. `side` is +1 for the side the normal (−dy, dx)
     // of the wall's a→b points to, −1 for the other; `walls` is every scanned
@@ -274,10 +290,12 @@ enum PlanExport {
                 WallEditOut(wall: id.uuidString, hidden: e.hidden, a: e.a.map { [$0.x, $0.y] }, b: e.b.map { [$0.x, $0.y] })
             },
             hiddenOpenings: hiddenOpenings.map(\.uuidString).sorted(),
-            roomLabels: roomLabels.map { RoomLabelOut(story: $0.story, point: [$0.point.x, $0.point.y], name: $0.name, replaces: $0.replaces) },
+            roomLabels: roomLabels.map { RoomLabelOut(story: $0.story, point: [$0.point.x, $0.point.y], name: $0.name, replaces: $0.replaces,
+                                                      finishes: FinishesOut($0.finishes), condition: $0.finishes.condition) },
             addedOpenings: addedOpenings.map { OpeningOut(story: $0.story, wall: $0.wall?.uuidString, a: [$0.a.x, $0.a.y], b: [$0.b.x, $0.b.y], kind: $0.kind.rawValue,
                                                              hingeAtB: $0.hingeAtB, side: $0.side, style: $0.style.rawValue) },
-            rooms: rooms.map { RoomOut(story: $0.story, center: [$0.center.x, $0.center.y], name: $0.name) },
+            rooms: rooms.map { RoomOut(story: $0.story, center: [$0.center.x, $0.center.y], name: $0.name,
+                                       finishes: FinishesOut($0.finishes), condition: $0.finishes.condition, ceilingHeight: $0.ceilingHeight) },
             measurements: measurements
                 .sorted { $0.key.uuidString < $1.key.uuidString }
                 .map { id, m in
@@ -375,6 +393,7 @@ struct RoomLabel: Equatable {
     var point: SIMD2<Double>
     var name: String
     var replaces: Int?
+    var finishes = RoomFinishes()      // picked while scanning or in the room sheet
 }
 
 // A wall the user drew where the scan saw none (world x, z ends): a closet
@@ -429,6 +448,8 @@ struct ResolvedRoom {
     let center: SIMD2<Double>
     let name: String
     let source: RoomSource
+    var finishes = RoomFinishes()
+    var ceilingHeight: Double?         // metres; filled in for the scan files
 }
 
 // Which door or opening an edit is about.

@@ -578,12 +578,12 @@ extension ScanController {
             }
         }
         for (i, l) in roomLabels.enumerated() where !l.name.isEmpty {
-            out.append(ResolvedRoom(story: l.story, center: l.point, name: l.name, source: .label(i)))
+            out.append(ResolvedRoom(story: l.story, center: l.point, name: l.name, source: .label(i), finishes: l.finishes))
         }
         return out
     }
 
-    private static func roomName(_ label: String) -> String {
+    static func roomName(_ label: String) -> String {
         switch label {
         case "livingRoom": return "Living"
         case "diningRoom": return "Dining"

@@ -26,6 +26,8 @@ struct RecoveryState: Codable, Equatable, Sendable {
     var exterior: [[Exterior]]
     var anchorStart: SIMD3<Float>?
     var anchorEnd: SIMD3<Float>?
+    // 0.28.0: names and finishes picked while rooms scanned; absent in older states.
+    var roomPicks: [ScannedRoomPicks]?
 
     struct Photo: Codable, Equatable, Sendable {
         var id: String

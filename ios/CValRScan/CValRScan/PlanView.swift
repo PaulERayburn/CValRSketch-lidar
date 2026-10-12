@@ -161,7 +161,10 @@ struct PlanView: View {
                                 .min { hypot(view.map($0.center).x - tap.location.x, view.map($0.center).y - tap.location.y)
                                      < hypot(view.map($1.center).x - tap.location.x, view.map($1.center).y - tap.location.y) }
                             if let r = near, hypot(view.map(r.center).x - tap.location.x, view.map(r.center).y - tap.location.y) < 34 {
-                                roomDraft = RoomDraft(source: r.source, point: geo.world(r.center), story: shown, name: r.name)
+                                let at = geo.world(r.center)
+                                roomDraft = RoomDraft(source: r.source, point: at, story: shown, name: r.name,
+                                                      finishes: scan.finishes(for: r.source),
+                                                      ceilingHeight: scan.structure.flatMap { ScanController.ceilingHeight(story: shown, at: at, in: $0) })
                             } else {
                                 roomDraft = RoomDraft(source: .new, point: geo.world(view.unmap(tap.location)), story: shown, name: nil)
                             }
@@ -505,7 +508,7 @@ struct PlanView: View {
                 .presentationDetents([.large])
         }
         .sheet(item: $roomDraft) { d in
-            RoomSheet(draft: d) { name in scan.setRoomName(name, source: d.source, at: d.point, story: d.story) }
+            RoomSheet(draft: d) { name, finishes in scan.setRoomName(name, finishes: finishes, source: d.source, at: d.point, story: d.story) }
                 .presentationDetents([.medium, .large])
         }
         .sheet(item: $doorDraft) { d in
@@ -1783,6 +1786,8 @@ struct RoomDraft: Identifiable {
     let point: SIMD2<Double>
     let story: Int
     let name: String?
+    var finishes = RoomFinishes()
+    var ceilingHeight: Double?      // metres, from the scan
 }
 
 struct DoorDraft: Identifiable {
@@ -1915,11 +1920,18 @@ struct DoorSheet: View {
 // and the names used most rise to the top. Anything else typed is kept.
 struct RoomSheet: View {
     let draft: RoomDraft
-    let onSave: (String?) -> Void
+    let onSave: (String?, RoomFinishes) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
     @FocusState private var typing: Bool
     @State private var own = RoomNames.own
+    @State private var finishes: RoomFinishes
+
+    init(draft: RoomDraft, onSave: @escaping (String?, RoomFinishes) -> Void) {
+        self.draft = draft
+        self.onSave = onSave
+        _finishes = State(initialValue: draft.finishes)
+    }
 
     private var query: String { text.trimmingCharacters(in: .whitespaces) }
     private var matches: [RoomNames.Match] { RoomNames.search(query) }
@@ -1942,6 +1954,18 @@ struct RoomSheet: View {
                     }
                 }
                 if query.isEmpty {
+                    // The same chips as while scanning (RoomPicks.swift).
+                    Section {
+                        FinishChipRows(finishes: $finishes)
+                            .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 0))
+                        if let h = draft.ceilingHeight {
+                            LabeledContent("Ceiling height (scanned)", value: Feet.text(Feet.inches(meters: h)))
+                        }
+                    } header: {
+                        Text("Finishes")
+                    } footer: {
+                        Text(draft.name == nil ? "Pick a name below to save these with it." : "Tap Done to keep these, or a name to rename the room too.")
+                    }
                     let used = RoomNames.mostUsed()
                     if !used.isEmpty {
                         Section("Used most") {
@@ -1985,12 +2009,21 @@ struct RoomSheet: View {
                     }
                 }
                 if draft.name != nil {
-                    Button("Remove name", role: .destructive) { onSave(nil); dismiss() }
+                    Button("Remove name", role: .destructive) { onSave(nil, RoomFinishes()); dismiss() }
                 }
             }
             .navigationTitle(draft.name == nil ? "Name this room" : "Rename \(draft.name!)")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        if let n = draft.name { onSave(n, finishes) }
+                        dismiss()
+                    }
+                    .disabled(draft.name == nil || finishes == draft.finishes)
+                }
+            }
             .onAppear { typing = draft.name == nil }
         }
     }
@@ -2010,7 +2043,7 @@ struct RoomSheet: View {
         let n = RoomNames.canonical(name)
         RoomNames.addOwn(n)
         RoomNames.recordUse(n)
-        onSave(n)
+        onSave(n, finishes)
         dismiss()
     }
 }

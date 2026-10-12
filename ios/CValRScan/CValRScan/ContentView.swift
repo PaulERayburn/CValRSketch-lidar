@@ -330,6 +330,9 @@ struct ContentView: View {
 struct ScanningView: View {
     @ObservedObject var scan: ScanController
     @State private var flash: String?
+    // A new box each room (this view is shown afresh for each one).
+    @State private var picks = RoomPicksBox()
+    @AppStorage("roomPicksOpen") private var picksOpen = false
 
     var body: some View {
         ZStack {
@@ -374,12 +377,15 @@ struct ScanningView: View {
                         .background(.thinMaterial, in: Capsule())
                 }
                 Spacer()
-                Text("Wall hidden by coats or shelves? Aim at any bare spot on it and tap Mark wall. One point per hidden wall.")
-                    .font(.footnote)
-                    .multilineTextAlignment(.center)
-                    .padding(8)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                    .padding(.horizontal)
+                if !picksOpen {
+                    Text("Wall hidden by coats or shelves? Aim at any bare spot on it and tap Mark wall. One point per hidden wall.")
+                        .font(.footnote)
+                        .multilineTextAlignment(.center)
+                        .padding(8)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        .padding(.horizontal)
+                }
+                RoomPicksPanel(box: picks, open: $picksOpen) { scan.existingRoomNames() }
                 HStack {
                     Button("Cancel", role: .cancel) { scan.cancelRoom() }
                         .buttonStyle(.bordered)
@@ -403,7 +409,7 @@ struct ScanningView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.brown)
                     Spacer()
-                    Button(scan.isBusy ? "Processing…" : "Done with room") { scan.finishRoom() }
+                    Button(scan.isBusy ? "Processing…" : "Done with room") { scan.finishRoom(picks: picks.picks) }
                         .buttonStyle(.borderedProminent)
                         .disabled(scan.isBusy)
                 }

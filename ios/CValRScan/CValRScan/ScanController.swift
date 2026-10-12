@@ -30,6 +30,11 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     @Published private(set) var spans: [SpanReading] = []
     @Published private(set) var wallEdits: [UUID: WallEdit] = [:]
     @Published private(set) var roomLabels: [RoomLabel] = []
+    // Names and finishes picked while each room scanned (RoomPicks.swift),
+    // until Build floor plan puts them on the plan's rooms.
+    @Published private(set) var scannedPicks: [ScannedRoomPicks] = []
+    // Picks for the room being scanned, from Done with room until RoomPlan hands it over.
+    private var picksForRoom: RoomPicks?
     @Published private(set) var addedOpenings: [AddedOpening] = []
     @Published private(set) var hiddenOpenings: Set<UUID> = []      // the scan's doors and openings removed or replaced
     private var editHistory: [EditSnapshot] = []
@@ -203,6 +208,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         // A reopened plan's AR session is gone, so new rooms could not line up with it.
         if loadedFromFile { newScan() }
         discardNext = false
+        picksForRoom = nil
         exportURLs = []
         if let s = structure { previous = s }
         structure = nil
@@ -210,7 +216,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
     }
 
-    func finishRoom() {
+    // `picks`: what the user tapped in the panel while the room scanned.
+    func finishRoom(picks: RoomPicks = RoomPicks()) {
+        picksForRoom = picks.isEmpty ? nil : picks
         isBusy = true
         setTorch(false)
         // Keep the AR session alive so the next room lines up with this one.
@@ -219,6 +227,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
 
     func cancelRoom() {
         discardNext = true
+        picksForRoom = nil
         setTorch(false)
         captureView.captureSession.stop(pauseARSession: false)
         isScanning = false
@@ -231,18 +240,26 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     func captureView(didPresent processedResult: CapturedRoom, error: Error?) {
         isBusy = false
         isScanning = false
+        let picks = picksForRoom
+        picksForRoom = nil
         if let error {
             message = "Scan failed: \(error.localizedDescription)"
             return
         }
         rooms.append(processedResult)
+        if let picks {
+            let m = Self.middle(of: processedResult)
+            scannedPicks.append(ScannedRoomPicks(room: processedResult.identifier, picks: picks, center: m.center, elevation: m.elevation))
+            // "Bedroom 2" counts as a use of Bedroom, as the room sheet's list counts names.
+            if let n = picks.name, let chip = RoomChoices.chip(for: n) { RoomNames.recordUse(chip == RoomChoices.other ? n : chip) }
+        }
         message = "Room \(rooms.count) added"
         refreshChecks()
         saveProgress(worldMap: true)
     }
 
     func removeLastRoom() {
-        if !rooms.isEmpty { rooms.removeLast() }
+        if let gone = rooms.popLast() { scannedPicks.removeAll { $0.room == gone.identifier } }
         exportURLs = []
         structure = nil
         refreshChecks()
@@ -318,22 +335,121 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     }
 
     // Names a room: a new name at a spot, or renaming or removing (nil) a
-    // scanned name or one given before.
-    func setRoomName(_ name: String?, source: RoomSource, at point: SIMD2<Double>, story: Int) {
+    // scanned name or one given before. `finishes` nil keeps a label's own.
+    func setRoomName(_ name: String?, finishes: RoomFinishes? = nil, source: RoomSource, at point: SIMD2<Double>, story: Int) {
         commit { s in
             switch source {
             case .new:
-                if let name, !name.isEmpty { s.rooms.append(RoomLabel(story: story, point: point, name: name, replaces: nil)) }
+                if let name, !name.isEmpty {
+                    s.rooms.append(RoomLabel(story: story, point: point, name: name, replaces: nil, finishes: finishes ?? RoomFinishes()))
+                }
             case .label(let i):
                 guard s.rooms.indices.contains(i) else { return }
-                if let name, !name.isEmpty { s.rooms[i].name = name }
-                else if s.rooms[i].replaces != nil { s.rooms[i].name = "" }
+                if let name, !name.isEmpty {
+                    s.rooms[i].name = name
+                    if let finishes { s.rooms[i].finishes = finishes }
+                }
+                else if s.rooms[i].replaces != nil { s.rooms[i].name = ""; s.rooms[i].finishes = RoomFinishes() }
                 else { s.rooms.remove(at: i) }
             case .scanned(let i):
                 s.rooms.removeAll { $0.replaces == i }
-                s.rooms.append(RoomLabel(story: story, point: point, name: name ?? "", replaces: i))
+                s.rooms.append(RoomLabel(story: story, point: point, name: name ?? "", replaces: i,
+                                         finishes: name == nil ? RoomFinishes() : finishes ?? RoomFinishes()))
             }
         }
+    }
+
+    // A room's finishes as they stand (the scan's own rooms have none).
+    func finishes(for source: RoomSource) -> RoomFinishes {
+        if case .label(let i) = source, roomLabels.indices.contains(i) { return roomLabels[i].finishes }
+        return RoomFinishes()
+    }
+
+    // Every room name so far, for numbering bedrooms while scanning: picks
+    // of rooms not yet built, and the plan's rooms of a scan being added to.
+    func existingRoomNames() -> [String] {
+        let built = (structure ?? previous).map { resolvedRooms($0).map(\.name) } ?? []
+        return built + scannedPicks.compactMap(\.picks.name)
+    }
+
+    // The middle of a scanned room's floor (world x, z) and the floor's height.
+    static func middle(of room: CapturedRoom) -> (center: SIMD2<Double>, elevation: Double) {
+        if let f = room.floors.max(by: { $0.dimensions.x * $0.dimensions.y < $1.dimensions.x * $1.dimensions.y }) {
+            let t = f.transform.columns.3
+            return (SIMD2(Double(t.x), Double(t.z)), Double(t.y))
+        }
+        let ws = room.walls
+        guard !ws.isEmpty else { return (.zero, 0) }
+        let c = ws.reduce(SIMD2<Double>.zero) { $0 + SIMD2(Double($1.transform.columns.3.x), Double($1.transform.columns.3.z)) } / Double(ws.count)
+        let bottom = ws.map { Double($0.transform.columns.3.y - $0.dimensions.y / 2) }.min() ?? 0
+        return (c, bottom)
+    }
+
+    // Build floor plan: the picks made while each room scanned go on the
+    // plan's room there: the scan's own name for it (renamed, if a name was
+    // picked), else a new name at the room's middle. Not an Undo step.
+    private func applyScannedPicks(_ s: CapturedStructure) {
+        guard !scannedPicks.isEmpty else { return }
+        var labels = roomLabels
+        var used: Set<Int> = []
+        for p in scannedPicks {
+            let story = Self.story(at: p.center, elevation: p.elevation, in: s)
+            func dist(_ i: Int) -> Double {
+                let c = s.sections[i].center
+                return simd_distance(SIMD2(Double(c.x), Double(c.z)), p.center)
+            }
+            let near = s.sections.indices.filter { s.sections[$0].story == story && !used.contains($0) }
+                .min { dist($0) < dist($1) }.flatMap { dist($0) < 1.5 ? $0 : nil }
+            let picked = (p.picks.name ?? "").isEmpty ? nil : p.picks.name
+            guard let i = near else {
+                labels.append(RoomLabel(story: story, point: p.center, name: picked ?? "Room", replaces: nil, finishes: p.picks.finishes))
+                continue
+            }
+            used.insert(i)
+            let scanned = Self.roomName(String(describing: s.sections[i].label))
+            let c = s.sections[i].center
+            var label = labels.first { $0.replaces == i }
+                ?? RoomLabel(story: story, point: SIMD2(Double(c.x), Double(c.z)), name: scanned, replaces: i)
+            if let picked { label.name = picked }
+            if label.name.isEmpty { label.name = scanned.isEmpty ? "Room" : scanned }
+            let f = p.picks.finishes
+            label.finishes = RoomFinishes(floor: f.floor ?? label.finishes.floor, walls: f.walls ?? label.finishes.walls,
+                                          ceiling: f.ceiling ?? label.finishes.ceiling, condition: f.condition ?? label.finishes.condition)
+            labels.removeAll { $0.replaces == i }
+            labels.append(label)
+        }
+        roomLabels = labels
+        scannedPicks = []
+    }
+
+    // The floor (story) of the built plan under a point at a height: one
+    // whose outline holds it, the nearest in height.
+    private static func story(at c: SIMD2<Double>, elevation: Double, in s: CapturedStructure) -> Int {
+        let p = CGPoint(x: c.x, y: c.y)
+        let ranked = s.floors.map { f -> (story: Int, cost: Double) in
+            let poly = PlanExport.floor(f).polygon.compactMap { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil }
+            return (f.story, abs(Double(f.transform.columns.3.y) - elevation) + (inside(p, poly) ? 0 : 100))
+        }
+        return ranked.min { $0.cost < $1.cost }?.story ?? 0
+    }
+
+    // The typical height of the walls of the scanned room at a point on a
+    // floor of the plan: the middle wall height, leaving out half walls.
+    // Metres to the centimetre; nil where no scanned room holds the point.
+    static func ceilingHeight(story: Int, at c: SIMD2<Double>, in s: CapturedStructure) -> Double? {
+        let p = CGPoint(x: c.x, y: c.y)
+        func poly(_ f: CapturedRoom.Surface) -> [CGPoint] {
+            PlanExport.floor(f).polygon.compactMap { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil }
+        }
+        let level = s.floors.filter { $0.story == story && inside(p, poly($0)) }.map { Double($0.transform.columns.3.y) }.first
+        let room = s.rooms.first { r in
+            r.floors.contains { f in
+                inside(p, poly(f)) && level.map { abs(Double(f.transform.columns.3.y) - $0) < 0.5 } ?? true
+            }
+        }
+        let heights = (room?.walls ?? []).map { Double($0.dimensions.y) }.filter { $0 > 1.5 && $0.isFinite }.sorted()
+        guard !heights.isEmpty else { return nil }
+        return (heights[heights.count / 2] * 100).rounded() / 100
     }
 
     // Adds a door or opening, or replaces one: one added before, or one the
@@ -793,6 +909,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             }
             previous = nil
             structure = built
+            applyScannedPicks(built)
             // A resumed scan keeps its name; a new one is named by the time.
             // Stored files are named by the time only; the scan's name (often
             // the address) goes into the plan and into the copies that are shared.
@@ -1006,7 +1123,11 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             try PlanExport.data(for: structure, corners: corners, wallPoints: wallPoints, gapDepths: gapDepths,
                                 measurements: measurements, spans: spans, wallEdits: wallEdits,
                                 roomLabels: roomLabels, addedOpenings: addedOpenings,
-                                rooms: resolvedRooms(structure), hiddenOpenings: hiddenOpenings,
+                                rooms: resolvedRooms(structure).map { r in
+                                    var r = r
+                                    r.ceilingHeight = Self.ceilingHeight(story: r.story, at: r.center, in: structure)
+                                    return r
+                                }, hiddenOpenings: hiddenOpenings,
                                 exterior: exteriorWalls, anchorStart: anchorStart, anchorEnd: anchorEnd,
                                 name: scanName, photos: photos, photoFolder: photoFolder, addedWalls: addedWalls,
                                 wallsShapeFloor: wallsShapeFloor, stairEdits: stairEdits,
@@ -1062,7 +1183,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                                   name: scanName, roomCount: rooms.count, photoFolder: photoFolder,
                                   photos: photos.map(RecoveryState.Photo.init), wallPoints: wallPoints.map(RecoveryState.WallPt.init),
                                   corners: corners, exterior: exteriorWalls.map { $0.map(RecoveryState.Exterior.init) },
-                                  anchorStart: anchorStart, anchorEnd: anchorEnd)
+                                  anchorStart: anchorStart, anchorEnd: anchorEnd,
+                                  roomPicks: scannedPicks.isEmpty ? nil : scannedPicks)
         let sendRooms = roomsChanged || roomsSavedFor != id
         recoveryIO.save(state, rooms: sendRooms ? rooms : nil)
         roomsChanged = false
@@ -1163,6 +1285,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         exteriorWalls = s.exterior.map { $0.map(\.exteriorPoint) }
         anchorStart = s.anchorStart
         anchorEnd = s.anchorEnd
+        // Picks whose room couldn't be read have nowhere to go.
+        scannedPicks = (s.roomPicks ?? []).filter { p in rooms.contains { $0.identifier == p.room } }
         loadedFromFile = false
         recoveredNeedsResume = true
         let map = recoveryIO.mapURL(s.scanId)
@@ -1279,6 +1403,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         spans = []
         wallEdits = [:]
         roomLabels = []
+        scannedPicks = []
+        picksForRoom = nil
         addedOpenings = []
         hiddenOpenings = []
         editHistory = []
@@ -1351,7 +1477,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                     b: e.b.flatMap { $0.count == 2 ? SIMD2($0[0], $0[1]) : nil })) }
             })
             roomLabels = (saved?.roomLabels ?? []).compactMap { r in
-                r.point.count == 2 ? RoomLabel(story: r.story, point: SIMD2(r.point[0], r.point[1]), name: r.name, replaces: r.replaces) : nil
+                r.point.count == 2 ? RoomLabel(story: r.story, point: SIMD2(r.point[0], r.point[1]), name: r.name, replaces: r.replaces,
+                                               finishes: RoomFinishes(floor: r.finishes?.floor, walls: r.finishes?.walls,
+                                                                      ceiling: r.finishes?.ceiling, condition: r.condition)) : nil
             }
             addedOpenings = (saved?.addedOpenings ?? []).compactMap { o in
                 guard o.a.count == 2, o.b.count == 2 else { return nil }
@@ -1484,7 +1612,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         struct Exterior: Decodable { let walls: [[ExteriorPointIn]]; let anchorStart: Point?; let anchorEnd: Point? }
         struct WallPointIn: Decodable { let point: [Double]; let elevation: Double; let normal: [Double] }
         struct GapDepthIn: Decodable { let gap: [[Double]]; let from: String; let inches: Int }
-        struct RoomLabelIn: Decodable { let story: Int; let point: [Double]; let name: String; let replaces: Int? }
+        // finishes and condition from 0.28.0; absent in older scans.
+        struct RoomLabelIn: Decodable { let story: Int; let point: [Double]; let name: String; let replaces: Int?
+            let finishes: PlanExport.FinishesOut?; let condition: String? }
         struct OpeningIn: Decodable { let story: Int; let wall: String?; let a: [Double]; let b: [Double]
             let kind: String?; let door: Bool?; let hingeAtB: Bool?; let side: Int?; let style: String? }
         struct WallEditIn: Decodable { let wall: String; let hidden: Bool; let a: [Double]?; let b: [Double]? }
