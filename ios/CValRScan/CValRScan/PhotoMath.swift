@@ -39,7 +39,13 @@ enum PhotoMath {
 // than 10 cm means tracking re-settled somewhere else; no normal tracking
 // within 5 s means it hasn't found its place yet.
 struct AlignmentCheck {
-    static let jumpLimit: Float = 0.10        // m
+    // How far the phone may be from where the wide camera opened before the
+    // check warns. The phone swings with the body when the user turns on the
+    // spot (a half-turn moves it ~2 ft), so this can't be inches. Relocalized
+    // into the map, the coordinates are already right and only a gross jump
+    // means a wrong match; resumed without a map, allow a turn on the spot.
+    static let relocalizedLimit: Float = 1.5   // m, about 5 ft
+    static let unmappedLimit: Float = 0.6      // m, about 2 ft
     static let timeout: TimeInterval = 5
     static let settle: TimeInterval = 0.5
 
@@ -48,12 +54,15 @@ struct AlignmentCheck {
     let before: SIMD3<Float>
     let start: TimeInterval
     let limit: TimeInterval
+    let jumpLimit: Float
     private var normalSince: TimeInterval?
 
-    init(before: SIMD3<Float>, start: TimeInterval, timeout: TimeInterval = AlignmentCheck.timeout) {
+    init(before: SIMD3<Float>, start: TimeInterval, timeout: TimeInterval = AlignmentCheck.timeout,
+         jumpLimit: Float = AlignmentCheck.unmappedLimit) {
         self.before = before
         self.start = start
         self.limit = timeout
+        self.jumpLimit = jumpLimit
     }
 
     // One look at the tracking: `position` nil when there is no new frame yet.
@@ -62,14 +71,14 @@ struct AlignmentCheck {
         if normal, let p = position {
             let since = normalSince ?? t
             normalSince = since
-            if t - since >= Self.settle || timedOut { return Self.judge(simd_distance(p, before)) }
+            if t - since >= Self.settle || timedOut { return judge(simd_distance(p, before)) }
         } else {
             normalSince = nil
         }
         return timedOut ? .lost : .waiting
     }
 
-    static func judge(_ jump: Float) -> Outcome { jump > jumpLimit ? .moved(jump) : .steady(jump) }
+    func judge(_ jump: Float) -> Outcome { jump > jumpLimit ? .moved(jump) : .steady(jump) }
 
     // "4″", "1′ 3″": how the jump is said to the user.
     static func said(_ metres: Float) -> String {

@@ -268,7 +268,8 @@ final class WidePhoto: ObservableObject {
         arPaused = false
         let before = SIMD3(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)
         var check = AlignmentCheck(before: before, start: ProcessInfo.processInfo.systemUptime,
-                                   timeout: relocalize ? 15 : AlignmentCheck.timeout)
+                                   timeout: relocalize ? 15 : AlignmentCheck.timeout,
+                                   jumpLimit: relocalize ? AlignmentCheck.relocalizedLimit : AlignmentCheck.unmappedLimit)
         let after = frameTime
         Task {
             var states: [String] = []
@@ -297,7 +298,7 @@ final class WidePhoto: ObservableObject {
             log.info("wide photo: tracking back, moved \(jump, format: .fixed(precision: 3)) m; \(trail, privacy: .public)")
         case .moved(let jump):
             log.warning("wide photo: tracking moved \(jump, format: .fixed(precision: 3)) m; \(trail, privacy: .public)")
-            warning = "Tracking moved \(AlignmentCheck.said(jump)) while the wide camera was up. If you stood still, "
+            warning = "After the wide photo, tracking put you \(AlignmentCheck.said(jump)) from where you started. If you stayed on the spot, "
                 + (outside
                    ? "points marked from here may be off by that much. Check the orange dots still sit on the siding before marking more."
                    : "rooms scanned from here may not line up with the earlier ones. Point the phone at a room you've scanned and move it slowly for a few seconds before the next room.")
