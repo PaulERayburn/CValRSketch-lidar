@@ -536,6 +536,11 @@ let chainPreview = null;  // null | { legs: [{along, point, segment, dir}, ...],
 // dotted grey and commits as one { jump: true } segment. One-shot: it turns off
 // once the jump is made.
 let jumpArmed = false;
+// A corner tapped mid-walk waiting for a second tap to confirm, {x, y} in feet.
+// With the plan small on a phone the corner targets cover most of the drawing,
+// so one tap drawing a wall at once fired on stray taps (and on the first tap of
+// a double-tap to re-fit).
+let cornerPick = null;
 
 // In-place edit panel — replaces the keypad while editing a vertex or wall.
 // Lets the canvas stay visible so direction-snap / offset edits are visible live.
@@ -621,6 +626,7 @@ window.addEventListener('pagehide', () => { if (autosaveTimer) { clearTimeout(au
 // "shape is closed" offer.
 let editTick = 0;
 function pushUndo() {
+  cornerPick = null;
   editTick++;
   state.undoStack.push(snapshotState());
   if (state.undoStack.length > HISTORY_LIMIT) state.undoStack.shift();
@@ -791,6 +797,11 @@ function renderWalkTargets(W) {
     const sp = W(p);
     addEl('circle', { cx: sp.x, cy: sp.y, r: 4, class: 'vertex-target' });
     addEl('circle', { cx: sp.x, cy: sp.y, r: 16, fill: 'transparent', 'data-tx': p.x, 'data-ty': p.y });
+  }
+  if (cornerPick) {
+    const a = W(pen), b = W(cornerPick);
+    addEl('path', { d: `M${a.x} ${a.y} L${b.x} ${b.y}`, fill: 'none', stroke: '#f59e0b', 'stroke-width': 3, 'stroke-dasharray': '6,4', 'pointer-events': 'none' });
+    addEl('circle', { cx: b.x, cy: b.y, r: 9, fill: 'none', stroke: '#f59e0b', 'stroke-width': 3, 'pointer-events': 'none' });
   }
 }
 
@@ -3170,13 +3181,25 @@ $('ghost-slider').onchange = () => saveSettings();
 // SVG empty-click: place the start point when picking a new area's start,
 // otherwise clear any selection.
 svg.addEventListener('click', (e) => {
+  // The second tap of a double-tap (re-fit): it mustn't confirm a corner either.
+  if (suppressNextCanvasTap) { suppressNextCanvasTap = false; if (cornerPick) { cornerPick = null; render(); } return; }
   const corner = e.target.closest && e.target.closest('[data-tx]');
   if (corner) {
-    snapWalkToPoint({ x: parseFloat(corner.getAttribute('data-tx')), y: parseFloat(corner.getAttribute('data-ty')) });
+    const t = { x: parseFloat(corner.getAttribute('data-tx')), y: parseFloat(corner.getAttribute('data-ty')) };
+    if (cornerPick && Math.hypot(cornerPick.x - t.x, cornerPick.y - t.y) < 1e-6) {
+      cornerPick = null;
+      snapWalkToPoint(t);
+    } else {
+      const wpts = pathPoints(state.segments, getStart());
+      const pen = wpts[wpts.length - 1];
+      cornerPick = t;
+      toast(`${jumpArmed ? 'Jump' : 'Wall'} ${formatLength(Math.hypot(t.x - pen.x, t.y - pen.y))} to this corner: tap it again`);
+      render();
+    }
     return;
   }
+  if (cornerPick) { cornerPick = null; render(); return; }
   if (e.target !== svg) return;
-  if (suppressNextCanvasTap) { suppressNextCanvasTap = false; return; }
   if (state.segments.length === 0 && !editTarget && !fenceMode) {
     const w = screenToWorld(e.clientX, e.clientY);
     const snapped = nearestVertexWithin(w, 1.5) || w;
