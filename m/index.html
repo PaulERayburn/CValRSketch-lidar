@@ -2048,12 +2048,16 @@ function previewSegment() {
   try { return parseSegment(entryText, priorHeading); } catch (e) { return { error: e.message }; }
 }
 
+// Directions shown as arrows: in the entry's font "l" (left) reads as "1".
+const DIR_ARROW = { u: '↑', d: '↓', l: '←', r: '→' };
+const showEntry = t => t.replace(/(^|\s)([udlr])(?=\s|$)/gi, (m, sp, d) => sp + DIR_ARROW[d.toLowerCase()]);
+
 function updateEntryDisplay() {
   const v = $('entry-value');
   const p = $('entry-preview');
   if (chainPreview && chainPreview.jump) {
     const legs = chainPreview.legs;
-    v.textContent = '↷ ' + legs.map(l => `${l.dir.toUpperCase()} ${formatLength(l.along)}`).join(' · ');
+    v.textContent = '↷ ' + legs.map(l => `${DIR_ARROW[l.dir]} ${formatLength(l.along)}`).join(' · ');
     v.classList.remove('placeholder');
     $('btn-add').classList.remove('disabled');
     $('btn-add').textContent = '↷ Jump';
@@ -2063,7 +2067,7 @@ function updateEntryDisplay() {
   }
   if (chainPreview) {
     const legs = chainPreview.legs;
-    const summary = legs.map(l => `${l.dir.toUpperCase()} ${formatLength(l.along)}`).join(' · ');
+    const summary = legs.map(l => `${DIR_ARROW[l.dir]} ${formatLength(l.along)}`).join(' · ');
     v.textContent = `↳ ${summary}`;
     v.classList.remove('placeholder');
     const btnAdd = $('btn-add');
@@ -2085,13 +2089,13 @@ function updateEntryDisplay() {
     v.classList.add('placeholder');
     p.textContent = '';
   } else {
-    v.textContent = entryText;
+    v.textContent = showEntry(entryText);
     v.classList.remove('placeholder');
     const seg = previewSegment();
     const pre = jumpArmed ? '↷ jump ' : '→ ';
     if (!seg || seg.error) p.textContent = '';
-    else if (seg.autoExtend) p.textContent = (jumpArmed ? '↷ jump to next ' : '↳ auto-extend ') + seg.dir;
-    else p.textContent = `${pre}${formatLength(seg.length)} ${seg.dir}${seg.angle ? ' @ ' + seg.angle + '°' : ''}`;
+    else if (seg.autoExtend) p.textContent = (jumpArmed ? '↷ jump to next ' : '↳ auto-extend ') + DIR_ARROW[seg.dir];
+    else p.textContent = `${pre}${formatLength(seg.length)} ${DIR_ARROW[seg.dir]}${seg.angle ? ' @ ' + seg.angle + '°' : ''}`;
   }
   $('btn-add').classList.toggle('disabled', !entryText.trim());
 }
