@@ -128,7 +128,10 @@ final class OutsideDepth: ObservableObject {
         // A gap in depth (tracking lost, phone covered) starts afresh, so a
         // mark never uses siding seen before it.
         if let s { recent.append(s) } else { recent = [] }
-        recent.removeAll { $0.time < (recent.last?.time ?? 0) - 0.6 }
+        // Read the newest time first: reading `recent` inside its own removeAll
+        // is an overlapping access, which Swift stops the app for.
+        let cutoff = (recent.last?.time ?? 0) - 0.6
+        recent.removeAll { $0.time < cutoff }
         // The readout changes four times a second at most, so the view
         // doesn't redraw on every sample.
         if ticks % 3 == 0 {
