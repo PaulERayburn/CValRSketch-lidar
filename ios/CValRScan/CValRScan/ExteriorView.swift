@@ -9,6 +9,7 @@ import UIKit
 struct ExteriorView: View {
     @ObservedObject var scan: ScanController
     @ObservedObject var depth: OutsideDepth
+    @ObservedObject var wide: WidePhoto
     @Environment(\.dismiss) private var dismiss
     @State private var flash: String?
     // A wall whose points turn a corner, waiting for the user to say
@@ -41,8 +42,9 @@ struct ExteriorView: View {
                 .shadow(color: .black, radius: 2)
                 .allowsHitTesting(false)
             if walking && depth.running { readout.offset(y: 44).allowsHitTesting(false) }
-            // A selfie-stick remote (or either volume button) marks a point.
-            if walking && corner == nil && farEnd == nil {
+            // A selfie-stick remote (or either volume button) marks a point;
+            // not while the wide camera is up (the AR session is paused).
+            if walking && corner == nil && farEnd == nil && !wide.active {
                 VolumeButtonCatcher { markPoint() }
                     .frame(width: 1, height: 1)
                     .allowsHitTesting(false)
@@ -73,6 +75,7 @@ struct ExteriorView: View {
                 if scan.anchorStart != nil {
                     HStack {
                         Spacer()
+                        WidePhotoButton(scan: scan, wide: wide, outside: true) { show($0) }
                         PhotoButton(scan: scan, outside: true) { show($0) }
                     }
                     .padding(.horizontal)
@@ -80,6 +83,7 @@ struct ExteriorView: View {
                 controls.padding()
             }
             .padding(.top)
+            WideCameraHost(wide: wide, outside: true)
         }
         .onAppear { scan.startOutsideWalk() }
         .onDisappear { scan.stopOutsideWalk() }

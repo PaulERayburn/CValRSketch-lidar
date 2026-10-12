@@ -34,6 +34,7 @@ struct RecoveryState: Codable, Equatable, Sendable {
         var takenAt: Date
         var outside: Bool
         var fullRes: Bool
+        var wide: Bool?             // 0.27.0: a 0.5× ultra-wide photo; absent in older states
     }
 
     struct WallPt: Codable, Equatable, Sendable {

@@ -15,6 +15,7 @@ struct ScanPhoto: Equatable, Identifiable {
     var takenAt: Date
     var outside: Bool
     var fullRes: Bool           // a full camera still, not a video frame
+    var wide = false            // from the 0.5× ultra-wide camera (WidePhoto.swift)
 }
 
 extension PlanExport {
@@ -26,13 +27,15 @@ extension PlanExport {
         let takenAt: String
         let outside: Bool
         let fullRes: Bool
+        let wide: Bool?         // true for a 0.5× ultra-wide photo; absent otherwise
     }
 
     static func photoOut(_ p: ScanPhoto) -> PhotoOut {
         func r(_ v: Float) -> Double { (Double(v) * 1000).rounded() / 1000 }
         return PhotoOut(file: p.id, point: [r(p.point.x), r(p.point.z)], elevation: r(p.point.y),
                         facing: [r(p.facing.x), r(p.facing.y)],
-                        takenAt: ISO8601DateFormatter().string(from: p.takenAt), outside: p.outside, fullRes: p.fullRes)
+                        takenAt: ISO8601DateFormatter().string(from: p.takenAt), outside: p.outside, fullRes: p.fullRes,
+                        wide: p.wide ? true : nil)
     }
 
     static func photoIn(_ o: PhotoOut) -> ScanPhoto? {
@@ -40,7 +43,7 @@ extension PlanExport {
         return ScanPhoto(id: o.file, point: SIMD3(Float(o.point[0]), Float(o.elevation), Float(o.point[1])),
                          facing: SIMD2(Float(o.facing[0]), Float(o.facing[1])),
                          takenAt: ISO8601DateFormatter().date(from: o.takenAt) ?? Date(),
-                         outside: o.outside, fullRes: o.fullRes)
+                         outside: o.outside, fullRes: o.fullRes, wide: o.wide ?? false)
     }
 }
 
@@ -68,7 +71,7 @@ extension ScanController {
         guard let buffer, let camera else { return .failed }
         if photoFolder.isEmpty { photoFolder = "photos-\(UUID().uuidString.prefix(8))" }
         guard let dir = photoDirectory else { return .failed }
-        let name = "photo-\(photos.count + 1)-\(Int(Date().timeIntervalSince1970)).jpg"
+        let name = nextPhotoName()
         let url = dir.appendingPathComponent(name)
         let turn = Self.uprightTurn(camera)
         let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
@@ -81,14 +84,51 @@ extension ScanController {
             return (try? data.write(to: url)) != nil
         }.value
         guard ok else { return .failed }
-        // The camera looks down its -z axis; keep the level part.
+        addPhoto(name, camera: camera, outside: outside, fullRes: full, wide: false)
+        return .saved(fullRes: full)
+    }
+
+    // A still from the ultra-wide camera (WidePhoto.swift), HEIC or JPEG as
+    // the camera gave it, kept as a JPEG like the others. Its pixels are the
+    // sensor's own landscape way round (the capture asks for no rotation),
+    // the same as an AR frame's, so the same turn stands it upright. The pin
+    // is where the phone was when Wide photo was tapped.
+    func saveWidePhoto(_ data: Data?, turn: CGImagePropertyOrientation, camera: simd_float4x4, outside: Bool) async -> PhotoResult {
+        guard let data else { return .failed }
+        if photoFolder.isEmpty { photoFolder = "photos-\(UUID().uuidString.prefix(8))" }
+        guard let dir = photoDirectory else { return .failed }
+        let name = nextPhotoName()
+        let url = dir.appendingPathComponent(name)
+        let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
+            guard let decoded = CIImage(data: data) else { return false }
+            let image = decoded.oriented(turn)
+            guard let space = decoded.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB),
+                  let jpeg = CIContext().jpegRepresentation(of: image, colorSpace: space,
+                      options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.85])
+            else { return false }
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return (try? jpeg.write(to: url)) != nil
+        }.value
+        guard ok else { return .failed }
+        addPhoto(name, camera: camera, outside: outside, fullRes: true, wide: true)
+        return .saved(fullRes: true)
+    }
+
+    private func nextPhotoName() -> String {
+        "photo-\(photos.count + 1)-\(Int(Date().timeIntervalSince1970)).jpg"
+    }
+
+    // The pin: where the phone was, and the level part of the way it faced
+    // (the camera looks down its -z axis). writeFiles saves it with the scan,
+    // or into the crash-recovery state while the scan is unbuilt.
+    private func addPhoto(_ name: String, camera: simd_float4x4, outside: Bool, fullRes: Bool, wide: Bool) {
         let f = SIMD2(-camera.columns.2.x, -camera.columns.2.z)
-        photos.append(ScanPhoto(id: name, point: SIMD3(camera.columns.3.x, camera.columns.3.y, camera.columns.3.z),
-                                facing: simd_length(f) > 0.01 ? simd_normalize(f) : SIMD2(0, -1),
-                                takenAt: Date(), outside: outside, fullRes: full))
+        let photo = ScanPhoto(id: name, point: SIMD3(camera.columns.3.x, camera.columns.3.y, camera.columns.3.z),
+                              facing: simd_length(f) > 0.01 ? simd_normalize(f) : SIMD2(0, -1),
+                              takenAt: Date(), outside: outside, fullRes: fullRes, wide: wide)
+        photos.append(photo)
         photoZip = nil
         writeFiles()
-        return .saved(fullRes: full)
     }
 
     // The camera's picture is landscape, the long side along the phone, with
@@ -97,9 +137,8 @@ extension ScanController {
     // taken sideways stays landscape and one taken upright stays portrait,
     // whatever way the screen is locked.
     nonisolated static func uprightTurn(_ camera: simd_float4x4) -> CGImagePropertyOrientation {
-        let x = camera.columns.0.y, y = camera.columns.1.y   // how far each camera axis points up
-        if abs(y) >= abs(x) { return y >= 0 ? .up : .down }
-        return x <= 0 ? .right : .left
+        // How far each camera axis points up.
+        PhotoMath.uprightTurn(upX: camera.columns.0.y, upY: camera.columns.1.y)
     }
 
     func deletePhoto(_ p: ScanPhoto) {
@@ -142,7 +181,7 @@ struct PhotoSheet: View {
                 } else {
                     ContentUnavailableView("Photo missing", systemImage: "photo")
                 }
-                Text("\(photo.outside ? "Outside" : "Inside") · \(photo.takenAt.formatted(date: .omitted, time: .shortened)) · \(photo.fullRes ? "full camera still" : "video frame")")
+                Text("\(photo.outside ? "Outside" : "Inside") · \(photo.takenAt.formatted(date: .omitted, time: .shortened)) · \(photo.wide ? "0.5× wide still" : photo.fullRes ? "full camera still" : "video frame")")
                     .font(.footnote).foregroundStyle(.secondary)
                 HStack {
                     if let url { ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") } }

@@ -163,9 +163,12 @@ final class RecoveryIO: @unchecked Sendable {
 // The scan's in-memory values to and from their saved form.
 extension RecoveryState.Photo {
     init(_ p: ScanPhoto) {
-        self.init(id: p.id, point: p.point, facing: p.facing, takenAt: p.takenAt, outside: p.outside, fullRes: p.fullRes)
+        self.init(id: p.id, point: p.point, facing: p.facing, takenAt: p.takenAt, outside: p.outside, fullRes: p.fullRes,
+                  wide: p.wide ? true : nil)
     }
-    var scanPhoto: ScanPhoto { ScanPhoto(id: id, point: point, facing: facing, takenAt: takenAt, outside: outside, fullRes: fullRes) }
+    var scanPhoto: ScanPhoto {
+        ScanPhoto(id: id, point: point, facing: facing, takenAt: takenAt, outside: outside, fullRes: fullRes, wide: wide ?? false)
+    }
 }
 
 extension RecoveryState.WallPt {

@@ -158,6 +158,20 @@ struct ContentView: View {
                         scan.removeLastRoom()
                     }
                     .disabled(scan.rooms.isEmpty || scan.isBusy)
+                    // Between rooms the AR session is still running, so a
+                    // wide photo pins where the phone is, like the others.
+                    if WidePhoto.isAvailable && !scan.rooms.isEmpty && !scan.loadedFromFile && !scan.recoveredNeedsResume {
+                        Button {
+                            scan.widePhoto.begin(outside: false) { scan.message = $0 }
+                        } label: {
+                            VStack(alignment: .leading) {
+                                Label("Wide photo (0.5×)", systemImage: "camera.aperture")
+                                Text("The ultra-wide camera, for a whole room in one shot. Stand still while it's up.")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                        .disabled(scan.isBusy || scan.isScanning)
+                    }
                     Button("Go outside", systemImage: "house") { scan.isOutside = true }
                         .disabled(scan.rooms.isEmpty || scan.isBusy || scan.loadedFromFile || scan.recoveredNeedsResume || scan.anchorEnd != nil)
                     Button("Build floor plan", systemImage: "square.split.bottomrightquarter") {
@@ -299,12 +313,13 @@ struct ContentView: View {
                 Text(leaveMessage)
             }
             .fullScreenCover(isPresented: $scan.isOutside) {
-                ExteriorView(scan: scan, depth: scan.outsideDepth)
+                ExteriorView(scan: scan, depth: scan.outsideDepth, wide: scan.widePhoto)
             }
             .fullScreenCover(isPresented: $resuming) {
                 ResumeView(scan: scan)
             }
             .overlay { if scan.isBusy && !scan.isScanning { ProgressView() } }
+            .overlay { WideCameraHost(wide: scan.widePhoto, outside: false) }
         }
         .fullScreenCover(isPresented: $scan.isScanning) {
             ScanningView(scan: scan)
@@ -330,6 +345,17 @@ struct ScanningView: View {
             VStack {
                 HStack {
                     PhotoButton(scan: scan, outside: false) { show($0, seconds: 2) }
+                    // RoomPlan has the camera while it scans: the wide photo waits.
+                    if WidePhoto.isAvailable {
+                        Button {
+                            show("Wide photo: tap Done with room first, then it's on the home screen", seconds: 3)
+                        } label: {
+                            Text("0.5×").font(.headline.monospacedDigit()).padding(.vertical, 12).padding(.horizontal, 6)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.gray)
+                        .accessibilityLabel("Wide photo, not while scanning a room")
+                    }
                     Spacer()
                     Button {
                         scan.setTorch(!scan.torchOn)

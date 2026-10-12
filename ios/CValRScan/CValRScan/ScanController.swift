@@ -174,6 +174,12 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     // Our own AR session, so a saved world map can be loaded into it.
     let arSession = ARSession()
     lazy var outsideDepth = OutsideDepth(session: arSession)
+    // The 0.5× camera, run while the AR session is paused (WidePhoto.swift).
+    lazy var widePhoto = WidePhoto(scan: self)
+    // True from pausing the AR session for the wide camera until it runs
+    // again: a world map can't be taken from a paused session.
+    var arPausedForWidePhoto = false
+    var isSavingMap: Bool { mapSaving }
     let captureView: RoomCaptureView
     private var discardNext = false
     private var stamp = ""
@@ -1068,6 +1074,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     private func saveRecoveryMap(_ id: String) {
         // Until a recovered scan is located, this session isn't in its space.
         guard !recoveredNeedsResume, !isRelocalizing else { return }
+        // Left for the next save (lastMapSave unchanged, so it comes soon).
+        if arPausedForWidePhoto { return }
         if mapSaving { mapWanted = true; return }
         mapSaving = true
         mapWanted = false
