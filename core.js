@@ -72,15 +72,20 @@ const EXPORT_PAGE_SIZES = {
 
 function parseLength(s) {
   s = String(s).trim();
-  if (s.includes('+')) {
-    const parts = s.split('+').map(p => p.trim()).filter(Boolean);
-    let total = 0;
-    for (const p of parts) {
-      const v = parseLength(p);
+  // Pieces add and subtract, the way a laser is used: "12'4+6'5", "20'6−10".
+  // Only the minus sign (−) subtracts; a hyphen stays part of a length ("6-1/2").
+  if (s.includes('+') || s.includes('−')) {
+    let total = 0, sign = 1, any = false;
+    for (const p of s.split(/([+−])/)) {
+      const t = p.trim();
+      if (t === '+' || t === '−') { sign = t === '+' ? 1 : -1; continue; }
+      if (!t) continue;
+      const v = parseLength(t);
       if (isNaN(v)) return NaN;
-      total += v;
+      total += sign * v;
+      any = true;
     }
-    return total;
+    return any ? total : NaN;
   }
   if (s.includes("'")) {
     const idx = s.indexOf("'");
@@ -125,7 +130,10 @@ function parseSegment(text, priorHeadingDeg = null) {
     .replace(/→/g,' r').replace(/←/g,' l').replace(/↑/g,' u').replace(/↓/g,' d')
     .replace(/\bright\b/g, 'r').replace(/\bleft\b/g, 'l')   // accept full direction words
     .replace(/\bup\b/g, 'u').replace(/\bdown\b/g, 'd')
+    .replace(/\s+minus\s+/g, '−').replace(/\s+plus\s+/g, '+')
+    .replace(/([\d'"])\s+-\s+(?=\d)/g, '$1−')  // a spaced hyphen between lengths subtracts
     .replace(/\s*\+\s*/g, '+')              // collapse spaces around + so "2'6 + 3'0" → "2'6+3'0"
+    .replace(/\s*−\s*/g, '−')
     .replace(/([\d'"])([rlud])/g, '$1 $2')  // split length from direction: "3'0r" → "3'0 r"
     .replace(/([rlud])(-?\d)/g, '$1 $2');   // split direction from angle: "r90" → "r 90"
   const tokens = s.split(/\s+/).filter(Boolean);

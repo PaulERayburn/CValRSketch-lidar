@@ -202,7 +202,7 @@
   .keypad button.dir  { background: #e8f0fa; color: #2b3a4a; font-size: 17px; }
   .keypad button.dir:active { background: #2b6cb0; color: #fff; }
   .keypad button.back { background: #f8d7da; color: #721c24; font-size: 22px; }
-  .keypad button.add  { background: #2e8b57; color: #fff; border-color: #1d6a3e; font-size: 17px; grid-column: 4; grid-row: span 2; }
+  .keypad button.add  { background: #2e8b57; color: #fff; border-color: #1d6a3e; font-size: 17px; grid-column: 4; }
   .keypad .rose-cell { grid-column: 1 / span 3; grid-row: span 3; display: flex; justify-content: center; align-items: center; }
   .rose-cell svg { width: 100%; max-width: 190px; height: auto; touch-action: manipulation; }
   .rose-wedge { fill: #f1f5fb; stroke: #fff; stroke-width: 2; }
@@ -347,12 +347,13 @@
     <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button><button data-k="back" class="back" aria-label="backspace">⌫</button>
     <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button><button data-k="ft" class="unit">ft</button>
     <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button><button data-k="in" class="unit">in</button>
-    <button data-k="0">0</button><button data-k="." aria-label="decimal"><span style="font-size:24px;line-height:1;">·</span></button><button data-k="+" class="unit">+</button><button data-k="clear" class="back" aria-label="clear entry">×</button>
+    <button data-k="0">0</button><button data-k="." aria-label="decimal"><span style="font-size:24px;line-height:1;">·</span></button><button data-k="+" class="unit" aria-label="plus">+</button><button data-k="-" class="unit" aria-label="minus">−</button>
     <!-- Compass, as on the desktop: 8 or 16 directions (tap the centre to switch).
          The four cardinals add a direction to the entry (an angle can follow:
          10 r 45); any other heading adds the wall at once. -->
     <div class="rose-cell" id="rose-cell"></div>
     <button data-k="add" id="btn-add" class="add">✓ Add Wall</button>
+    <button data-k="clear" class="back" aria-label="clear entry">×</button>
     <button data-k="connect" id="btn-connect" class="connect hidden" title="Join the chain into one diagonal wall">Join</button>
   </div>
   <div class="fence-panel">
@@ -1616,6 +1617,7 @@ function pressKey(k) {
     case 'ft':    cancelChainPreview(); appendEntry("'"); return;
     case 'in':    cancelChainPreview(); appendEntry('"'); return;
     case '+':     cancelChainPreview(); appendEntry('+'); return;
+    case '-':     cancelChainPreview(); appendEntry('−'); return;
     case '.':     cancelChainPreview(); appendEntry('.'); return;
     case 'l': case 'r': case 'u': case 'd':
       pressDirection(k);

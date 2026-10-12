@@ -122,7 +122,7 @@ final class SketchHost: NSObject, WKScriptMessageHandler {
 
     // Injected before the page's own scripts.
     //  - CValRLaser.enter: a reading becomes the entry (or the next piece after a
-    //    trailing +). `pending` stays set until the entry is used or edited, and a
+    //    trailing + or −). `pending` stays set until the entry is used or edited, and a
     //    direction tapped while it is set adds the wall at once; dictation.js does
     //    the same for a spoken direction.
     //  - webkitSpeechRecognition, standing in for the browser's (not available in
@@ -138,7 +138,7 @@ final class SketchHost: NSObject, WKScriptMessageHandler {
           const a = window.SketchEntryAdapter;
           if (!a) return;
           const cur = (a.getEntry() || '').trim();
-          a.setEntry(/\+$/.test(cur) ? cur + ' ' + text : text);
+          a.setEntry(/([+−]|\bplus|\bminus)$/i.test(cur) ? cur + ' ' + text : text);
           this.pending = true;
         }
       };
@@ -150,7 +150,7 @@ final class SketchHost: NSObject, WKScriptMessageHandler {
         if (k === 'l' || k === 'r' || k === 'u' || k === 'd') {
           L.pending = false;
           setTimeout(() => window.SketchEntryAdapter && SketchEntryAdapter.commit(), 0);
-        } else if (k !== '+') {
+        } else if (k !== '+' && k !== '-') {
           L.pending = false;
         }
       }, true);
