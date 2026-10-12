@@ -136,7 +136,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     // Outside walk: points on the siding, grouped one list per exterior wall,
     // in the order taken; a fixed spot by the door marked going out and coming
     // back in measures the tracking drift.
-    @Published var exteriorWalls: [[SIMD3<Float>]] = []
+    @Published var exteriorWalls: [[ExteriorPoint]] = []
     @Published var anchorStart: SIMD3<Float>?
     @Published var anchorEnd: SIMD3<Float>?
     @Published var isOutside = false
@@ -158,6 +158,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
 
     // Our own AR session, so a saved world map can be loaded into it.
     let arSession = ARSession()
+    lazy var outsideDepth = OutsideDepth(session: arSession)
     let captureView: RoomCaptureView
     private var discardNext = false
     private var stamp = ""
@@ -480,17 +481,49 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         writeFiles()
     }
 
-    // The surface point under the screen centre, from the LiDAR mesh.
-    func aimedPoint() -> SIMD3<Float>? {
+    // The surface point under the screen centre, from an estimated plane:
+    // ARKit's guess from camera features, not the LiDAR depth, so weak on
+    // plain surfaces, at a slant and at a distance.
+    func aimedPoint() -> SIMD3<Float>? { aimedHit()?.point }
+
+    private func aimedHit() -> (point: SIMD3<Float>, normal: SIMD3<Float>, camera: SIMD3<Float>)? {
         guard let frame = arSession.currentFrame else { return nil }
         let query = frame.raycastQuery(from: CGPoint(x: 0.5, y: 0.5),
                                        allowing: .estimatedPlane, alignment: .any)
         guard let hit = arSession.raycast(query).first else { return nil }
-        let p = hit.worldTransform.columns.3
-        return SIMD3(p.x, p.y, p.z)
+        let t = hit.worldTransform, c = frame.camera.transform.columns.3
+        return (SIMD3(t.columns.3.x, t.columns.3.y, t.columns.3.z), SIMD3(t.columns.1.x, t.columns.1.y, t.columns.1.z),
+                SIMD3(c.x, c.y, c.z))
     }
 
     // MARK: Outside walk
+
+    // Outside, the siding is marked from LiDAR depth. RoomPlan runs the AR
+    // session its own way while scanning, so depth is switched on here, on
+    // the session as it runs: no reset, so the world origin and everything
+    // already scanned stay where they are. Scan a room hands the session back
+    // to RoomPlan, which sets it up again for itself, as after a resume.
+    func startOutsideWalk() {
+        guard OutsideDepth.isSupported else { return }
+        if let c = arSession.configuration as? ARWorldTrackingConfiguration, c.frameSemantics.contains(.sceneDepth) {
+            outsideDepth.start()
+            return
+        }
+        // The default video format, which every LiDAR device gives depth with.
+        let config = ARWorldTrackingConfiguration()
+        if let c = arSession.configuration as? ARWorldTrackingConfiguration { config.worldAlignment = c.worldAlignment }
+        Self.addDepth(to: config)
+        arSession.run(config)
+        outsideDepth.start()
+    }
+
+    func stopOutsideWalk() { outsideDepth.stop() }
+
+    private static func addDepth(to config: ARWorldTrackingConfiguration) {
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) { config.sceneReconstruction = .mesh }
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { config.frameSemantics.insert(.sceneDepth) }
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) { config.frameSemantics.insert(.smoothedSceneDepth) }
+    }
 
     @discardableResult
     func markAnchor() -> Bool {
@@ -522,13 +555,40 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         writeFiles()
     }
 
-    @discardableResult
-    func markExteriorPoint() -> Bool {
-        guard let p = aimedPoint() else { return false }
+    enum ExteriorMark { case marked(ExteriorPoint), refused(String) }
+
+    // With LiDAR, the siding across the screen is fitted as one upright
+    // plane, and the point is where the crosshair meets it; without, the
+    // estimated-plane hit under the crosshair.
+    func markExteriorPoint() -> ExteriorMark {
+        let mark: ExteriorPoint
+        if outsideDepth.running {
+            switch outsideDepth.strip() {
+            case .failure(let f):
+                switch f {
+                case .tooFar: return .refused(CrosshairReading.tooFar)
+                case .notUpright: return .refused("That's not upright. Aim at the siding, not the ground or the eaves.")
+                case .offWall: return .refused("Hold steady on one wall")
+                case .tooFewSamples, .noWall: return .refused(CrosshairReading.noReading)
+                }
+            case .success(let s):
+                let reading = CrosshairReading(point: s.point, distance: s.distance, angle: s.angle)
+                if let why = reading.refusal { return .refused(why) }
+                mark = ExteriorPoint(point: SIMD3(Float(s.point.x), Float(s.point.y), Float(s.point.z)), method: "lidar",
+                                     distance: s.distance, angle: s.angle, rms: s.rms, n: s.count,
+                                     camera: outsideDepth.cameraPlan, dir: s.dir, span: [s.span.0, s.span.1])
+            }
+        } else {
+            guard let hit = aimedHit() else { return .refused("No surface under the crosshair") }
+            let ray = hit.point - hit.camera
+            mark = ExteriorPoint(point: hit.point, method: "plane", distance: Double(simd_length(ray)),
+                                 angle: DepthMath.incidence(direction: SIMD3<Double>(ray), normal: SIMD3<Double>(hit.normal)),
+                                 camera: SIMD2(Double(hit.camera.x), Double(hit.camera.z)))
+        }
         if exteriorWalls.isEmpty { exteriorWalls.append([]) }
-        exteriorWalls[exteriorWalls.count - 1].append(p)
+        exteriorWalls[exteriorWalls.count - 1].append(mark)
         writeFiles()
-        return true
+        return .marked(mark)
     }
 
     func nextExteriorWall() {
@@ -540,7 +600,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     // the points lie within 6″ of one line.
     var cornerSplits: [Int] {
         guard let wall = exteriorWalls.last else { return [] }
-        return Self.splits(wall.map { SIMD2(Double($0.x), Double($0.z)) }, offset: 0)
+        return Self.splits(wall.map { SIMD2(Double($0.point.x), Double($0.point.z)) }, offset: 0)
     }
 
     // Splits where the two lines fit best overall (least total squared
@@ -601,7 +661,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             let pts: [XY] = wall.map { p in
                 index += 1
                 let f = Float(index) / Float(total + 1)
-                let q = p - (drift ?? .zero) * f
+                let q = p.point - (drift ?? .zero) * f
                 return XY(x: Double(q.x), y: Double(q.z))
             }
             guard pts.count >= 2 else { continue }
@@ -777,9 +837,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         }
         let config = ARWorldTrackingConfiguration()
         config.initialWorldMap = map
-        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
-            config.sceneReconstruction = .mesh
-        }
+        // Depth too, for marking outside walls once located.
+        Self.addDepth(to: config)
         arSession.run(config, options: [.resetTracking, .removeExistingAnchors])
         relocalizeStarted = Date()
         isRelocalizing = true
@@ -803,7 +862,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             exteriorWalls = exteriorWalls.map { wall in
                 wall.map { p in
                     index += 1
-                    return p - d * (Float(index) / Float(total + 1))
+                    return p.shifted(by: -d * (Float(index) / Float(total + 1)))
                 }
             }
         }
@@ -1039,7 +1098,12 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             func world(_ p: SavedPlan.Point) -> SIMD3<Float> {
                 SIMD3(Float(p.point[0]), Float(p.elevation), Float(p.point[1]))
             }
-            exteriorWalls = (saved?.exterior?.walls ?? []).map { $0.map(world) }
+            func xy(_ v: [Double]?) -> SIMD2<Double>? { v.flatMap { $0.count == 2 ? SIMD2($0[0], $0[1]) : nil } }
+            exteriorWalls = (saved?.exterior?.walls ?? []).map { $0.map { p in
+                ExteriorPoint(point: SIMD3(Float(p.point[0]), Float(p.elevation), Float(p.point[1])), method: p.method,
+                              distance: p.distance, angle: p.angle, rms: p.rms, n: p.n, camera: xy(p.camera), dir: xy(p.dir),
+                              span: p.span.map { $0.compactMap(xy) }.flatMap { $0.count == 2 ? $0 : nil })
+            } }
             anchorStart = saved?.exterior?.anchorStart.map(world)
             anchorEnd = saved?.exterior?.anchorEnd.map(world)
             structure = loaded
@@ -1108,7 +1172,12 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
             let side: Int?; let room: String?; let walls: [String]?; let move: String?; let moving: [String]?
             let entered: String?
         }
-        struct Exterior: Decodable { let walls: [[Point]]; let anchorStart: Point?; let anchorEnd: Point? }
+        struct ExteriorPointIn: Decodable {
+            let point: [Double]; let elevation: Double
+            let method: String?; let distance: Double?; let angle: Double?; let rms: Double?; let n: Int?
+            let camera: [Double]?; let dir: [Double]?; let span: [[Double]]?
+        }
+        struct Exterior: Decodable { let walls: [[ExteriorPointIn]]; let anchorStart: Point?; let anchorEnd: Point? }
         struct WallPointIn: Decodable { let point: [Double]; let elevation: Double; let normal: [Double] }
         struct GapDepthIn: Decodable { let gap: [[Double]]; let from: String; let inches: Int }
         struct RoomLabelIn: Decodable { let story: Int; let point: [Double]; let name: String; let replaces: Int? }

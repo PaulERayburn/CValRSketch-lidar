@@ -1,4 +1,5 @@
 import ARKit
+import AudioToolbox
 import SceneKit
 import SwiftUI
 import UIKit
@@ -7,6 +8,7 @@ import UIKit
 // so points marked on the siding land in the same coordinates as the rooms.
 struct ExteriorView: View {
     @ObservedObject var scan: ScanController
+    @ObservedObject var depth: OutsideDepth
     @Environment(\.dismiss) private var dismiss
     @State private var flash: String?
     // A wall whose points turn a corner, waiting for the user to say
@@ -17,11 +19,17 @@ struct ExteriorView: View {
 
     private var pointCount: Int { scan.exteriorWalls.reduce(0) { $0 + $1.count } }
     private var wallCount: Int { scan.exteriorWalls.filter { !$0.isEmpty }.count }
+    private var walking: Bool { scan.anchorStart != nil && scan.anchorEnd == nil }
+    // Why Mark point can't be used now, from the live LiDAR reading.
+    private var markRefusal: String? {
+        guard depth.running else { return nil }
+        return depth.reading.map { $0.refusal } ?? CrosshairReading.noReading
+    }
 
     var body: some View {
         ZStack {
             SessionView(session: scan.arSession).ignoresSafeArea()
-            MarkedPointsOverlay(session: scan.arSession, points: scan.exteriorWalls.flatMap { $0 }, colour: .orange)
+            MarkedPointsOverlay(session: scan.arSession, points: scan.exteriorWalls.flatMap { $0.map(\.point) }, colour: .orange)
                 .ignoresSafeArea()
             // The start spot, so it can be found again coming back in.
             MarkedPointsOverlay(session: scan.arSession, points: scan.anchorEnd == nil ? [scan.anchorStart].compactMap { $0 } : [],
@@ -32,6 +40,7 @@ struct ExteriorView: View {
                 .foregroundStyle(.white)
                 .shadow(color: .black, radius: 2)
                 .allowsHitTesting(false)
+            if walking && depth.running { readout.offset(y: 44).allowsHitTesting(false) }
             VStack(spacing: 10) {
                 Text(instructions)
                     .font(.callout)
@@ -56,6 +65,8 @@ struct ExteriorView: View {
             }
             .padding(.top)
         }
+        .onAppear { scan.startOutsideWalk() }
+        .onDisappear { scan.stopOutsideWalk() }
         .alert("Wall \(wallCount) turns a corner",
                isPresented: Binding(get: { corner != nil }, set: { if !$0 { corner = nil } }),
                presenting: corner) { c in
@@ -97,6 +108,40 @@ struct ExteriorView: View {
         show("Wall \(wallCount + 1)")
     }
 
+    // Distance and squareness under the crosshair: green is good, orange
+    // usable, red can't be marked.
+    private var readout: some View {
+        let r = depth.reading
+        let colour: Color = switch r?.quality {
+        case .good: .green
+        case .fair: .orange
+        default: .red
+        }
+        return Text(r.map { $0.refusal ?? $0.text } ?? CrosshairReading.noReading)
+            .font(.callout.weight(.semibold).monospacedDigit())
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(colour.opacity(0.85), in: Capsule())
+    }
+
+    private func markPoint() {
+        if let why = markRefusal {
+            MarkFeedback.refused()
+            show(why)
+            return
+        }
+        switch scan.markExteriorPoint() {
+        case .marked(let p):
+            MarkFeedback.good()
+            let n = scan.exteriorWalls.last?.count ?? 0
+            show(p.distance.map { String(format: "Point %d marked, %.1f ft away", n, $0 * 3.28084) } ?? "Point marked")
+        case .refused(let why):
+            MarkFeedback.refused()
+            show(why)
+        }
+    }
+
     private var instructions: String {
         if scan.anchorStart == nil {
             return "Before going out: aim at a fixed spot by the door you'll use (a light switch or door-frame corner) and tap Set start spot."
@@ -105,7 +150,8 @@ struct ExteriorView: View {
             return "Walk finished. Drift over the walk: \(driftText). Tap Done."
         }
         let current = scan.exteriorWalls.last?.count ?? 0
-        return "Walk out slowly. For each outside wall, mark 2 or more points on the siding, then tap Next wall at the corner. "
+        let aim = depth.running ? "Stand close and face the siding: green under the crosshair is best. " : ""
+        return "Walk out slowly. " + aim + "For each outside wall, mark 2 or more points on the siding, then tap Next wall at the corner. "
             + "Wall \(max(wallCount, 1)): \(current) point\(current == 1 ? "" : "s"). "
             + "Back inside, aim at the start spot (green dot) and tap Check start spot."
     }
@@ -133,11 +179,10 @@ struct ExteriorView: View {
                         .buttonStyle(.bordered)
                         .disabled(pointCount == 0)
                     Spacer()
-                    Button {
-                        feedback(scan.markExteriorPoint(), ok: "Point marked", fail: "No surface under the crosshair")
-                    } label: { Label("Mark point", systemImage: "scope") }
+                    Button { markPoint() } label: { Label("Mark point", systemImage: "scope") }
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
+                    .disabled(markRefusal != nil)
                     Spacer()
                     Button("Next wall") { checkCorner(next: true) }
                     .buttonStyle(.bordered)
@@ -199,4 +244,17 @@ struct SessionView: UIViewRepresentable {
         return view
     }
     func updateUIView(_ uiView: ARSCNView, context: Context) {}
+}
+
+// Feedback for marking at arm's length or on a stick: a tap you can feel and
+// a sound you can hear when the phone is out of reach.
+enum MarkFeedback {
+    static func good() {
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        AudioServicesPlaySystemSound(1054)
+    }
+    static func refused() {
+        UINotificationFeedbackGenerator().notificationOccurred(.error)
+        AudioServicesPlaySystemSound(1053)
+    }
 }

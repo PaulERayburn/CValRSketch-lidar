@@ -225,7 +225,7 @@ struct ContentView: View {
                 Text(buildAdvice)
             }
             .fullScreenCover(isPresented: $scan.isOutside) {
-                ExteriorView(scan: scan)
+                ExteriorView(scan: scan, depth: scan.outsideDepth)
             }
             .fullScreenCover(isPresented: $resuming) {
                 ResumeView(scan: scan)

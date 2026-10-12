@@ -55,7 +55,7 @@ enum PlanExport {
     // the door-side spot marked going out and coming back (their difference
     // is the tracking drift, to be spread over the walk).
     struct Exterior: Encodable {
-        let walls: [[Corner]]
+        let walls: [[ExteriorPointOut]]
         let anchorStart: Corner?
         let anchorEnd: Corner?
     }
@@ -110,6 +110,21 @@ enum PlanExport {
     struct Corner: Encodable {
         let point: [Double]
         let elevation: Double     // world height where the corner was aimed
+    }
+
+    // A siding point from the outside walk; how it was found when known
+    // (fields as README.md's format section describes).
+    struct ExteriorPointOut: Encodable {
+        let point: [Double]
+        let elevation: Double
+        var method: String?
+        var distance: Double?
+        var angle: Double?
+        var rms: Double?
+        var n: Int?
+        var camera: [Double]?
+        var dir: [Double]?
+        var span: [[Double]]?
     }
 
     // A point on a wall the scan missed, with the wall's horizontal facing.
@@ -180,7 +195,7 @@ enum PlanExport {
                      measurements: [UUID: WallMeasurement], spans: [SpanReading], wallEdits: [UUID: WallEdit],
                      roomLabels: [RoomLabel], addedOpenings: [AddedOpening], rooms: [ResolvedRoom],
                      hiddenOpenings: Set<UUID>,
-                     exterior: [[SIMD3<Float>]],
+                     exterior: [[ExteriorPoint]],
                      anchorStart: SIMD3<Float>?, anchorEnd: SIMD3<Float>?, name: String = "",
                      photos: [ScanPhoto] = [], photoFolder: String = "", addedWalls: [AddedWall] = [],
                      wallsShapeFloor: Bool = true, stairEdits: [UUID: StairEdit] = [:],
@@ -188,6 +203,13 @@ enum PlanExport {
                      ignoredAreas: [SIMD2<Double>] = [], outsideEdges: [SIMD2<Double>] = [], floorNames: [Int: String] = [:],
                      areaFills: [AreaFill] = []) throws -> Data {
         func corner(_ p: SIMD3<Float>) -> Corner { Corner(point: [r(p.x), r(p.z)], elevation: r(p.y)) }
+        func r4(_ v: Double) -> Double { (v * 10000).rounded() / 10000 }
+        func exteriorOut(_ p: ExteriorPoint) -> ExteriorPointOut {
+            ExteriorPointOut(point: [r(p.point.x), r(p.point.z)], elevation: r(p.point.y), method: p.method,
+                             distance: p.distance.map { (($0 * 1000).rounded()) / 1000 }, angle: p.angle.map { ($0 * 10).rounded() / 10 },
+                             rms: p.rms.map(r4), n: p.n, camera: p.camera.map { [r4($0.x), r4($0.y)] },
+                             dir: p.dir.map { [r4($0.x), r4($0.y)] }, span: p.span.map { $0.map { [r4($0.x), r4($0.y)] } })
+        }
         // Drawn walls go in with the scanned ones, at the height of that floor's walls.
         let drawn = addedWalls.map { w -> Segment in
             let same = s.walls.filter { $0.story == w.story }
@@ -261,7 +283,7 @@ enum PlanExport {
                                 walls: (m.walls.isEmpty ? [id] : m.walls).map(\.uuidString),
                                 move: m.move.rawValue, moving: m.moving.map(\.uuidString), entered: m.entered)
                 },
-            exterior: Exterior(walls: exterior.filter { !$0.isEmpty }.map { $0.map(corner) },
+            exterior: Exterior(walls: exterior.filter { !$0.isEmpty }.map { $0.map(exteriorOut) },
                                anchorStart: anchorStart.map(corner), anchorEnd: anchorEnd.map(corner)))
         if !name.isEmpty { plan.name = name }
         if !photos.isEmpty { plan.photos = photos.map(photoOut); plan.photoFolder = photoFolder }
