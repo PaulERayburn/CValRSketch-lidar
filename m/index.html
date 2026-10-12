@@ -2467,6 +2467,7 @@ function openShapeEditor(sh) {
     <label style="font-size:12px; color:#666;">Label</label>
     <input id="sh-label" type="text" value="${escapeHtml(sh.label)}"
       style="padding:10px; font-size:16px; border:1px solid #ccc; border-radius:8px;">
+    <div class="chip-row" id="sh-label-chips"></div>
     <label style="font-size:12px; color:#666;">Type</label>
     <select id="sh-type" style="padding:10px; font-size:16px; border:1px solid #ccc; border-radius:8px;">${typeOpts}</select>
     <label style="font-size:12px; color:#666;">Floor</label>
@@ -2479,6 +2480,13 @@ function openShapeEditor(sh) {
       <button class="primary" id="sh-apply-btn">Apply</button>
     </div>
   `);
+  // The label follows the type until it's typed over or a chip is picked.
+  let labelAuto = labelIsGeneric(sh.label);
+  const labelIn = $('sh-label'), typeSel = $('sh-type');
+  const chips = () => renderLabelChips($('sh-label-chips'), typeSel.value, labelIn, () => { labelAuto = false; });
+  labelIn.addEventListener('input', () => { labelAuto = false; });
+  typeSel.onchange = () => { if (labelAuto) labelIn.value = TYPES[typeSel.value].name; chips(); };
+  chips();
   $('sh-apply-btn').onclick = () => {
     pushUndo();
     sh.label = $('sh-label').value || sh.label;
@@ -2577,6 +2585,34 @@ function typeSwatch(k) {
   const f = TYPES[k].fill;
   return f.startsWith('#') ? f : 'repeating-linear-gradient(45deg,#c8c8c8 0 2px,#fff 2px 5px)';
 }
+// Common labels for each type, offered as one-tap chips under the label box.
+const LABEL_PRESETS = {
+  living: ['Main floor', 'Living', 'Addition', 'Sunroom', 'Enclosed porch'],
+  finished: ['Finished basement', 'Rec room', 'Basement suite'],
+  unfinished: ['Unfinished basement', 'Utility / mech', 'Crawlspace', 'Storage'],
+  porch: ['Covered porch', 'Front porch', 'Back porch', 'Covered entry'],
+  garage: ['Single garage', 'Double garage', 'Triple garage', 'Attached garage', 'Detached garage', 'Tandem garage'],
+  deck: ['Deck', 'Front deck', 'Back deck', 'Patio'],
+  upper: ['Upper floor', 'Second floor', 'Loft', 'Bonus room'],
+  outbuilding: ['Outbuilding', 'Workshop', 'Guest house', 'Studio'],
+  barn: ['Barn', 'Pole barn', 'Hay barn', 'Machine shed'],
+  shed: ['Shed', 'Storage shed', 'Garden shed', 'Woodshed'],
+  shop: ['Shop', 'Workshop', 'Heated shop'],
+  carport: ['Single carport', 'Double carport', 'RV carport'],
+  misc: ['Other'],
+};
+// Fills `row` with the chips for `type`; a tap puts that label in `input`.
+function renderLabelChips(row, type, input, onPick) {
+  row.innerHTML = (LABEL_PRESETS[type] || []).map(l => `<button type="button" data-label-pick="${escapeHtml(l)}">${escapeHtml(l)}</button>`).join('');
+  row.querySelectorAll('[data-label-pick]').forEach(b => b.onclick = () => { input.value = b.dataset.labelPick; onPick && onPick(); });
+}
+// A label still saying what a type is called (or a split's "… (split)"), so
+// changing the type may rename it; anything typed by hand is left alone.
+function labelIsGeneric(label) {
+  const base = (label || '').replace(/ \(split\)$/, '');
+  return !base || Object.values(TYPES).some(t => t.name === base) || /^Area \d+$/.test(base);
+}
+
 function openNewAreaModal(area, onOk) {
   const buildings = Array.isArray(state.buildings) && state.buildings.length ? [...state.buildings] : [...BUILDINGS];
   // Areas are usually walked a building at a time: default to the last one used.
@@ -2592,6 +2628,7 @@ function openNewAreaModal(area, onOk) {
       `<button type="button" data-na-type="${k}"><span class="sw" style="background:${typeSwatch(k)}"></span><span>${escapeHtml(t.name)}</span></button>`).join('')}</div>
     <div class="na-hint">Label (printed on the drawing)</div>
     <input id="na-label" class="na-label" type="text" autocomplete="off" value="${escapeHtml(TYPES[v.type].name)}">
+    <div class="chip-row" id="na-label-chips"></div>
     <div class="na-hint">Floor</div>
     <div class="chip-row">${state.floors.map(f => `<button type="button" data-na-floor="${escapeHtml(f)}">${escapeHtml(f)}</button>`).join('')}</div>
     <div class="na-hint">Building / dwelling</div>
@@ -2608,6 +2645,7 @@ function openNewAreaModal(area, onOk) {
     m.querySelectorAll('[data-na-floor]').forEach(b => b.classList.toggle('sel', b.dataset.naFloor === v.floor));
     m.querySelectorAll('[data-na-bldg]').forEach(b => b.classList.toggle('sel', b.dataset.naBldg === v.building));
     if (labelAuto) labelIn.value = TYPES[v.type].name;
+    renderLabelChips($('na-label-chips'), v.type, labelIn, () => { labelAuto = false; });
   };
   const setType = t => { v.type = t; mark(); };
   m.querySelectorAll('[data-na-type]').forEach(b => b.onclick = () => { typeAuto = false; setType(b.dataset.naType); });
