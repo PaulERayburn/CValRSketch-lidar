@@ -6,6 +6,9 @@ import simd
 // whether tracking came back where it was after the wide camera. No ARKit,
 // AVFoundation or UIKit, so it builds on a Mac for testing.
 enum PhotoMath {
+    // An angle brought into −π…π.
+    static func wrap(_ a: Double) -> Double { atan2(sin(a), cos(a)) }
+
     // The back camera's picture is landscape, its +y up when the phone lies
     // sideways with the charging port on the right. `upX`/`upY` say how far
     // the picture's x and y axes point up (−1…1): turn by whichever is

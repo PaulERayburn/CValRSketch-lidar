@@ -50,6 +50,13 @@ final class WidePhoto: ObservableObject {
     private var depthWasRunning = false
     private var show: ((String) -> Void)?
     private var said: String?
+    // Several shots per opening: the costly part is handing the camera back to
+    // ARKit, so it's done once, at Done. `taken` counts this opening's shots;
+    // `startYaw` is the phone's heading when the camera opened, so each shot's
+    // facing turns with the phone (it's pinned where the user stands).
+    @Published private(set) var taken = 0
+    @Published private(set) var lastSaved: String?
+    private var startYaw: Double?
     private var observers: [NSObjectProtocol] = []
 
     init(scan: ScanController) {
@@ -140,6 +147,9 @@ final class WidePhoto: ObservableObject {
         let ok = await camera.start()
         guard token == step else { return }
         if ok {
+            taken = 0
+            lastSaved = nil
+            startYaw = motion.deviceMotion.flatMap(Self.heading)
             phase = .live
         } else {
             log.error("wide photo: the ultra-wide camera wouldn't start")
@@ -155,7 +165,8 @@ final class WidePhoto: ObservableObject {
         let turn = motion.deviceMotion.map { d in
             PhotoMath.uprightTurn(gravity: SIMD3(d.gravity.x, d.gravity.y, d.gravity.z))
         } ?? ScanController.uprightTurn(pose)
-        let pose = pose, outside = outside
+        let pose = Self.turned(pose, by: motion.deviceMotion.flatMap(Self.heading).flatMap { now in startYaw.map { PhotoMath.wrap(now - $0) } }),
+            outside = outside
         Task {
             let data = await camera.capture()
             guard token == step, phase == .capturing else { return }
@@ -165,11 +176,14 @@ final class WidePhoto: ObservableObject {
             switch result {
             case .saved:
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
-                close("Wide photo \(scan.photos.count) saved")
+                taken += 1
+                lastSaved = "Wide photo \(taken) saved. Take another, or Done."
+                phase = .live
             case .failed:
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
                 log.error("wide photo: capture or save failed")
-                close("Couldn't take the wide photo. Try again.")
+                lastSaved = "Couldn't take that one. Try again, or Done."
+                phase = .live
             }
         }
         // A capture that never answers mustn't leave the AR session paused.
@@ -184,13 +198,36 @@ final class WidePhoto: ObservableObject {
 
     func cancel() {
         guard phase == .live || phase.isOpening else { return }
-        close("Wide photo cancelled")
+        close(taken == 0 ? "Wide photo cancelled" : "\(taken) wide photo\(taken == 1 ? "" : "s") saved")
+    }
+
+    // Which way the camera points across the floor, radians counterclockwise
+    // seen from above. From the camera axis (device −z) rather than Euler yaw,
+    // which is unreliable with the phone held upright, as it is for photos.
+    // Nil when the camera points nearly straight up or down.
+    nonisolated static func heading(_ d: CMDeviceMotion) -> Double? {
+        let a = d.attitude.quaternion
+        let v = simd_quatd(ix: a.x, iy: a.y, iz: a.z, r: a.w).act(SIMD3<Double>(0, 0, -1))
+        return hypot(v.x, v.y) < 0.2 ? nil : atan2(v.y, v.x)
+    }
+
+    // `pose` turned about the vertical by `yaw` radians (from the motion sensor),
+    // keeping its position: the pin stays put, its facing follows the phone.
+    nonisolated static func turned(_ pose: simd_float4x4, by yaw: Double?) -> simd_float4x4 {
+        guard let yaw, yaw.isFinite, abs(yaw) > 0.01 else { return pose }
+        let q = simd_quatf(angle: Float(yaw), axis: SIMD3(0, 1, 0))
+        var p = pose
+        for i in 0..<3 {
+            let c = q.act(SIMD3(p[i].x, p[i].y, p[i].z))
+            p[i] = SIMD4(c, p[i].w)
+        }
+        return p
     }
 
     private func leftApp() {
         guard phase == .live || phase.isOpening else { return }
         log.info("wide photo: app left with the camera up")
-        close("Wide photo cancelled")
+        close(taken == 0 ? "Wide photo cancelled" : "\(taken) wide photo\(taken == 1 ? "" : "s") saved")
     }
 
     // Camera off, AR session back on, then the alignment check.
@@ -453,13 +490,19 @@ struct WideCameraView: View {
                     .font(.headline)
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(.thinMaterial, in: Capsule())
-                Text("Stay where you are: tracking picks up again from here when the camera closes.")
+                Text("Stay on this spot (turning is fine): tracking picks up again from here when you tap Done.")
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .padding(8)
                     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
                     .padding(.horizontal)
                 Spacer()
+                if status == nil, let saved = wide.lastSaved {
+                    Text(saved)
+                        .font(.callout.weight(.semibold))
+                        .padding(10)
+                        .background(.thinMaterial, in: Capsule())
+                }
                 if let status {
                     HStack(spacing: 8) { ProgressView(); Text(status) }
                         .padding(10)
@@ -474,7 +517,7 @@ struct WideCameraView: View {
                     .disabled(wide.phase != .live)
                     .accessibilityLabel("Take wide photo")
                     HStack {
-                        Button("Cancel", role: .cancel) { wide.cancel() }
+                        Button(wide.taken == 0 ? "Cancel" : "Done", role: .cancel) { wide.cancel() }
                             .buttonStyle(.bordered)
                             .tint(.white)
                             .disabled(wide.phase != .live && !isOpening)
