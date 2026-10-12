@@ -767,3 +767,118 @@ function assemblePolygonFromWalls(walls) {
   if (used.size !== walls.length) return null;
   return path.map(id => ({ x: verts[id].x, y: verts[id].y }));
 }
+
+// ----- Enclosed-area candidates (closing onto an existing wall) -----
+// When the pen lands on an existing wall or vertex and the walk also started on
+// one, the walked legs plus a run of existing walls may fence off a region. Rather
+// than closing with a straight line back to the start (which cuts a triangle
+// through the room), offer to close along those walls. Candidates are every
+// simple run of existing walls from the pen back to the start, smallest area
+// first, skipping runs that would swallow an existing shape.
+const ENC_EPS = 0.05;
+function pointInPoly(pt, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.y > pt.y) !== (b.y > pt.y) && pt.x < (b.x - a.x) * (pt.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+// A point just inside a simple polygon: the first edge's midpoint nudged toward the interior.
+function shapeInteriorPoint(pts) {
+  let sgn = 0;
+  for (let i = 0; i < pts.length - 1; i++) sgn += pts[i].x * pts[i+1].y - pts[i+1].x * pts[i].y;
+  const a = pts[0], b = pts[1], len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  const nx = -(b.y - a.y) / len * Math.sign(sgn || 1), ny = (b.x - a.x) / len * Math.sign(sgn || 1);
+  return { x: (a.x + b.x) / 2 + nx * 0.02, y: (a.y + b.y) / 2 + ny * 0.02 };
+}
+// True when the outline reverses on itself at any vertex (a leg walked and then
+// retraced along the same line), which would leave a stray line on the shape.
+function hasSpur(pts) {
+  const n = pts.length - 1;   // closed: last point repeats the first
+  for (let i = 0; i < n; i++) {
+    const a = pts[(i - 1 + n) % n], b = pts[i], c = pts[(i + 1) % n];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    const dot = (b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y);
+    if (Math.abs(cross) < 1e-6 && dot < 0) return true;
+  }
+  return false;
+}
+function dropCollinear(pts) {
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const a = out[out.length - 1], b = pts[i], c = pts[i + 1];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    const dot = (b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y);
+    if (Math.abs(cross) < 1e-6 && dot > 0) continue;   // straight through b
+    out.push(b);
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+// Wall graph of `shapes`: nodes are vertices (merged within ENC_EPS) plus
+// the given extra points; edges are wall pieces between consecutive nodes on a wall.
+function encGraph(shapes, extra) {
+  const nodes = [];
+  const nodeId = p => {
+    for (let i = 0; i < nodes.length; i++) if (Math.hypot(nodes[i].x - p.x, nodes[i].y - p.y) < ENC_EPS) return i;
+    nodes.push({ x: p.x, y: p.y });
+    return nodes.length - 1;
+  };
+  shapes.forEach(sh => sh.points.slice(0, -1).forEach(nodeId));
+  extra.forEach(nodeId);
+  const adj = nodes.map(() => new Set());
+  shapes.forEach(sh => {
+    for (let i = 0; i < sh.points.length - 1; i++) {
+      const a = sh.points[i], b = sh.points[i + 1];
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      if (len < ENC_EPS) continue;
+      const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+      const on = [];
+      nodes.forEach((n, id) => {
+        const t = (n.x - a.x) * ux + (n.y - a.y) * uy;
+        const perp = Math.abs((n.x - a.x) * -uy + (n.y - a.y) * ux);
+        if (t > -ENC_EPS && t < len + ENC_EPS && perp < ENC_EPS) on.push({ id, t });
+      });
+      on.sort((p, q) => p.t - q.t);
+      for (let k = 0; k < on.length - 1; k++) if (on[k].id !== on[k + 1].id) { adj[on[k].id].add(on[k + 1].id); adj[on[k + 1].id].add(on[k].id); }
+    }
+  });
+  return { nodes, adj, nodeId };
+}
+// Every simple run of existing walls from the walk's pen back to its start that,
+// with the walk, fences off a region not containing another shape; smallest
+// area first. walk = the pen's path (start … pen); shapes = the floor's shapes.
+// Each candidate is { polygon (closed), path (pen … start along walls), area }.
+function enclosureCandidates(walk, shapes) {
+  const start = walk[0], pen = walk[walk.length - 1];
+  const g = encGraph(shapes, [start, pen]);
+  const sId = g.nodeId(start), pId = g.nodeId(pen);
+  const cands = [];
+  if (!g.adj[sId].size || !g.adj[pId].size) return cands;
+  const interior = shapes.map(sh => shapeInteriorPoint(sh.points));
+  const seen = new Set();
+  const paths = []; const visited = new Set([pId]); let budget = 6000;
+  (function dfs(cur, path) {
+    if (budget-- <= 0 || paths.length >= 40) return;
+    for (const nx of g.adj[cur]) {
+      if (nx === sId) { paths.push([...path, nx]); continue; }
+      if (visited.has(nx) || path.length > 80) continue;
+      visited.add(nx); dfs(nx, [...path, nx]); visited.delete(nx);
+    }
+  })(pId, [pId]);
+  for (const ids of paths) {
+    const run = ids.map(id => g.nodes[id]);                    // pen … start along existing walls
+    const poly = dropCollinear([...walk, ...run.slice(1)]);     // start … pen … start
+    if (hasSpur(poly)) continue;                                // doubles back along a walked leg
+    const area = polygonArea(poly);
+    if (area < 1) continue;
+    if (interior.some(ip => pointInPoly(ip, poly.slice(0, -1)))) continue;   // would swallow a shape
+    const key = area.toFixed(1) + ':' + poly.length;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cands.push({ polygon: poly, path: run, area });
+  }
+  cands.sort((a, b) => a.area - b.area);
+  return cands;
+}

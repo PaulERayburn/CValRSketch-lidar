@@ -73,6 +73,12 @@
   .close-offer .co-text { flex: 1; min-width: 0; font-size: 12px; font-weight: bold; color: #1f6b43; }
   .close-offer button { padding: 10px 12px; font-size: 14px; font-weight: bold; border-radius: 8px; border: 1px solid #2e8b57; background: #fff; color: #1f6b43; }
   .close-offer button.primary { background: #2e8b57; color: #fff; }
+  .close-offer button[hidden] { display: none; }
+  /* Same bar, offering the area enclosed by the walk and existing walls (yellow on the drawing) */
+  .close-offer.enclose { flex-wrap: wrap; background: #fff8cc; border-top-color: #e6b800; }
+  .close-offer.enclose .co-text { flex-basis: 100%; color: #6b5300; }
+  .close-offer.enclose button { flex: 1; border-color: #c9a000; color: #6b5300; }
+  .close-offer.enclose button.primary { background: #9a7a00; border-color: #9a7a00; color: #fff; }
   /* Bottom controls */
   .controls {
     flex: 0 0 auto;
@@ -323,6 +329,7 @@
 <div class="close-offer" id="close-offer" hidden>
   <div class="co-text" id="close-offer-text">Shape is closed</div>
   <button class="primary" id="close-offer-yes">&#10003; Close shape</button>
+  <button id="close-offer-next" hidden>Next option</button>
   <button id="close-offer-no">Keep walking</button>
 </div>
 
@@ -566,7 +573,7 @@ const AUTOSAVE_KEY = 'cvalrsketchMobile:autosave';
 let autosaveTimer = null;
 function sketchData() {
   const data = { ...state };
-  for (const k of ['undoStack', 'redoStack', 'selection', 'fenceSelection', 'fenceDraw', 'offsetPick',
+  for (const k of ['undoStack', 'redoStack', 'selection', 'fenceSelection', 'fenceDraw', 'offsetPick', 'enclose',
                    'preview', 'splitSelection', 'splitPreview']) delete data[k];
   return data;
 }
@@ -684,7 +691,7 @@ function render() {
   // Active floor
   shapesOnFloor(state.activeFloor).forEach(sh => renderShape(sh, W, false));
   // In-progress walk
-  if (state.segments.length) renderInProgress(W);
+  if (state.segments.length) { renderInProgress(W); renderEnclose(W); }
   else {
     const sp = W(getStart());
     addEl('circle', { cx: sp.x, cy: sp.y, r: 6, fill: '#2e8b57' });
@@ -1669,12 +1676,68 @@ function currentCloseOffer() {
   return { gap: ol.gap, area: polygonArea([...ol.points, ol.to]) };
 }
 
+// ----- Closing onto an existing wall (the desktop's enclosed-area offer) -----
+// When the walk ends on an existing wall, the walk plus a run of existing walls
+// back to the start may fence off an area; it is offered in the close bar and
+// highlighted yellow, with Next option cycling the runs (smallest first).
+let encCache = { sig: null, cands: [] };
+function encCandidates() {
+  if (!state.segments.length || state.segments.some(sg => sg.jump)) return [];
+  const walk = pathPoints(state.segments, getStart());
+  const start = walk[0], pen = walk[walk.length - 1];
+  if (Math.hypot(pen.x - start.x, pen.y - start.y) <= state.settings.autoCloseFeet) return [];
+  const shapes = shapesOnFloor(state.activeFloor);
+  if (!shapes.length) return [];
+  const key = p => p.x.toFixed(2) + ',' + p.y.toFixed(2);
+  const sig = [state.activeFloor, editTick, state.shapes.length, state.segments.length, key(start), key(pen)].join('|');
+  if (encCache.sig !== sig) encCache = { sig, cands: enclosureCandidates(walk, shapes) };
+  return encCache.cands;
+}
+// The live offer, or null: candidates at the current pen, minus a dismissed one.
+function currentEnclose() {
+  const cands = encCandidates();
+  if (!cands.length) return null;
+  const walk = pathPoints(state.segments, getStart());
+  const pen = walk[walk.length - 1];
+  const key = state.segments.length + '@' + pen.x.toFixed(2) + ',' + pen.y.toFixed(2);
+  if (!state.enclose || state.enclose.key !== key) state.enclose = { key, idx: 0, off: false };
+  if (state.enclose.off) return null;
+  return { cands, idx: Math.min(state.enclose.idx, cands.length - 1) };
+}
+function encloseNext() {
+  const enc = currentEnclose();
+  if (!enc) return;
+  state.enclose.idx = (enc.idx + 1) % enc.cands.length;
+  render();
+}
+function renderEnclose(W) {
+  const enc = currentEnclose();
+  if (!enc) return;
+  const c = enc.cands[enc.idx];
+  const d = c.polygon.map((p, i) => (i ? 'L' : 'M') + W(p).x + ' ' + W(p).y).join(' ') + ' Z';
+  addEl('path', { d, fill: '#ffe600', 'fill-opacity': 0.38, stroke: '#e6b800', 'stroke-width': 2, 'stroke-dasharray': '7,4' });
+  const run = c.path.map((p, i) => (i ? 'L' : 'M') + W(p).x + ' ' + W(p).y).join(' ');
+  addEl('path', { d: run, fill: 'none', stroke: '#e6b800', 'stroke-width': 5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: 0.9 });
+  const ctr = W(polygonCentroid(c.polygon));
+  addEl('text', { x: ctr.x, y: ctr.y, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 'bold', fill: '#7a5f00' }, `${Math.round(c.area)} sq ft`);
+}
+
 function renderCloseOffer() {
   const bar = $('close-offer');
   if (!bar) return;
-  const co = currentCloseOffer();
-  bar.hidden = !co;
-  if (co) $('close-offer-text').textContent = `Shape is closed — ${Math.round(co.area)} sq ft`;
+  const enc = currentEnclose();
+  const co = enc ? null : currentCloseOffer();
+  bar.hidden = !enc && !co;
+  bar.classList.toggle('enclose', !!enc);
+  $('close-offer-next').hidden = !(enc && enc.cands.length > 1);
+  if (enc) {
+    const n = enc.cands.length;
+    $('close-offer-text').textContent = `Ends on a wall — close along it: ${Math.round(enc.cands[enc.idx].area)} sq ft` + (n > 1 ? ` (option ${enc.idx + 1} of ${n})` : '');
+    $('close-offer-yes').textContent = '✓ Close';
+  } else if (co) {
+    $('close-offer-text').textContent = `Shape is closed — ${Math.round(co.area)} sq ft`;
+    $('close-offer-yes').textContent = '✓ Close shape';
+  }
 }
 
 function renderStatus() {
@@ -2199,16 +2262,19 @@ function openShapeEditor(sh) {
 // =============================================================================
 function closeShape() {
   if (!state.segments.length) { toast('Walk some segments first'); return; }
+  const enc = currentEnclose();
   const ol = walkOutline();
-  if (ol.jumps && ol.walls < 3) { toast('Need at least 3 walls (jumps don’t count)'); return; }
-  if (!ol.points) { toast('The walls (jumps left out) don’t form one outline. Walk the missing wall, or undo the jump.'); return; }
-  const outline = ol.points, start = ol.to;
   let pts;
-  if (ol.gap > state.settings.autoCloseFeet) {
+  if (enc) {
+    // The walk plus the highlighted run of existing walls back to the start.
+    pts = enc.cands[enc.idx].polygon.map(p => ({ x: p.x, y: p.y }));
+  } else if (ol.jumps && ol.walls < 3) { toast('Need at least 3 walls (jumps don’t count)'); return; }
+  else if (!ol.points) { toast('The walls (jumps left out) don’t form one outline. Walk the missing wall, or undo the jump.'); return; }
+  else if (ol.gap > state.settings.autoCloseFeet) {
     if (!confirm(`Path doesn't close (gap ${formatLength(ol.gap)}). Force-close with a straight line back to start?`)) return;
-    pts = [...outline, { ...start }];
+    pts = [...ol.points, { ...ol.to }];
   } else {
-    pts = outline.map((p, i) => i === outline.length-1 ? { ...start } : p);
+    pts = ol.points.map((p, i) => i === ol.points.length-1 ? { ...ol.to } : p);
   }
   const label = prompt('Label for this area:', `Area ${state.nextShapeId}`);
   if (label === null) return;
@@ -2227,6 +2293,8 @@ function closeShape() {
   state.shapes.push(shape);
   state.segments = [];
   state.startPoint = null;
+  state.enclose = null;
+  state.closeOffer = null;
   clearEntry();
   render();
   renderDrawer();
@@ -2901,7 +2969,11 @@ $('btn-undo').onclick = undoHistory;
 $('btn-redo').onclick = redoHistory;
 $('btn-close-shape').onclick = closeShape;
 $('close-offer-yes').onclick = closeShape;
-$('close-offer-no').onclick = () => { if (currentCloseOffer()) { state.closeOffer.off = true; renderCloseOffer(); } };
+$('close-offer-no').onclick = () => {
+  if (currentEnclose()) { state.enclose.off = true; render(); }
+  else if (currentCloseOffer()) { state.closeOffer.off = true; renderCloseOffer(); }
+};
+$('close-offer-next').onclick = encloseNext;
 // Fence mode wiring
 $('btn-fence-toggle').onclick = toggleFenceMode;
 $('btn-fence-mode').onclick = () => { enterFenceMode(); closeDrawer(); };
