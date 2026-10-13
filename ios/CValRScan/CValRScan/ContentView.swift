@@ -154,10 +154,6 @@ struct ContentView: View {
                         if scan.scanRoomStartsNewScan && scan.recoveryOffer != nil { askNewScan = true } else { scan.startRoom() }
                     }
                     .disabled(!ScanController.isSupported || scan.isBusy || scan.recoveredNeedsResume)
-                    Button("Remove last room", systemImage: "arrow.uturn.backward", role: .destructive) {
-                        scan.removeLastRoom()
-                    }
-                    .disabled(scan.rooms.isEmpty || scan.isBusy)
                     // Between rooms the AR session is still running, so a
                     // wide photo pins where the phone is, like the others.
                     if WidePhoto.isAvailable && !scan.rooms.isEmpty && !scan.loadedFromFile && !scan.recoveredNeedsResume {
@@ -172,6 +168,10 @@ struct ContentView: View {
                         }
                         .disabled(scan.isBusy || scan.isScanning)
                     }
+                    Button("Remove last room", systemImage: "arrow.uturn.backward", role: .destructive) {
+                        scan.removeLastRoom()
+                    }
+                    .disabled(scan.rooms.isEmpty || scan.isBusy)
                     Button("Go outside", systemImage: "house") { scan.isOutside = true }
                         .disabled(scan.rooms.isEmpty || scan.isBusy || scan.loadedFromFile || scan.recoveredNeedsResume || scan.anchorEnd != nil)
                     Button("Build floor plan", systemImage: "square.split.bottomrightquarter") {
@@ -348,16 +348,18 @@ struct ScanningView: View {
             VStack {
                 HStack {
                     PhotoButton(scan: scan, outside: false) { show($0, seconds: 2) }
-                    // RoomPlan has the camera while it scans: the wide photo waits.
+                    // RoomPlan has the camera while it scans, so this finishes the
+                    // room first, then opens the wide camera: one tap for both.
                     if WidePhoto.isAvailable {
                         Button {
-                            show("Wide photo: tap Done with room first, then it's on the home screen", seconds: 3)
+                            scan.finishRoom(picks: picks.picks, thenWide: true)
                         } label: {
-                            Text("0.5×").font(.headline.monospacedDigit()).padding(.vertical, 12).padding(.horizontal, 6)
+                            Text("Done + 0.5×").font(.headline).padding(.vertical, 12).padding(.horizontal, 4)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.gray)
-                        .accessibilityLabel("Wide photo, not while scanning a room")
+                        .buttonStyle(.borderedProminent)
+                        .tint(.teal)
+                        .disabled(scan.isBusy)
+                        .accessibilityLabel("Finish this room, then take wide photos")
                     }
                     Spacer()
                     Button {

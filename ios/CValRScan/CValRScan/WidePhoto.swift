@@ -211,6 +211,14 @@ final class WidePhoto: ObservableObject {
         return hypot(v.x, v.y) < 0.2 ? nil : atan2(v.y, v.x)
     }
 
+    // Degrees to turn the camera screen's labels so they read upright however
+    // the phone is held (the screen itself stays portrait), like the Camera app.
+    func labelTurn() -> Double {
+        guard let g = motion.deviceMotion?.gravity, abs(g.x) > 0.5 || abs(g.y) > 0.5 else { return 0 }
+        if abs(g.x) > abs(g.y) { return g.x < 0 ? 90 : -90 }
+        return g.y > 0 ? 180 : 0
+    }
+
     // `pose` turned about the vertical by `yaw` radians (from the motion sensor),
     // keeping its position: the pin stays put, its facing follows the phone.
     nonisolated static func turned(_ pose: simd_float4x4, by yaw: Double?) -> simd_float4x4 {
@@ -483,6 +491,13 @@ struct WideCameraView: View {
     }
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.3)) { _ in
+            content(turn: wide.labelTurn())
+        }
+    }
+
+    // Labels turn with the phone; the layout stays portrait.
+    private func content(turn: Double) -> some View {
         ZStack {
             Color.black
             WidePreview(session: wide.camera.session)
@@ -491,11 +506,14 @@ struct WideCameraView: View {
                     .font(.headline)
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(.thinMaterial, in: Capsule())
+                    .rotationEffect(.degrees(turn))
                 Text("Stay on this spot (turning is fine): tracking picks up again from here when you tap Done.")
                     .font(.footnote)
                     .multilineTextAlignment(.center)
+                    .frame(maxWidth: 300)
                     .padding(8)
                     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .rotationEffect(.degrees(turn))
                     .padding(.horizontal)
                 Spacer()
                 if status == nil, let saved = wide.lastSaved {
@@ -503,11 +521,13 @@ struct WideCameraView: View {
                         .font(.callout.weight(.semibold))
                         .padding(10)
                         .background(.thinMaterial, in: Capsule())
+                        .rotationEffect(.degrees(turn))
                 }
                 if let status {
                     HStack(spacing: 8) { ProgressView(); Text(status) }
                         .padding(10)
                         .background(.thinMaterial, in: Capsule())
+                        .rotationEffect(.degrees(turn))
                 }
                 ZStack {
                     Button { wide.shutter() } label: {
@@ -521,6 +541,7 @@ struct WideCameraView: View {
                         Button(wide.taken == 0 ? "Cancel" : "Done", role: .cancel) { wide.cancel() }
                             .buttonStyle(.bordered)
                             .tint(.white)
+                            .rotationEffect(.degrees(turn))
                             .disabled(wide.phase != .live && !isOpening)
                         Spacer()
                     }

@@ -11,6 +11,7 @@ import UIKit
 final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCaptureViewDelegate {
     @Published var rooms: [CapturedRoom] = [] { didSet { roomsChanged = true } }
     @Published var isScanning = false
+    private var wideAfterRoom = false
     @Published var isBusy = false
     @Published var message: String?
     @Published var exportURLs: [URL] = [] { didSet { shareURLs = namedCopies(of: exportURLs) } }
@@ -217,7 +218,9 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     }
 
     // `picks`: what the user tapped in the panel while the room scanned.
-    func finishRoom(picks: RoomPicks = RoomPicks()) {
+    // `thenWide`: open the wide camera as soon as the room is processed.
+    func finishRoom(picks: RoomPicks = RoomPicks(), thenWide: Bool = false) {
+        wideAfterRoom = thenWide
         picksForRoom = picks.isEmpty ? nil : picks
         isBusy = true
         setTorch(false)
@@ -226,6 +229,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     }
 
     func cancelRoom() {
+        wideAfterRoom = false
         discardNext = true
         picksForRoom = nil
         setTorch(false)
@@ -242,6 +246,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         isScanning = false
         let picks = picksForRoom
         picksForRoom = nil
+        let wide = wideAfterRoom
+        wideAfterRoom = false
         if let error {
             message = "Scan failed: \(error.localizedDescription)"
             return
@@ -256,6 +262,8 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         message = "Room \(rooms.count) added"
         refreshChecks()
         saveProgress(worldMap: true)
+        // Wide photo waits for this room's map save itself, so it can start now.
+        if wide { widePhoto.begin(outside: false) { [weak self] in self?.message = $0 } }
     }
 
     func removeLastRoom() {
