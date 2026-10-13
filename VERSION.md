@@ -1,7 +1,7 @@
 # Version
 
-**Current version:** `0.44.1`
-**Released:** 2026-10-02
+**Current version:** `0.45.1`
+**Released:** 2026-10-13
 
 CValRSketch follows [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`).
 While the project is below 1.0, the public "API" (segment syntax, JSON save format) may still change between minor versions; breaking changes will be called out in [CHANGELOG.md](./CHANGELOG.md).
@@ -12,6 +12,9 @@ While the project is below 1.0, the public "API" (segment syntax, JSON save form
 
 | Version | Date       | Type   | Headline change                                                            |
 |---------|------------|--------|----------------------------------------------------------------------------|
+| 0.45.1  | 2026-10-13 | patch  | Phone autosave (open walk included, restored on start-up); "new version ready" offer on both pages; phone header shows the full version. |
+| 0.45.0  | 2026-10-07 | minor  | Labels drag in Walk mode too; Fence can set the floor of the captured shapes. |
+| 0.44.2  | 2026-10-04 | patch  | Phone: tap the walk's start to continue from it the other way round. |
 | 0.44.1  | 2026-10-02 | patch  | Crosshair pointer for corner dragging; the magnifier follows the corner over a traced image. |
 | 0.44.0  | 2026-10-02 | minor  | **Drag corners** in Edit (snap to corners and the inch; shared corners move in both areas); **Ctrl** squares the corner up with its neighbours. |
 | 0.43.1  | 2026-10-02 | patch  | Flagged **START** pin for the walk start; reads *CLICK TO CLOSE* when tracing and the cursor is on it. Garage fill is now light grey. **Remove this wall** offers previewed options (merge with the neighbouring area, extend neighbours, join across either corner). |

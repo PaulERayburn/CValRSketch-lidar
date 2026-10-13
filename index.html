@@ -25,8 +25,8 @@
 <link rel="icon" type="image/svg+xml" href="icon.svg">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>CValR-Sketch</title>
-<script src="core.js?v=0.44.1"></script>
-<script src="dictation.js?v=0.44.1"></script>
+<script src="core.js?v=0.45.1"></script>
+<script src="dictation.js?v=0.45.1"></script>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, Segoe UI, Arial, sans-serif; background: #f0f0f0; color: #222; }
@@ -237,7 +237,7 @@
 <body>
 <header>
   <h1>CValR-Sketch</h1>
-  <span class="version-chip" id="app-version">v0.44.1</span>
+  <span class="version-chip" id="app-version">v0.45.1</span>
   <button onclick="openAbout()" title="About CValR-Sketch — licence, source, OSASI">ⓘ About</button>
   <button onclick="openWhatsNew()" title="What changed in recent releases">✨ What's new</button>
   <button onclick="openHelp()" title="Help for the tool you are using (F1 or ?) — follows you as you switch modes">❓ Help</button>
@@ -1427,7 +1427,7 @@ function renderShape(sh, W, isGhost) {
         const gap = beside ? 6 : 12;
         const anchor = beside ? (ox > 0 ? 'start' : 'end') : 'middle';
         const autoX = mx + ox*gap, autoY = my + oy*gap;
-        // Manual nudge (world feet) set by dragging the label in Edit mode.
+        // Manual nudge (world feet) set by dragging the label.
         const man = sh.dimOffsets && sh.dimOffsets[i];
         let tx = autoX + (man ? man.dx * viewTransform.scale : 0);
         let ty = autoY + (man ? man.dy * viewTransform.scale : 0);
@@ -1464,7 +1464,7 @@ function renderShape(sh, W, isGhost) {
         if (!isGhost) drawnLabelBoxes.push(dimBox(tx, ty));
         // No ghost fade on dimensions: a surfaced floor's dims should read crisply.
         addEl('text', { x: tx, y: ty, 'text-anchor':anchor, 'dominant-baseline':'middle', 'font-size':skFont(11), 'font-weight':'bold', fill: calc ? '#c2410c' : '#0066cc' }, label);
-        if (!isGhost && state.mode === 'edit') {
+        if (!isGhost && labelsDraggable()) {
           // Drag handle over the label (ui-overlay → never exported). Double-click resets.
           const tw = label.length * skFont(11) * 0.62, th = skFont(11) + 6;
           const hx = anchor === 'start' ? tx : anchor === 'end' ? tx - tw : tx - tw/2;
@@ -1513,7 +1513,7 @@ function renderShape(sh, W, isGhost) {
   }
 
   // Centroid label (shown for ghosts too, just faded). White halo keeps it legible
-  // over walls/dimension labels; draggable in Edit mode via per-shape labelOffset.
+  // over walls/dimension labels; draggable (labelsDraggable) via per-shape labelOffset.
   if (state.settings.showCentroidLabels) {
     // With interior detail showing, the middle of the plan is full of rooms and
     // doors, so the name and area go under the outline, clear of its dimensions.
@@ -1538,7 +1538,7 @@ function renderShape(sh, W, isGhost) {
     const areaFill = isGhost ? '#7c8a9c' : '#555';
     addEl('text', { x: c.x, y: c.y-7, 'text-anchor':'middle', 'font-size':nameSize, 'font-weight':'bold', fill:nameFill, ...halo, class: cls }, sh.label);
     addEl('text', { x: c.x, y: c.y+9, 'text-anchor':'middle', 'font-size':areaSize, fill:areaFill, ...halo, class: cls }, `${Math.round(area)} sq ft`);
-    if (!isGhost && state.mode === 'edit') {
+    if (!isGhost && labelsDraggable()) {
       const hw = Math.max(44, sh.label.length * 8);
       const hit = addEl('rect', { x: c.x - hw/2, y: c.y - 20, width: hw, height: 34, fill: 'rgba(0,0,0,0)', class: 'ui-overlay' });
       hit.style.cursor = 'move';
@@ -1850,6 +1850,19 @@ function fencedWhole() {
   const anns = [...perAnn.entries()].filter(([, n]) => n >= 2).map(([idx]) => idx);
   return { shapes, walk, anns };
 }
+// Reassign every shape the fence captured whole to another floor — e.g. a storey
+// drawn on the wrong level. Offsets stay put; the shapes leave this floor, so the
+// fence is cleared and the destination floor is shown.
+function moveFencedToFloor() {
+  const whole = fencedWhole();
+  const sel = document.getElementById('fence-floor');
+  if (!whole || !whole.shapes.length || !sel) return;
+  const floor = sel.value;
+  if (floor === state.activeFloor) return;
+  pushUndo();
+  whole.shapes.forEach(id => { const sh = state.shapes.find(x => x.id === id); if (sh) sh.floor = floor; });
+  setActiveFloor(floor);
+}
 function deleteFenced() {
   const whole = fencedWhole();
   if (!whole) return;
@@ -1877,7 +1890,7 @@ function sidebarFence() {
   const intro = state.fenceDraw
     ? 'Release to capture vertices inside the rectangle.'
     : (sel
-        ? `Selected: <b>${counts}</b>. Walls with both endpoints captured will translate; walls crossing the fence stretch. Type an offset and press <b>Move</b>. <b>Delete fenced</b> (or the Delete key) removes whatever the fence captured <i>whole</i>: shapes with every vertex inside, an unfinished walk with all its points inside, offsets with both ends inside.`
+        ? `Selected: <b>${counts}</b>. Walls with both endpoints captured will translate; walls crossing the fence stretch. Type an offset and press <b>Move</b>. <b>Delete fenced</b> (or the Delete key) removes whatever the fence captured <i>whole</i>: shapes with every vertex inside, an unfinished walk with all its points inside, offsets with both ends inside. <b>Set floor</b> moves the shapes captured whole to another floor.`
         : 'Click and drag on the canvas to draw a rectangular fence. Vertices fully inside the rectangle will be captured — then move them by a typed offset, or delete what was captured whole.');
   const whole = sel ? fencedWhole() : null;
   const delLabel = whole ? [whole.shapes.length ? `${whole.shapes.length} shape${whole.shapes.length === 1 ? '' : 's'}` : '', whole.walk ? 'the unfinished walk' : '', whole.anns.length ? `${whole.anns.length} offset${whole.anns.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ') : '';
@@ -1890,6 +1903,13 @@ function sidebarFence() {
       <button data-act="deleteFenced" class="danger" ${delLabel ? '' : 'disabled'} title="${delLabel ? 'Delete ' + delLabel : 'Nothing is captured whole — enlarge the fence to cover every vertex of what you want gone'}">Delete fenced${delLabel ? ' (' + delLabel + ')' : ''}</button>
       <button data-act="clearFenceSelection">Clear selection</button>
     </div>
+    ${whole && whole.shapes.length ? `
+    <div class="input-row" style="margin-top:8px;">
+      <select id="fence-floor" title="Floor (level) for every shape captured whole">
+        ${state.floors.map(f => `<option value="${f}"${f === state.activeFloor ? ' selected' : ''}>${f}</option>`).join('')}
+      </select>
+      <button data-act="moveFencedToFloor">Set floor (${whole.shapes.length} shape${whole.shapes.length === 1 ? '' : 's'})</button>
+    </div>` : ''}
   ` : '';
   return `
     <div class="section">
@@ -2143,7 +2163,16 @@ function labelDragUp() {
   state.labelDrag = null;
 }
 
-// Drag a shape's area/centroid label to a custom offset (Edit mode). Fixes labels
+// Area and dimension labels can be dragged in Edit mode, and in Walk mode between
+// walks — the label is usually noticed in the wrong spot right after closing an
+// area. Not mid-walk, nor while tracing, measuring or picking a move, where a
+// press on the canvas means something else.
+function labelsDraggable() {
+  if (state.mode === 'edit') return true;
+  return state.mode === 'walk' && state.segments.length === 0 && !traceActive() && !state.offsetPick && !state.shapeMovePick;
+}
+
+// Drag a shape's area/centroid label to a custom offset. Fixes labels
 // that land in a concave notch or collide with dimension text.
 function startShapeLabelDrag(ev, shapeId) {
   if (ev.button !== 0) return;
@@ -2163,7 +2192,9 @@ function shapeLabelDragMove(e) {
   if (!state.shapeLabelDrag.moved) { pushUndo(); state.shapeLabelDrag.moved = true; }
   const base = polygonCentroid(sh.points);
   const w = screenToWorld(e.clientX, e.clientY);
-  sh.labelOffset = { dx: (w.x - state.shapeLabelDrag.grabX) - base.x, dy: (w.y - state.shapeLabelDrag.grabY) - base.y };
+  const dx = (w.x - state.shapeLabelDrag.grabX) - base.x, dy = (w.y - state.shapeLabelDrag.grabY) - base.y;
+  if (!isFinite(dx) || !isFinite(dy)) return;   // bad pointer sample (e.g. zero-size layout) — never persist NaN
+  sh.labelOffset = { dx, dy };
   render();
 }
 // ----- Drag a corner with the mouse (Edit mode) ---------------------------------
@@ -2261,6 +2292,7 @@ svg.addEventListener('click', (e) => { if (vertexDragJustEnded()) { e.stopImmedi
 
 function shapeLabelDragUp() {
   if (!state.shapeLabelDrag) return;
+  if (state.shapeLabelDrag.moved) vertexDragEnded = Date.now();
   state.shapeLabelDrag = null; state.dimLabelDrag = null; state.shapeMovePick = null;
 }
 
@@ -2291,7 +2323,11 @@ function dimLabelDragMove(e) {
   sh.dimOffsets = { ...(sh.dimOffsets || {}), [d.idx]: { dx, dy } };
   render();
 }
-function dimLabelDragUp() { if (state.dimLabelDrag) state.dimLabelDrag = null; }
+function dimLabelDragUp() {
+  if (!state.dimLabelDrag) return;
+  if (state.dimLabelDrag.moved) vertexDragEnded = Date.now();
+  state.dimLabelDrag = null;
+}
 function resetDimLabel(shapeId, idx) {
   const sh = state.shapes.find(s => s.id === shapeId);
   if (!sh || !sh.dimOffsets || !sh.dimOffsets[idx]) return;
@@ -3225,6 +3261,7 @@ function sidebarAction(e) {
     case 'undo': undoHistory(); break;
     case 'closeShape': closeShape(); break;
     case 'deleteFenced': deleteFenced(); break;
+    case 'moveFencedToFloor': moveFencedToFloor(); break;
     case 'encloseAccept': closeShape(); break;
     case 'encloseNext': encloseNext(); break;
     case 'encloseDismiss': encloseDismiss(); break;
@@ -4767,6 +4804,9 @@ function exportFilename(ext) {
 // included, and exports PNG/SVG from there. Page size is chosen here at export time.
 // Short, hand-kept list of recent releases (newest first). CHANGELOG.md has the detail.
 const WHATS_NEW = [
+  ['0.45.1', '2026-10-13', 'The phone now keeps your sketch as you draw, open walk included, and brings it back after a reload or an update. When a newer version arrives while an older copy is showing (a slow connection), both pages offer to reload, and your sketch is kept.'],
+  ['0.45.0', '2026-10-07', 'Area and dimension labels can now be dragged in Walk mode too (between walks), not only in Edit mode — so a label that lands in the wrong spot after closing an area can be moved straight away. In Fence mode, Set floor moves every shape the fence captured whole to another floor. On the phone, a walk continued from its start now describes its diagonal walls correctly.'],
+  ['0.44.2', '2026-10-04', 'On the phone, tap the green start of an open walk to carry on from there, the other way round, when you can\'t walk back to the start. Tap it again to switch back.'],
   ['0.44.1', '2026-10-02', 'Dragging a corner now uses a crosshair pointer instead of the four-way arrow, so you can see exactly where it lands, and over a traced image the magnifier follows the corner while you drag.'],
   ['0.44.0', '2026-10-02', 'Drag corners with the mouse in Edit: a corner follows the pointer, snapping to other corners and to the inch, and a corner shared with another area moves in both. Hold Ctrl while dragging to square it up with its neighbours, so walls that are nearly plumb or level become exactly plumb or level.'],
   ['0.43.1', '2026-10-02', 'The start of a walk is now a flagged START pin, easy to find when it is time to close. While clicking corners on an image, it grows and reads CLICK TO CLOSE when the cursor is on it. Garages are now a light grey, so they no longer look like living area. Remove this wall (Edit) now lets you choose how the outline closes, with a preview: merge with the area on the other side (undo a split), run the neighbouring walls on until they meet, or join across either corner. Tab cycles, Enter applies.'],
@@ -6462,7 +6502,29 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW registration failed:', err));
   });
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const d = e.data || {};
+    const mine = (document.getElementById('app-version').textContent || '').replace(/^v/, '');
+    if (d.type === 'page-update' && d.version && d.version !== mine) showUpdateBanner(d.version);
+  });
 }
+
+// A newer release reached this device while an older copy was showing (a slow
+// connection makes the service worker fall back to the cached page): the
+// service worker says so once the new page has downloaded, and we offer it.
+function showUpdateBanner(version) {
+  if (document.getElementById('update-banner')) return;
+  const b = document.createElement('div');
+  b.id = 'update-banner';
+  b.style.cssText = 'position:fixed;left:8px;right:8px;top:8px;z-index:10000;background:#2b6cb0;color:#fff;padding:10px 12px;border-radius:10px;display:flex;gap:10px;align-items:center;font:14px system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35)';
+  b.innerHTML = `<span style="flex:1">Version ${escapeHtml(version)} is ready. Your sketch is kept.</span>`
+    + '<button id="update-reload" style="background:#fff;color:#2b6cb0;border:0;border-radius:8px;padding:6px 12px;font-weight:600">Reload</button>'
+    + '<button id="update-dismiss" aria-label="Not now" style="background:none;border:0;color:#fff;font-size:18px">✕</button>';
+  document.body.appendChild(b);
+  document.getElementById('update-reload').onclick = () => { writeAutosave(); location.reload(); };
+  document.getElementById('update-dismiss').onclick = () => b.remove();
+}
+
 </script>
 </body>
 </html>
