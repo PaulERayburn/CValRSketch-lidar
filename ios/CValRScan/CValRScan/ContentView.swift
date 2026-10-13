@@ -363,7 +363,7 @@ struct ScanningView: View {
                         Button {
                             scan.finishRoom(picks: picks.picks, thenWide: true)
                         } label: {
-                            Text("Done + 0.5×").font(.headline).padding(.vertical, 12).padding(.horizontal, 4)
+                            Label("Done + Wide", systemImage: "camera.aperture").font(.headline).padding(.vertical, 12).padding(.horizontal, 2)
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.teal)

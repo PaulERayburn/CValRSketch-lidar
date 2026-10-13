@@ -446,7 +446,7 @@ struct WidePhotoButton: View {
             Button {
                 wide.begin(outside: outside, show: show)
             } label: {
-                Text("0.5×").font(.headline.monospacedDigit()).padding(.vertical, 12).padding(.horizontal, 6)
+                Label("Wide", systemImage: "camera.aperture").font(.headline).padding(.vertical, 12).padding(.horizontal, 2)
             }
             .buttonStyle(.borderedProminent)
             .tint(.teal)
