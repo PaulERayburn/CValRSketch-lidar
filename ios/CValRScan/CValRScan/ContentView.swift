@@ -177,10 +177,16 @@ struct ContentView: View {
                     Button("Build floor plan", systemImage: "square.split.bottomrightquarter") {
                         Task {
                             await scan.export()
-                            // The importer needs a tape reading to check the scan against.
-                            if scan.structure != nil && (!scan.hasReadings || !scan.planGeometry.openGaps.isEmpty
-                                                        || !scan.unscannedDoors.isEmpty || !scan.unscannedAreas.isEmpty) {
+                            guard scan.structure != nil else { return }
+                            // The importer needs a tape reading to check the scan against:
+                            // ask first. Either way the plan opens next, as it's what
+                            // comes after building.
+                            if !scan.hasReadings || !scan.planGeometry.openGaps.isEmpty
+                                || !scan.unscannedDoors.isEmpty || !scan.unscannedAreas.isEmpty {
                                 askReading = true
+                            } else {
+                                scan.message = "Opening Measure & edit plan"
+                                measuring = true
                             }
                         }
                     }
@@ -286,7 +292,10 @@ struct ContentView: View {
             }
             .alert(!scan.hasReadings ? "Enter a laser reading" : "Walls missing", isPresented: $askReading) {
                 Button("Measure now") { measuring = true }
-                Button("Later", role: .cancel) {}
+                Button("Later", role: .cancel) {
+                    scan.message = "Opening Measure & edit plan"
+                    measuring = true
+                }
             } message: {
                 Text(buildAdvice)
             }
