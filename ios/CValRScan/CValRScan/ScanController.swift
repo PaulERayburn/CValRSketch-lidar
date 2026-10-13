@@ -385,6 +385,17 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         return (c, bottom)
     }
 
+    // A scanned room's extent across the floor (world x, z), from its wall ends.
+    nonisolated static func footprint(_ room: CapturedRoom) -> (lo: SIMD2<Float>, hi: SIMD2<Float>)? {
+        var lo = SIMD2<Float>(.infinity, .infinity), hi = SIMD2<Float>(-.infinity, -.infinity)
+        for w in room.walls {
+            let c = SIMD2(w.transform.columns.3.x, w.transform.columns.3.z)
+            let u = SIMD2(w.transform.columns.0.x, w.transform.columns.0.z) * (w.dimensions.x / 2)
+            for e in [c - u, c + u] { lo = simd_min(lo, e); hi = simd_max(hi, e) }
+        }
+        return lo.x.isFinite && hi.x.isFinite ? (lo, hi) : nil
+    }
+
     // Build floor plan: the picks made while each room scanned go on the
     // plan's room there: the scan's own name for it (renamed, if a name was
     // picked), else a new name at the room's middle. Not an Undo step.
@@ -398,9 +409,24 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
                 let c = s.sections[i].center
                 return simd_distance(SIMD2(Double(c.x), Double(c.z)), p.center)
             }
-            let near = s.sections.indices.filter { s.sections[$0].story == story && !used.contains($0) }
-                .min { dist($0) < dist($1) }.flatMap { dist($0) < 1.5 ? $0 : nil }
             let picked = (p.picks.name ?? "").isEmpty ? nil : p.picks.name
+            // The scan's own name for this room is one whose centre lies inside
+            // the room scanned (a big living room's can sit well off its
+            // middle), else one within 1.5 m. Of those, one already called what
+            // was picked, then the nearest.
+            let box = rooms.first { $0.identifier == p.room }.flatMap(Self.footprint)
+            func inside(_ i: Int) -> Bool {
+                guard let box else { return false }
+                let c = s.sections[i].center
+                return c.x >= box.lo.x - 0.3 && c.x <= box.hi.x + 0.3 && c.z >= box.lo.y - 0.3 && c.z <= box.hi.y + 0.3
+            }
+            func sameName(_ i: Int) -> Bool {
+                guard let picked else { return false }
+                return Self.roomName(String(describing: s.sections[i].label)).lowercased() == picked.lowercased()
+            }
+            let near = s.sections.indices
+                .filter { s.sections[$0].story == story && !used.contains($0) && (inside($0) || dist($0) < 1.5) }
+                .min { (sameName($0) ? 0 : 1, dist($0)) < (sameName($1) ? 0 : 1, dist($1)) }
             guard let i = near else {
                 labels.append(RoomLabel(story: story, point: p.center, name: picked ?? "Room", replaces: nil, finishes: p.picks.finishes))
                 continue
