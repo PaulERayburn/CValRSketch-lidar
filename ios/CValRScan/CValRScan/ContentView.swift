@@ -363,7 +363,13 @@ struct ScanningView: View {
                         Button {
                             scan.finishRoom(picks: picks.picks, thenWide: true)
                         } label: {
-                            Label("Done + Wide", systemImage: "camera.aperture").font(.headline).padding(.vertical, 12).padding(.horizontal, 2)
+                            // Compact, the photo button's size: a wide label covered the
+                            // status message behind it.
+                            VStack(spacing: 2) {
+                                Image(systemName: "camera.aperture").font(.title3)
+                                Text("Done + Wide").font(.caption2.weight(.semibold))
+                            }
+                            .padding(.vertical, 6)
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.teal)
