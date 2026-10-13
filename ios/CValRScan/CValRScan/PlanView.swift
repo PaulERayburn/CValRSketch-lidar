@@ -1479,6 +1479,7 @@ struct MeasureSheet: View {
         let run = onlyThis ? WallRun(walls: [wall], start: wall.a, end: wall.b, startWall: nil, endWall: nil,
                                      sign: place.sign, outside: place.outside) : joined
         let estimate = geo.estimateInches(run)
+        let other = geo.otherSide(run, story: wall.story, existing: existing)
         let parsed = LengthParser.inches(from: text)
         let sum = LengthParser.reading(from: text).flatMap { LengthParser.describe($0.parts) }
         let moving = resolveMoving(run)
@@ -1496,10 +1497,11 @@ struct MeasureSheet: View {
                 } header: {
                     Text("Where were you standing?")
                 } footer: {
-                    Text(run.walls.count > 1
+                    Text((run.walls.count > 1
                          ? "This face spans \(run.walls.count) scanned pieces in a line, shown in blue. Laser from one end of the blue stretch to the other, or turn on Only the piece I tapped."
                          : onlyThis ? "Laser the blue piece only, end to end."
                          : "Laser along the blue wall, face to face, from one end to the other.")
+                         + turnAwayHint(run))
                 }
                 Section("Your reading") {
                     HStack {
@@ -1507,25 +1509,39 @@ struct MeasureSheet: View {
                             .keyboardType(.numbersAndPunctuation)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
+                            .laserInput($text)
                         Button("Paste") { text = UIPasteboard.general.string ?? text }
                             .buttonStyle(.bordered)
                     }
+                    LaserRow()
                     if text.isEmpty {
                         Button("Use \(Feet.text(estimate)) and edit") { text = "\(estimate / 12) \(estimate % 12)" }
                     }
+                    ReadingClearRow(text: $text)
                     if let parsed {
-                        let diff = parsed - estimate
+                        let against = other?.label ?? "scan"
+                        let diff = parsed - (other?.expect ?? estimate)
                         HStack {
                             Text("= \(Feet.text(parsed))").font(.title2.bold())
                             Spacer()
-                            Text(diff == 0 ? "matches scan" : "\(diff > 0 ? "+" : "−")\(abs(diff))″ vs scan")
+                            Text(diff == 0 ? "matches \(against)" : "\(diff > 0 ? "+" : "−")\(abs(diff))″ vs \(against)")
                                 .foregroundStyle(abs(diff) > 2 ? .orange : .secondary)
                         }
                         if let sum {
                             Text(sum).font(.footnote).foregroundStyle(.secondary)
                         }
+                        if let other {
+                            Text("Checked against your \(other.label) of this stretch, allowing for the wall at each corner. Scan: \(Feet.text(estimate)).")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                         if abs(diff) > 2 {
-                            Text("More than 2″ off. Check it's the blue stretch and the right room.")
+                            Text(other == nil ? "More than 2″ off. Check it's the blue stretch and the right room."
+                                 : "More than 2″ off your \(other!.label). Retake one of them.")
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                        }
+                        if let existing, (existing.face == .outside) != place.outside {
+                            Text("Saving replaces this wall's \(existing.face.rawValue) reading. To keep both, enter the outside one with Corners.")
                                 .font(.footnote)
                                 .foregroundStyle(.orange)
                         }
@@ -1593,6 +1609,16 @@ struct MeasureSheet: View {
         }
     }
 
+    // At an end that turns away from where you stand there is no face to aim
+    // at: the reading runs to the corner edge, in line with that wall.
+    private func turnAwayHint(_ run: WallRun) -> String {
+        guard !run.outside else { return "" }
+        let ends = [true, false].filter { geo.turnsAway(run, start: $0) }.map { geo.endName(run, start: $0) }
+        guard !ends.isEmpty else { return "" }
+        let which = ends.count == 2 ? "Both ends turn" : "The \(ends[0]) turns"
+        return " \(which) away from you: measure to the corner edge, in line with the wall there (hold a square or a card on the edge as the target)."
+    }
+
     private func resolveMoving(_ run: WallRun) -> [UUID] {
         switch move {
         case .auto: return geo.autoMoving(run, measured: measured)
@@ -1654,7 +1680,7 @@ struct SpanSheet: View {
                     Text("Between the two blue corners")
                 } footer: {
                     Text(face == .outside
-                         ? "Outside: siding corner to siding corner, along the wall. The estimate adds a \(Int(Assume.exteriorInches))″ wall at each outside corner; an inside corner (the step in an L) adds nothing."
+                         ? "Outside: siding corner to siding corner, along the wall. The estimate adds a \(Int(Assume.exteriorInches))″ wall at each outside corner and takes one off at an inside corner (the step in an L); at a jog they cancel."
                          : "Inside: face to face, along the wall.")
                 }
                 Section {
@@ -1663,9 +1689,12 @@ struct SpanSheet: View {
                             .keyboardType(.numbersAndPunctuation)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
+                            .laserInput($text)
                         Button("Paste") { text = UIPasteboard.general.string ?? text }
                             .buttonStyle(.bordered)
                     }
+                    LaserRow()
+                    ReadingClearRow(text: $text)
                     if let reading {
                         let diff = reading.total - estimate
                         HStack {
