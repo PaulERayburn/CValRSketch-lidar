@@ -211,6 +211,18 @@ struct PlanView: View {
                             }
                             return
                         }
+                        // A corner reading's green label opens it, to correct or remove:
+                        // otherwise only re-tapping its two corners in Corners did.
+                        if !cornerMode, let span = geo.spans.filter({ $0.reading.story == shown }).first(where: { s in
+                            let (a, end, side) = Self.spanLine(s.a, s.b)
+                            let pa = view.map(a), pb = view.map(end)
+                            let label = CGPoint(x: (pa.x + pb.x) / 2 + side.dx * 18, y: (pa.y + pb.y) / 2 + side.dy * 18)
+                            return hypot(label.x - tap.location.x, label.y - tap.location.y) < 28
+                        }) {
+                            UISelectionFeedbackGenerator().selectionChanged()
+                            spanDraft = SpanDraft(a: span.a, b: span.b, story: shown, existing: span.reading)
+                            return
+                        }
                         if editMode && tool == .walls && addingWall {
                             addWallTap(view.unmap(tap.location), geo: geo, story: shown, view: view)
                             return
