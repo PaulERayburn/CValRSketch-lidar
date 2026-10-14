@@ -894,6 +894,26 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
     // through the walk they were taken, fitted with a straight line (metres,
     // plan x/z) spanning the points.
     struct XY { var x: Double; var y: Double }
+    // Each outside mark on its own (world x, z, drift-corrected): where it is and,
+    // for LiDAR marks, the wall direction it measured (a corner: both faces).
+    // The plan draws these rather than lines joining one mark to the next,
+    // which ran straight across corners when marks weren't taken in order.
+    var exteriorMarks: [(at: XY, dirs: [XY], corner: Bool)] {
+        let steps = walkSteps
+        let total = max(steps.total, 1)
+        var out: [(at: XY, dirs: [XY], corner: Bool)] = []
+        for (wall, ks) in zip(exteriorWalls, steps.each) {
+            for (p, k) in zip(wall, ks) {
+                let q = p.point - (drift ?? .zero) * (Float(k) / Float(total + 1))
+                let at = XY(x: Double(q.x), y: Double(q.z))
+                if p.isCorner, out.contains(where: { $0.corner && abs($0.at.x - at.x) < 1e-6 && abs($0.at.y - at.y) < 1e-6 }) { continue }
+                let dirs = (p.isCorner ? (p.dirs ?? []) : (p.dir.map { [$0] } ?? [])).map { XY(x: $0.x, y: $0.y) }
+                out.append((at, dirs, p.isCorner))
+            }
+        }
+        return out
+    }
+
     var exteriorPlanLines: [(a: XY, b: XY)] {
         let steps = walkSteps
         let total = max(steps.total, 1)

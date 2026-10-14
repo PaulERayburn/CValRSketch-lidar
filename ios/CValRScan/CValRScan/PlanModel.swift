@@ -87,6 +87,7 @@ struct PlanGeometry {
     var stairPaths: [(story: Int, points: [CGPoint], label: String)] = []
     var sections: [(story: Int, label: String, center: CGPoint)] = []
     var exteriorLines: [(a: CGPoint, b: CGPoint)] = []
+    var exteriorMarks: [(at: CGPoint, dirs: [CGVector], corner: Bool)] = []
     var gaps: [PlanGap] = []
     var rooms: [(story: Int, name: String, center: CGPoint, source: RoomSource)] = []
     var addedOpenings: [(index: Int, story: Int, a: CGPoint, b: CGPoint)] = []
@@ -437,6 +438,15 @@ extension ScanController {
         }
         g.exteriorLines = exteriorPlanLines.map { line in
             (rot([line.a.x, line.a.y]), rot([line.b.x, line.b.y]))
+        }
+        g.exteriorMarks = exteriorMarks.map { m in
+            let a = rot([m.at.x, m.at.y])
+            let dirs = m.dirs.map { d -> CGVector in
+                let b = rot([m.at.x + d.x, m.at.y + d.y])
+                let len = max(hypot(b.x - a.x, b.y - a.y), 0.0001)
+                return CGVector(dx: (b.x - a.x) / len, dy: (b.y - a.y) / len)
+            }
+            return (a, dirs, m.corner)
         }
         addHiddenWalls(to: &g, structure: structure)
         let drawing = StairDrawing(chains: addedStairs, structure: structure, edits: stairEdits)

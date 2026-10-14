@@ -961,7 +961,7 @@ struct PlanView: View {
             Label("≈ interior", systemImage: "line.diagonal").foregroundStyle(.gray)
             Label("reading", systemImage: "checkmark").foregroundStyle(.green)
             if !scan.exteriorWalls.isEmpty {
-                Label("outside walk", systemImage: "line.diagonal").foregroundStyle(.orange)
+                Label("outside marks", systemImage: "smallcircle.filled.circle").foregroundStyle(.orange)
             }
             if !scan.planGeometry.openGaps.isEmpty {
                 Label("missing", systemImage: "line.diagonal").foregroundStyle(.red)
@@ -1160,11 +1160,27 @@ struct PlanView: View {
                 let c = view.map(w.point)
                 ctx.fill(Path(ellipseIn: CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8)), with: .color(.brown))
             }
-            for l in geo.exteriorLines {
+            // Outside marks, each on its own: a LiDAR point as a 3 ft tick along
+            // the wall it measured, a corner as an L along its two faces, an
+            // older mark (no direction) as a dot. Not joined mark to mark.
+            for m in geo.exteriorMarks {
+                let c = view.map(m.at)
+                if m.dirs.isEmpty {
+                    ctx.fill(Path(ellipseIn: CGRect(x: c.x - 3.5, y: c.y - 3.5, width: 7, height: 7)), with: .color(.orange))
+                    continue
+                }
                 var p = Path()
-                p.move(to: view.map(l.a))
-                p.addLine(to: view.map(l.b))
-                ctx.stroke(p, with: .color(.orange), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                if m.corner {
+                    for d in m.dirs {
+                        p.move(to: c)
+                        p.addLine(to: view.map(CGPoint(x: m.at.x + d.dx * 2, y: m.at.y + d.dy * 2)))
+                    }
+                } else if let d = m.dirs.first {
+                    p.move(to: view.map(CGPoint(x: m.at.x - d.dx * 1.5, y: m.at.y - d.dy * 1.5)))
+                    p.addLine(to: view.map(CGPoint(x: m.at.x + d.dx * 1.5, y: m.at.y + d.dy * 1.5)))
+                }
+                ctx.stroke(p, with: .color(.orange), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                ctx.fill(Path(ellipseIn: CGRect(x: c.x - 3, y: c.y - 3, width: 6, height: 6)), with: .color(.orange))
             }
             // Where each wall stops, so two walls in line read as two.
             for w in walls {
