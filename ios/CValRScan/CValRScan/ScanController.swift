@@ -784,7 +784,7 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
         }
         let mark = ExteriorPoint(point: SIMD3(Float(c.point.x), Float(c.point.y), Float(c.point.z)), kind: "corner",
                                  method: "lidar-corner", distance: c.distance, angle: c.angle, rms: c.rms, n: c.count,
-                                 camera: outsideDepth.cameraPlan, dirs: orderFaces(c))
+                                 camera: outsideDepth.cameraPlan, dirs: orderFaces(at: SIMD2(c.point.x, c.point.z), c.dirs))
         if exteriorWalls.isEmpty { exteriorWalls.append([]) }
         exteriorWalls[exteriorWalls.count - 1].append(mark)
         writeFiles()
@@ -793,16 +793,68 @@ final class ScanController: NSObject, ObservableObject, @preconcurrency RoomCapt
 
     // The face the current wall's points lie along is the wall just walked,
     // so it goes first. With nothing marked on this wall yet, the face on the
-    // screen's left is taken as walked: the importer doesn't rely on the order.
-    private func orderFaces(_ c: DepthMath.Corner) -> [SIMD2<Double>] {
-        let c2 = SIMD2(c.point.x, c.point.z)
+    // screen's left is taken as walked (or, touched, the first wall touched):
+    // the importer doesn't rely on the order.
+    private func orderFaces(at c2: SIMD2<Double>, _ dirs: [SIMD2<Double>], touched: Bool = false) -> [SIMD2<Double>] {
+        guard dirs.count == 2 else { return dirs }
         let walked = (exteriorWalls.last ?? []).map { SIMD2(Double($0.point.x), Double($0.point.z)) }
             .filter { simd_distance($0, c2) > 0.15 }
         func off(_ d: SIMD2<Double>) -> Double { walked.reduce(0) { $0 + abs(d.x * ($1.y - c2.y) - d.y * ($1.x - c2.x)) } }
-        if !walked.isEmpty { return off(c.dirs[0]) <= off(c.dirs[1]) ? c.dirs : c.dirs.reversed() }
-        guard let f = outsideDepth.forwardPlan else { return c.dirs }
+        if !walked.isEmpty { return off(dirs[0]) <= off(dirs[1]) ? dirs : dirs.reversed() }
+        guard !touched, let f = outsideDepth.forwardPlan else { return dirs }
         let right = SIMD2(-f.y, f.x)
-        return simd_dot(c.dirs[0], right) <= simd_dot(c.dirs[1], right) ? c.dirs : c.dirs.reversed()
+        return simd_dot(dirs[0], right) <= simd_dot(dirs[1], right) ? dirs : dirs.reversed()
+    }
+
+    // Touch mark (TouchMath): the phone flat on the siding, its camera end at
+    // a corner that can't be aimed at. Pressed on a wall the camera sees
+    // nothing and ARKit soon runs on the motion sensors alone, so only a pose
+    // that is fresh, fully tracked and still is taken. A touch on the other
+    // wall of the same corner, right after, turns the two into one corner.
+    func markTouch() -> ExteriorMark {
+        let lost = "Tracking lost — press as soon as the phone is still on the wall"
+        guard let frame = arSession.currentFrame else { return .refused(lost) }
+        // Copied out, so the frame isn't held.
+        let t = frame.camera.transform, time = frame.timestamp
+        guard case .normal = frame.camera.trackingState,
+              ProcessInfo.processInfo.systemUptime - time <= 0.3 else { return .refused(lost) }
+        let cam = simd_double4x4(SIMD4<Double>(t.columns.0), SIMD4<Double>(t.columns.1),
+                                 SIMD4<Double>(t.columns.2), SIMD4<Double>(t.columns.3))
+        let at = SIMD3(cam.columns.3.x, cam.columns.3.y, cam.columns.3.z)
+        guard let moved = outsideDepth.moved(over: 0.5, before: time, to: at), moved <= 0.05 else {
+            return .refused("Hold the phone still on the wall, then press")
+        }
+        let touch: TouchMath.Touch
+        switch TouchMath.touch(camera: cam, offsets: TouchMath.offsets(model: TouchMath.modelIdentifier)) {
+        case .success(let k): touch = k
+        case .failure(.notUpright): return .refused("Hold the phone flat on the siding, back to the wall")
+        case .failure(.notSideways): return .refused("Hold the phone sideways and level, camera end at the corner")
+        }
+        let camera = SIMD2(at.x, at.z)
+        if let last = exteriorWalls.last?.last, last.method == "touch", let d = last.dir {
+            let first = TouchMath.Touch(point: SIMD3<Double>(last.point), dir: d, normal: .zero)
+            switch TouchMath.corner(first, touch) {
+            case .success(let c):
+                // The first touch becomes this corner.
+                exteriorWalls[exteriorWalls.count - 1].removeLast()
+                let mark = ExteriorPoint(point: SIMD3(Float(c.point.x), Float(c.point.y), Float(c.point.z)), kind: "corner",
+                                         method: "touch-corner", angle: c.angle, rms: c.rms, camera: camera,
+                                         dirs: orderFaces(at: SIMD2(c.point.x, c.point.z), c.dirs, touched: true))
+                exteriorWalls[exteriorWalls.count - 1].append(mark)
+                writeFiles()
+                return .marked(mark)
+            case .failure(.sameWall):
+                return .refused("Same wall as the last touch — now touch the other wall of the corner")
+            case .failure(.apart):
+                break
+            }
+        }
+        let mark = ExteriorPoint(point: SIMD3(Float(touch.point.x), Float(touch.point.y), Float(touch.point.z)),
+                                 method: "touch", camera: camera, dir: touch.dir)
+        if exteriorWalls.isEmpty { exteriorWalls.append([]) }
+        exteriorWalls[exteriorWalls.count - 1].append(mark)
+        writeFiles()
+        return .marked(mark)
     }
 
     // A wall holding only the corner that started it: nothing walked on it yet.

@@ -17,6 +17,11 @@ struct ExteriorView: View {
     @State private var corner: (splits: [Int], next: Bool, note: String?)?
     // A start-spot check that landed far from the start spot, waiting for the user.
     @State private var farEnd: (point: SIMD3<Float>, feet: Double)?
+    // Touch: the volume button marks where the phone itself lies, for a
+    // corner that can't be aimed at (TouchMath). Explained once.
+    @State private var touchMode = false
+    @State private var touchHelp = false
+    @AppStorage("touchExplained") private var touchExplained = false
 
     private var pointCount: Int { scan.exteriorWalls.reduce(0) { $0 + $1.count } }
     private var wallNumber: Int { max(scan.exteriorWalls.count, 1) }
@@ -41,11 +46,18 @@ struct ExteriorView: View {
                 .foregroundStyle(.white)
                 .shadow(color: .black, radius: 2)
                 .allowsHitTesting(false)
-            if walking && depth.running { readout.offset(y: 44).allowsHitTesting(false) }
+            if walking && depth.running {
+                VStack(spacing: 6) {
+                    readout
+                    if touchMode { touchStatus }
+                }
+                .offset(y: touchMode ? 62 : 44)
+                .allowsHitTesting(false)
+            }
             // A selfie-stick remote (or either volume button) marks a point;
             // not while the wide camera is up (the AR session is paused).
-            if walking && corner == nil && farEnd == nil && !wide.active {
-                VolumeButtonCatcher { markPoint() }
+            if walking && corner == nil && farEnd == nil && !wide.active && !touchHelp {
+                VolumeButtonCatcher { if touchMode { markTouch() } else { markPoint() } }
                     .frame(width: 1, height: 1)
                     .allowsHitTesting(false)
             }
@@ -85,6 +97,7 @@ struct ExteriorView: View {
             .padding(.top)
             WideCameraHost(wide: wide, outside: true)
         }
+        .sheet(isPresented: $touchHelp) { touchSheet }
         .onAppear { scan.startOutsideWalk() }
         .onDisappear { scan.stopOutsideWalk() }
         .alert("Wall \(wallNumber) turns a corner",
@@ -197,6 +210,65 @@ struct ExteriorView: View {
         }
     }
 
+    private func markTouch() {
+        switch scan.markTouch() {
+        case .marked(let p):
+            MarkFeedback.good()
+            if p.isCorner {
+                checkCorner(next: true, note: String(format: "Corner marked by touch, %.0f°", p.angle ?? 0))
+            } else {
+                show("Touch 1 of 2 — now the other wall")
+            }
+        case .refused(let why):
+            MarkFeedback.refused()
+            show(why)
+        }
+    }
+
+    // Touch needs the phone's camera position in its body (TouchMath), known for iPhones only.
+    private var touchAvailable: Bool { depth.running && UIDevice.current.userInterfaceIdiom == .phone }
+
+    private func toggleTouch() {
+        touchMode.toggle()
+        if touchMode && !touchExplained {
+            touchExplained = true
+            touchHelp = true
+        }
+    }
+
+    private var touchStatus: some View {
+        let last = scan.exteriorWalls.last?.last
+        let text = switch last?.method ?? "" {
+        case "touch": "Touch: 1 of 2 at this corner — now the other wall"
+        case "touch-corner": "Touch: corner marked — on to the next"
+        default: "Touch: 0 of 2 — phone flat on one wall, camera end at the corner"
+        }
+        return Text(text)
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(.indigo.opacity(0.85), in: Capsule())
+    }
+
+    private var touchSheet: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "hand.point.up.left").font(.largeTitle)
+            Text("Touch a corner").font(.title2.bold())
+            Text("For a corner you can't see or aim at. Hold the phone flat on the siding, sideways, back to the wall, "
+                 + "with its camera end right at the corner. Hold it still and press volume up. "
+                 + "Then do the same on the other wall of the corner.")
+            Text("Two touches make the corner. Press as soon as the phone is still: against the wall the camera sees nothing, "
+                 + "and the phone only trusts its position for a moment. A low beep means try again.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button("Got it") { touchHelp = false }.buttonStyle(.borderedProminent)
+        }
+        .multilineTextAlignment(.center)
+        .padding()
+        .presentationDetents([.medium])
+    }
+
     private func markCorner() {
         switch scan.markExteriorCorner() {
         case .marked(let p):
@@ -214,6 +286,10 @@ struct ExteriorView: View {
         }
         if scan.anchorEnd != nil {
             return "Walk finished. Drift over the walk: \(driftText). Tap Done."
+        }
+        if depth.running && touchMode {
+            return "Touch: hold the phone flat on the siding, sideways, back to the wall, camera end at the corner, "
+                + "and press volume up. Then the same on the other wall of the corner. Tap Touch again to aim and mark."
         }
         if depth.running {
             return "Walk out slowly. Stand close and face the siding: green under the crosshair is best. "
@@ -246,15 +322,26 @@ struct ExteriorView: View {
         } else if scan.anchorEnd == nil {
             VStack(spacing: 10) {
                 HStack {
-                    Button { markPoint() } label: { Label("Mark point", systemImage: "scope") }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.orange)
-                    .disabled(markRefusal != nil)
-                    // Without LiDAR there is no depth to find two faces in.
-                    if depth.running {
-                        Button { markCorner() } label: { Label("Mark corner", systemImage: "square.split.bottomrightquarter") }
+                    if touchMode {
+                        Button { markTouch() } label: { Label("Mark touch", systemImage: "hand.point.up.left.fill") }
                         .buttonStyle(.borderedProminent)
-                        .tint(depth.corner != nil ? .teal : .gray)
+                        .tint(.indigo)
+                    } else {
+                        Button { markPoint() } label: { Label("Mark point", systemImage: "scope") }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.orange)
+                        .disabled(markRefusal != nil)
+                        // Without LiDAR there is no depth to find two faces in.
+                        if depth.running {
+                            Button { markCorner() } label: { Label("Mark corner", systemImage: "square.split.bottomrightquarter") }
+                            .buttonStyle(.borderedProminent)
+                            .tint(depth.corner != nil ? .teal : .gray)
+                        }
+                    }
+                    if touchAvailable {
+                        Button { toggleTouch() } label: { Label("Touch", systemImage: "hand.point.up.left") }
+                        .buttonStyle(.bordered)
+                        .tint(touchMode ? .indigo : nil)
                     }
                 }
                 HStack {

@@ -48,7 +48,8 @@ struct CornerReading: Equatable {
 struct ExteriorPoint: Equatable {
     var point: SIMD3<Float>
     var kind: String?                 // "corner", or nil for a point on a wall
-    var method: String?               // "lidar" (depth strip), "plane" (estimated plane) or "lidar-corner"
+    var method: String?               // "lidar" (depth strip), "plane" (estimated plane), "lidar-corner",
+                                      // "touch" or "touch-corner" (the phone's own pose, TouchMath)
     var distance: Double?             // metres from the phone
     var angle: Double?                // degrees off square; for a corner, between its faces
     var rms: Double?                  // metres, the strip's fit
@@ -99,6 +100,9 @@ final class OutsideDepth: ObservableObject {
     private var timer: Timer?
     private var recent: [DepthSample] = []
     private var ticks = 0
+    // Where the phone was over the last second, for touch marks: kept even
+    // when there is no depth (the phone flat on a wall).
+    private var positions: [(time: TimeInterval, at: SIMD3<Double>)] = []
 
     init(session: ARSession) { self.session = session }
 
@@ -116,6 +120,7 @@ final class OutsideDepth: ObservableObject {
         timer?.invalidate()
         timer = nil
         recent = []
+        positions = []
         reading = nil
         corner = nil
         aimRun = nil
@@ -124,6 +129,14 @@ final class OutsideDepth: ObservableObject {
 
     private func sample() {
         ticks += 1
+        if let f = session.currentFrame, case .normal = f.camera.trackingState {
+            let c = f.camera.transform.columns.3
+            positions.append((f.timestamp, SIMD3(Double(c.x), Double(c.y), Double(c.z))))
+        } else {
+            positions = []
+        }
+        let since = (positions.last?.time ?? 0) - 1
+        positions.removeAll { $0.time < since }
         let s = session.currentFrame.flatMap(Self.extract)
         // A gap in depth (tracking lost, phone covered) starts afresh, so a
         // mark never uses siding seen before it.
@@ -147,6 +160,14 @@ final class OutsideDepth: ObservableObject {
             if case .success(let k) = cornerFit() { c = CornerReading(distance: k.distance, angle: k.angle, convex: k.convex) }
             if c?.text != corner?.text { corner = c }
         }
+    }
+
+    // The furthest the phone was from `at` over `window` seconds before
+    // `time`; nil when tracking hasn't been steady that long.
+    func moved(over window: TimeInterval, before time: TimeInterval, to at: SIMD3<Double>) -> Double? {
+        let span = positions.filter { $0.time >= time - window && $0.time <= time }
+        guard let first = span.first, time - first.time >= window * 0.7 else { return nil }
+        return span.map { simd_distance($0.at, at) }.max()
     }
 
     // Where the phone was for the latest sample, plan x, z.
