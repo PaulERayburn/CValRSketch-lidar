@@ -138,7 +138,7 @@ export function readCvalrScan(d, opts = {}) {
       }
       const measured = thick.filter(t => t.measured && !t.lidar), onMarks = thick.filter(t => t.lidar).length;
       const scanned = sides.map((s, i) => marks[i] ? { ...s, c: marks[i].c } : offsetSide(s, outwardSign(inside), thick[i].inches / 12));
-      const fit = applyReadings(d, story, plan, scanned, warnings, marks, ties);
+      const fit = applyReadings(d, story, plan, scanned, warnings, marks, ties, story === mainStory ? walk.marks : []);
       const outer = tidy(outline(fit.sides));
       // The outline's edges that are calculated walls: an edge through the
       // midpoint of a calculated wall, along it.
@@ -217,24 +217,34 @@ export function readCvalrScan(d, opts = {}) {
 // Sides on the outside walk's LiDAR marks are held ten times harder than the
 // scan, so a reading moves the scan-placed side at its other end rather than
 // the marked one, and two marked sides' gap comes from the walk where no
-// reading spans it. The walk can come out a few percent small or large
-// (tracking scale over a long walk outside), so its marks are fitted as one
-// walk: their own scale and slide, found from the readings (nothing else
-// knows the scale; without readings it stays 1). A reading still outweighs a
-// mark ten to one, so where the two disagree the reading wins; marked sides
-// held in one line (straightWalls) are tied as hard as a reading.
+// reading spans it. The marks are fitted as one walk with its own slide along
+// each axis. Its size is the walk's own unless the readings agree it is off:
+// each reading is paired with the walk's marks at its two ends (a marked
+// corner, or a mark on the face across the reading, within a foot of where
+// the outer corner is), and only when three or more such pairs agree within
+// a percent on one scale (tracking over a long walk can leave it a few
+// percent small) is the walk scaled. A single fitted scale let one bad pair
+// stretch every side no reading reaches. A reading still outweighs a mark ten
+// to one, so where the two disagree the reading wins (and a pair off by more
+// than a few inches is reported); marked sides held in one line
+// (straightWalls) are tied as hard as a reading.
 // ---------------------------------------------------------------------------
 const SCAN_WEIGHT = 0.01;          // a reading outweighs the scan 100 to 1
 const MARK_WEIGHT = 0.1;           // and a LiDAR mark 10 to 1; a mark outweighs the scan 10 to 1
 const WEAK_MARK_WEIGHT = 0.03;     // a side placed between two off-square corners, three times the scan
 const MARKED_SCAN_WEIGHT = 1e-4;   // a marked side's own scan place only steadies the fit
-const SCALE_WEIGHT = 0.01;         // the walk's scale held to 1 only loosely: the readings set it
-const AXIS_SCALE_WEIGHT = 0.1;     // each axis's scale may part from the walk's by what the readings show
+const AXIS_SCALE_WEIGHT = 0.1;     // once scaled, each axis's scale may part from the walk's by what the readings show
+const PAIR_FT = 1;                 // a walk mark this close to where a reading's outer corner is measures that end
+const SCALE_MIN_PAIRS = 3;         // readings paired with the walk that must agree before it is scaled
+const SCALE_AGREE = 0.01;          // ... each within this of their mean scale
+const SCALE_OUT_IN = 2;            // a pair further than this (inches) from the median scale is left out of it
+const SCALE_OUT = 0.015;           // ... or further than this from it
 const SCALE_FLAG = 0.005;          // a walk scaled more than this is reported
+const PAIR_FLAG_IN = 3;            // a reading the walk's marks miss by more than this is reported
 const FLAG_IN = 2;                 // readings that can't both hold
 const CALC_FLAG_IN = 6;            // calculated side this far from the scan
 
-function applyReadings(d, story, plan, sides, warnings, marks = [], ties = []) {
+function applyReadings(d, story, plan, sides, warnings, marks = [], ties = [], walkMarks = []) {
   const n = sides.length;
   const lengthOf = (ss, i) => {
     const p = ss[(i + n - 1) % n], q = ss[(i + 1) % n];
@@ -255,10 +265,12 @@ function applyReadings(d, story, plan, sides, warnings, marks = [], ties = []) {
   };
   // Constraints c[j] - c[i] = sign * L, keeping the order the scan has.
   const cons = [];
-  const add = (i, j, inches, label) => {
+  // ends: the two outline corners the reading runs between (for pairing it
+  // with the walk's marks).
+  const add = (i, j, inches, label, ends) => {
     if (i < 0 || j < 0 || i === j || sides[i].kind !== sides[j].kind || sides[i].kind === 'free') return false;
     const sign = Math.sign(sides[j].c - sides[i].c) || 1;
-    cons.push({ i, j, L: sign * inches / 12, label, inches });
+    cons.push({ i, j, L: sign * inches / 12, label, inches, ends });
     return true;
   };
   const fmt = inches => { const v = Math.round(inches); return `${Math.floor(v / 12)}′ ${v % 12}″`; };
@@ -270,7 +282,7 @@ function applyReadings(d, story, plan, sides, warnings, marks = [], ties = []) {
     const pa = corners[ka], pb = corners[kb];
     const horizontal = Math.abs(pb.x - pa.x) >= Math.abs(pb.y - pa.y);
     const sideAt = k => [k, (k + 1) % n].find(i => sides[i].kind === (horizontal ? 'v' : 'h'));
-    if (!add(sideAt(ka), sideAt(kb), sp.inches, `${fmt(sp.inches)} corner to corner`)) skipped++;
+    if (!add(sideAt(ka), sideAt(kb), sp.inches, `${fmt(sp.inches)} corner to corner`, [ka, kb])) skipped++;
   }
   const walls = new Map((d.walls || []).map(w => [w.id, w]));
   for (const m of d.measurements || []) {
@@ -289,21 +301,26 @@ function applyReadings(d, story, plan, sides, warnings, marks = [], ties = []) {
       const dd = Math.abs(s.c - at);
       if (along > lo && along < hi && dd < bd) { bd = dd; best = i; }
     });
-    if (best < 0 || !add((best + n - 1) % n, (best + 1) % n, m.inches, `${fmt(m.inches)} wall`)) skipped++;
+    if (best < 0 || !add((best + n - 1) % n, (best + 1) % n, m.inches, `${fmt(m.inches)} wall`, [(best + n - 1) % n, best])) skipped++;
   }
   if (!cons.length) return { sides, walls: [] };
 
   // Normal equations, one unknown per squared side; with marks, then the
-  // walk's scale and its slide along each axis.
+  // walk's slide along each axis.
   const idx = [], col = new Map();
   sides.forEach((s, i) => { if (s.kind !== 'free') { col.set(i, idx.length); idx.push(i); } });
   const marked = idx.filter(i => marks[i]);
+  // The walk's scale: 1, unless enough readings paired with its marks agree
+  // on another; then each axis may part from it a little, as the readings show.
+  const pairs = marked.length ? walkPairs(cons, sides, corners, walkMarks) : [];
+  const scale = walkScale(pairs);
   const mean = {}, tCol = {}, dCol = {};
   let m = idx.length;
-  const sCol = marked.length ? m++ : -1;
   for (const kind of ['h', 'v']) {
     const on = marked.filter(i => sides[i].kind === kind);
-    if (on.length) { mean[kind] = on.reduce((t, i) => t + marks[i].c, 0) / on.length; tCol[kind] = m++; dCol[kind] = m++; }
+    if (!on.length) continue;
+    mean[kind] = on.reduce((t, i) => t + marks[i].c, 0) / on.length; tCol[kind] = m++;
+    if (scale.pairs) dCol[kind] = m++;
   }
   const A = Array.from({ length: m }, () => new Float64Array(m)), r = new Float64Array(m);
   idx.forEach((i, k) => { const w = marks[i] ? MARKED_SCAN_WEIGHT : SCAN_WEIGHT; A[k][k] += w; r[k] += w * sides[i].c; });
@@ -313,11 +330,12 @@ function applyReadings(d, story, plan, sides, warnings, marks = [], ties = []) {
     r[q] += c.L; r[p] -= c.L;
   }
   // A mark: side = mean + (scale + the axis's own) × (mark − mean) + slide.
+  const onWalk = i => mean[sides[i].kind] + scale.value * (marks[i].c - mean[sides[i].kind]);
   for (const i of marked) {
-    const kind = sides[i].kind, w = marks[i].weak ? WEAK_MARK_WEIGHT : MARK_WEIGHT, e = [[col.get(i), 1], [sCol, -(marks[i].c - mean[kind])], [dCol[kind], -(marks[i].c - mean[kind])], [tCol[kind], -1]];
-    for (const [a, va] of e) { r[a] += w * va * mean[kind]; for (const [b, vb] of e) A[a][b] += w * va * vb; }
+    const kind = sides[i].kind, w = marks[i].weak ? WEAK_MARK_WEIGHT : MARK_WEIGHT, at = onWalk(i);
+    const e = [[col.get(i), 1], [tCol[kind], -1], ...(kind in dCol ? [[dCol[kind], -(marks[i].c - mean[kind])]] : [])];
+    for (const [a, va] of e) { r[a] += w * va * at; for (const [b, vb] of e) A[a][b] += w * va * vb; }
   }
-  if (sCol >= 0) { A[sCol][sCol] += SCALE_WEIGHT; r[sCol] += SCALE_WEIGHT; }
   for (const k of Object.values(dCol)) A[k][k] += AXIS_SCALE_WEIGHT;
   for (const [i, j] of ties) {
     const p = col.get(i), q = col.get(j);
@@ -337,15 +355,20 @@ function applyReadings(d, story, plan, sides, warnings, marks = [], ties = []) {
   }
   const fitted = sides.map((s, i) => col.has(i) ? { ...s, c: r[col.get(i)] / A[col.get(i)][col.get(i)] } : s);
   // Where each side was before the readings: the scan, or its mark on the
-  // walk as the fit scaled and slid it.
+  // walk as the fit slid (and, when the readings agreed, scaled) it.
   const prior = sides.map(s => s.c);
-  if (sCol >= 0) {
-    const val = k => r[k] / A[k][k], scale = val(sCol);
-    for (const i of marked) {
-      const kind = sides[i].kind;
-      prior[i] = mean[kind] + (scale + val(dCol[kind])) * (marks[i].c - mean[kind]) + val(tCol[kind]);
+  if (marked.length) {
+    const val = k => r[k] / A[k][k];
+    for (const i of marked) { const kind = sides[i].kind; prior[i] = onWalk(i) + (kind in dCol ? val(dCol[kind]) * (marks[i].c - mean[kind]) : 0) + val(tCol[kind]); }
+    if (scale.pairs && Math.abs(scale.value - 1) > SCALE_FLAG) warnings.push(`${floorTitle(story)}: the outside walk came out ${(Math.abs(scale.value - 1) * 100).toFixed(1)}% ${scale.value > 1 ? 'small' : 'large'} against ${scale.pairs} laser readings that agree on it (tracking over the walk); its marks were scaled to fit them.`);
+    // A reading the walk's own marks at its ends miss by inches: the reading
+    // wins, but one of those corners was marked off the siding (or the walk
+    // lost track along that side).
+    const fmt1 = inches => { const v = Math.round(inches * 10) / 10, ft = Math.floor(v / 12); return `${ft}′ ${(v - ft * 12).toFixed(1)}″`; };
+    for (const p of pairs) {
+      const walkIn = p.walkIn * scale.value, diff = walkIn - p.c.inches;
+      if (Math.abs(diff) > PAIR_FLAG_IN) warnings.push(`${floorTitle(story)}: the outside walk's marks at the ends of the ${p.c.label} reading measure ${fmt1(walkIn)} (${diff > 0 ? '+' : '−'}${Math.abs(diff).toFixed(1)}″). Check the corners marked on that side; the reading was used.`);
     }
-    if (Math.abs(scale - 1) > SCALE_FLAG) warnings.push(`${floorTitle(story)}: the outside walk came out ${(Math.abs(scale - 1) * 100).toFixed(1)}% ${scale > 1 ? 'small' : 'large'} against the laser readings (tracking over the walk); its marks were scaled to fit them.`);
   }
   // A jog under an inch left between two sides on (nearly) one line is scan
   // noise, not a wall: line the two sides up, weighted by length.
@@ -391,6 +414,56 @@ function applyReadings(d, story, plan, sides, warnings, marks = [], ties = []) {
   }
   warnings.push(`${floorTitle(story)}: fitted to ${cons.length} laser reading${cons.length > 1 ? 's' : ''}${skipped ? ` (${skipped} not used: inside, or not at an outside corner)` : ''}; ${calc} wall${calc === 1 ? '' : 's'} calculated to close the house (${out.filter(w => w.kind === 'calculated').map(w => fmt(w.inches)).join(', ') || 'none'}).`);
   return { sides: fitted, walls: out };
+}
+
+// Each reading the walk measured too: at both its ends a walk mark where the
+// outer corner is (within PAIR_FT of the outline's corner, as the scan and
+// the marks placed it). A marked corner gives the end outright; failing one,
+// a mark on the face across the reading (its direction square to it) gives
+// the end's place along the reading. A reading whose ends find no such mark
+// (a corner the walk didn't mark, or a span picked at another corner) says
+// nothing about the walk's size. Returns { c, walkIn } per paired reading.
+function walkPairs(cons, sides, corners, walkMarks) {
+  const cos = Math.cos(MARK_SQUARE_DEG * Math.PI / 180);
+  const endAt = (k, axis) => {
+    const p = corners[k], across = axis === 'x' ? 'y' : 'x';
+    if (!p) return null;
+    for (const corner of [true, false]) {
+      let best = null, bd = PAIR_FT;
+      for (const mk of walkMarks) {
+        if (mk.corner !== corner || (!corner && !mk.dirs.some(u => Math.abs(u[across]) >= cos))) continue;
+        const dd = Math.hypot(mk.x - p.x, mk.y - p.y);
+        if (dd <= bd) { bd = dd; best = mk; }
+      }
+      if (best) return best;
+    }
+    return null;
+  };
+  const out = [];
+  for (const c of cons) {
+    if (!c.ends) continue;
+    const axis = sides[c.i].kind === 'v' ? 'x' : 'y';
+    const a = endAt(c.ends[0], axis), b = endAt(c.ends[1], axis);
+    if (!a || !b || a === b) continue;
+    const walkIn = Math.abs(b[axis] - a[axis]) * 12;
+    if (walkIn >= 6) out.push({ c, walkIn });
+  }
+  return out;
+}
+
+// The walk's scale from its paired readings: their median scale, leaving out
+// pairs far from it (one bad corner must not stretch the walk), then the
+// rest's mean scale, taken only when at least SCALE_MIN_PAIRS remain and
+// each lies within SCALE_AGREE of it. Otherwise the walk keeps its own size.
+function walkScale(pairs) {
+  const none = { value: 1, pairs: 0 };
+  if (pairs.length < SCALE_MIN_PAIRS) return none;
+  const rs = pairs.map(p => p.c.inches / p.walkIn).sort((a, b) => a - b), h = rs.length >> 1;
+  const med = rs.length % 2 ? rs[h] : (rs[h - 1] + rs[h]) / 2;
+  const keep = pairs.filter(p => Math.abs(p.c.inches / p.walkIn - med) <= SCALE_OUT && Math.abs(p.c.inches - med * p.walkIn) <= SCALE_OUT_IN);
+  if (keep.length < SCALE_MIN_PAIRS) return none;
+  const value = keep.reduce((t, p) => t + p.c.inches / p.walkIn, 0) / keep.length;
+  return keep.every(p => Math.abs(p.c.inches / p.walkIn - value) <= SCALE_AGREE) ? { value, pairs: keep.length } : none;
 }
 
 // Corner-to-corner readings against the imported outline: an outside reading
