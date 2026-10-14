@@ -716,15 +716,19 @@ function outsideWalk(ext, plan) {
   // plan() only turns and scales, so it turns a direction too.
   const dirPlan = v => { const o = plan([0, 0]), q = plan(v), L = Math.hypot(q.x - o.x, q.y - o.y); return L > 0 ? { x: (q.x - o.x) / L, y: (q.y - o.y) / L } : null; };
   // A line found wholly from LiDAR depth says so (registerWalk trusts its
-  // direction).
-  const isLidar = q => (q.method === 'lidar' || q.method === 'lidar-corner') && Number.isFinite(q.rms);
+  // direction). From 0.30.0 a touch mark (the phone laid flat on the siding,
+  // its own pose the measurement) is as good: `touch` like a one-point LiDAR
+  // wall, `touch-corner` like a LiDAR corner. A touch has no fit, so no rms.
+  const isTouch = q => q.method === 'touch' || q.method === 'touch-corner';
+  const isLidar = q => ((q.method === 'lidar' || q.method === 'lidar-corner') && Number.isFinite(q.rms)) || isTouch(q);
+  const onePoint = q => (q.method === 'lidar' || q.method === 'touch') && Array.isArray(q.dir);
   const lidarOf = pts => pts.every(q => isLidar(q.src)) ? { lidar: true } : {};
   // Each LiDAR point a tight fit (an inch) is also kept on its own as a mark
   // of the siding: where it is and which way the face(s) through it run.
   const marks = [];
   const keepMark = q => {
-    if (!isLidar(q.src) || q.src.rms > MARK_RMS_M) return;
-    const dirs = (isCorner(q.src) ? q.src.dirs : q.src.method === 'lidar' && Array.isArray(q.src.dir) ? [q.src.dir] : [])
+    if (!isLidar(q.src) || (Number.isFinite(q.src.rms) && q.src.rms > MARK_RMS_M)) return;
+    const dirs = (isCorner(q.src) ? q.src.dirs : onePoint(q.src) ? [q.src.dir] : [])
       .map(v => Array.isArray(v) && v.length === 2 ? dirPlan(v) : null).filter(Boolean);
     if (dirs.length) marks.push({ x: q.x, y: q.y, dirs, corner: isCorner(q.src) });
   };
@@ -747,7 +751,7 @@ function outsideWalk(ext, plan) {
     if (parts.length > 1) split++;
     parts.forEach((part, n) => {
       const ends = [...(n === 0 ? head : []), ...(n === parts.length - 1 ? tail : [])];
-      const p = part[0], u = part.length === 1 && p.src.method === 'lidar' && Array.isArray(p.src.dir) ? dirPlan(p.src.dir) : null;
+      const p = part[0], u = part.length === 1 && onePoint(p.src) ? dirPlan(p.src.dir) : null;
       if (u) {
         // One LiDAR point: the line the depth strip found, as long as the
         // strip (else 2 ft), reaching to the wall's corners when marked.

@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Phone: close onto an existing wall**: ending a walk on another area's wall offers the enclosed area (Next option cycles).
 - **Phone: new-area form** (type, label, floor, building) instead of typed prompts, and **Totals** (GLA, area by floor and type, per building) in the menu.
 - **Room table from scans:** room names, floor / wall / ceiling finishes, condition and the scanned ceiling height picked in CValRScan (0.28) come into the sketch with each area, and show in Totals (desktop and phone) and the export legend.
+- **Scan import: touch marks** (CValRScan 0.30): a corner marked by laying the phone flat on the siding either side of it comes in like a LiDAR corner, and a single touch like a one-point LiDAR wall (its direction, ±1 ft along it). Scans without touch marks import exactly as before.
 
 ### Changed
 - **Phone: dictation takes only measuring commands**; anything else is shown as Ignored. One-word mishears ("you" for U) are no longer directions there. A bare direction after a length finishes that wall.
